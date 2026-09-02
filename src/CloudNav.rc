@@ -1,0 +1,82 @@
+#include <windows.h>
+#include "resource.h"
+
+#pragma code_page(65001)
+
+IDR_MANIFEST RT_MANIFEST "CloudNav.manifest"
+IDI_CLOUDNAV ICON "CloudNav.ico"
+
+IDD_FOLDER_MANAGER DIALOGEX 0, 0, 450, 326
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "CloudNav — dossiers personnels"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "À gauche : emplacement actuel. À droite : nouvelle destination. Rien ne change avant la confirmation finale.", -1, 14, 9, 422, 22
+
+    LTEXT           "Bureau", IDC_FOLDER_DESKTOP_LABEL, 15, 35, 92, 12
+    LTEXT           "", IDC_FOLDER_DESKTOP_PATH, 28, 48, 250, 12, SS_PATHELLIPSIS
+    COMBOBOX        IDC_FOLDER_DESKTOP_TARGET, 292, 35, 144, 90, CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Documents", IDC_FOLDER_DOCUMENTS_LABEL, 15, 67, 92, 12
+    LTEXT           "", IDC_FOLDER_DOCUMENTS_PATH, 28, 80, 250, 12, SS_PATHELLIPSIS
+    COMBOBOX        IDC_FOLDER_DOCUMENTS_TARGET, 292, 67, 144, 90, CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Images", IDC_FOLDER_PICTURES_LABEL, 15, 99, 92, 12
+    LTEXT           "", IDC_FOLDER_PICTURES_PATH, 28, 112, 250, 12, SS_PATHELLIPSIS
+    COMBOBOX        IDC_FOLDER_PICTURES_TARGET, 292, 99, 144, 90, CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Téléchargements", IDC_FOLDER_DOWNLOADS_LABEL, 15, 131, 105, 12
+    LTEXT           "", IDC_FOLDER_DOWNLOADS_PATH, 28, 144, 250, 12, SS_PATHELLIPSIS
+    COMBOBOX        IDC_FOLDER_DOWNLOADS_TARGET, 292, 131, 144, 90, CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Musique", IDC_FOLDER_MUSIC_LABEL, 15, 163, 92, 12
+    LTEXT           "", IDC_FOLDER_MUSIC_PATH, 28, 176, 250, 12, SS_PATHELLIPSIS
+    COMBOBOX        IDC_FOLDER_MUSIC_TARGET, 292, 163, 144, 90, CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Vidéos", IDC_FOLDER_VIDEOS_LABEL, 15, 195, 92, 12
+    LTEXT           "", IDC_FOLDER_VIDEOS_PATH, 28, 208, 250, 12, SS_PATHELLIPSIS
+    COMBOBOX        IDC_FOLDER_VIDEOS_TARGET, 292, 195, 144, 90, CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+
+    GROUPBOX        "Traitement lors d’un changement", -1, 14, 227, 422, 38
+    LTEXT           "Action :", -1, 27, 242, 58, 12
+    COMBOBOX        IDC_FOLDER_TRANSFER_MODE, 82, 239, 340, 75, CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "", IDC_FOLDER_WARNING, 15, 271, 420, 24
+    LTEXT           "Prêt.", IDC_FOLDER_STATUS, 15, 305, 225, 14
+    PUSHBUTTON      "Actualiser", IDC_FOLDER_REFRESH, 255, 299, 68, 20
+    DEFPUSHBUTTON   "Appliquer", IDOK, 328, 299, 55, 20
+    PUSHBUTTON      "Fermer", IDCANCEL, 388, 299, 48, 20
+END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,2,2,0
+ PRODUCTVERSION 1,2,2,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040c04b0"
+    BEGIN
+      VALUE "CompanyName", "CloudNav\0"
+      VALUE "FileDescription", "CloudNav - navigation cloud Windows\0"
+      VALUE "FileVersion", "1.2.2\0"
+      VALUE "InternalName", "CloudNav\0"
+      VALUE "LegalCopyright", "Copyright (c) 2026 CloudNav contributors\0"
+      VALUE "OriginalFilename", "CloudNav.exe\0"
+      VALUE "ProductName", "CloudNav\0"
+      VALUE "ProductVersion", "1.2.2\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x040c, 1200
+  END
+END

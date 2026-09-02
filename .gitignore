@@ -1,0 +1,20 @@
+# Visual C++ outputs
+/build/
+*.obj
+*.res
+*.pdb
+*.ilk
+
+# IDE and editor state
+/.vs/
+/.vscode/
+*.user
+*.suo
+
+# Local test evidence
+/output/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini

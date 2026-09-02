@@ -1,0 +1,4 @@
+[
+  { "type": "wait_result_file", "path": "{OUTDIR}\\folder-test.json", "timeoutMs": 60000 },
+  { "type": "wait_process_exit", "timeoutMs": 30000, "expectedExitCode": 0 }
+]

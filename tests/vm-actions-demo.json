@@ -1,0 +1,17 @@
+[
+  { "type": "wait_window", "timeoutMs": 30000 },
+  { "type": "focus_window" },
+  { "type": "screenshot", "name": "main-window.png", "timeoutMs": 30000, "attempts": 5 },
+  { "type": "click_control", "name": "Dossiers personnels…", "timeoutMs": 10000 },
+  { "type": "wait", "ms": 800 },
+  { "type": "screenshot", "name": "folder-plan.png", "timeoutMs": 30000, "attempts": 5 },
+  { "type": "click_control", "name": "Appliquer", "timeoutMs": 10000 },
+  { "type": "wait", "ms": 500 },
+  { "type": "screenshot", "name": "onedrive-confirmation.png", "timeoutMs": 30000, "attempts": 5 },
+  { "type": "click_control", "name": "Oui", "timeoutMs": 10000 },
+  { "type": "wait", "ms": 800 },
+  { "type": "screenshot", "name": "folder-result.png", "timeoutMs": 30000, "attempts": 5 },
+  { "type": "click_control", "name": "Fermer", "timeoutMs": 10000 },
+  { "type": "send_keys", "keys": "ALT+F4" },
+  { "type": "wait_process_exit", "timeoutMs": 30000, "expectedExitCode": 0 }
+]
