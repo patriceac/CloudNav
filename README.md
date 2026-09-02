@@ -1,66 +1,66 @@
 <p align="center">
-  <img src="assets/CloudNav-icon.png" width="132" alt="Icône CloudNav">
+  <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
 # CloudNav 1.2.2
 
-CloudNav est un utilitaire Windows 11 natif et portable qui rassemble deux réglages souvent dispersés : les éléments cloud affichés dans le volet de l’Explorateur et l’emplacement des dossiers personnels Windows.
+CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
-**[Télécharger CloudNav pour Windows](https://github.com/patriceac/CloudNav/releases/latest/download/CloudNav.exe)**
+**[Download CloudNav for Windows](https://github.com/patriceac/CloudNav/releases/latest/download/CloudNav.exe)**
 
-Un seul fichier `.exe`, sans installation ni runtime applicatif supplémentaire.
+One standalone `.exe`, with no installer or additional application runtime.
 
-## Fonctions
+## Features
 
-- afficher ou masquer l’entrée **My Drive** dans le volet de navigation ;
-- afficher ou masquer le compte **OneDrive** détecté ;
-- masquer la lettre du lecteur virtuel **Google Drive** sans bloquer l’accès aux fichiers ;
-- repointer Bureau, Documents, Images, Téléchargements, Musique et Vidéos vers leur emplacement local, OneDrive, Google Drive ou un dossier personnalisé ;
-- copier, déplacer ou repointer seulement les fichiers avec une confirmation explicite ;
-- mémoriser la position de la fenêtre et la ramener sur un écran visible si la configuration des moniteurs change.
+- show or hide the **My Drive** entry in the navigation pane;
+- show or hide the detected **OneDrive** account entry;
+- hide the **Google Drive** virtual drive letter without blocking access to its files;
+- redirect Desktop, Documents, Pictures, Downloads, Music, and Videos to their local location, OneDrive, Google Drive, or a custom folder;
+- copy files, move files, or redirect the folder only, with an explicit final confirmation;
+- remember the window position and bring it back onto a visible display if the monitor layout changes.
 
-CloudNav détecte les chemins et libellés présents sur le PC : aucun nom de compte ou chemin utilisateur n’est codé en dur dans l’application.
+CloudNav detects the paths and account labels available on the current PC. No user name, account name, or user-specific path is hard-coded in the application.
 
-## Précautions
+## Safety
 
-Les cases de la fenêtre principale modifient uniquement la visibilité du volet Explorer. Masquer le lecteur Google Drive utilise la politique Windows `NoDrives` : l’icône disparaît, mais le lecteur et ses fichiers restent accessibles.
+The checkboxes in the main window only control visibility in the File Explorer navigation pane. Hiding the Google Drive letter uses the Windows `NoDrives` policy: the icon disappears, but the drive and its files remain accessible.
 
-Les changements de dossiers personnels sont présentés dans un récapitulatif séparé avant exécution. CloudNav valide toutes les destinations, bloque les chemins imbriqués et restaure les emplacements précédents si une opération groupée échoue.
+Personal-folder changes are shown in a separate review before anything is applied. CloudNav validates every destination, blocks nested paths, and restores the previous locations if a grouped operation fails.
 
-Quand Bureau, Documents ou Images quitte OneDrive pour Google Drive, CloudNav peut désactiver la sauvegarde des dossiers connus OneDrive avant le repointage. La confirmation explique la portée de cette stratégie et aucun fichier OneDrive n’est supprimé.
+When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudNav can disable OneDrive Known Folder Backup before redirecting the folder. The confirmation dialog explains the scope of this strategy, and no OneDrive file is deleted.
 
-Si une tâche planifiée nommée `OneDrive-GDrive-Bidirectional-Sync` est présente, CloudNav considère que les deux racines sont déjà synchronisées et recommande **Repointage seulement**. Sans ce signal, **Copier** reste le choix prudent par défaut.
+If a scheduled task named `OneDrive-GDrive-Bidirectional-Sync` is present, CloudNav assumes that the OneDrive and Google Drive roots are already synchronized and recommends **Redirect only**. Without that signal, **Copy** remains the cautious default.
 
-## Utilisation
+## Usage
 
-1. Télécharger `CloudNav.exe` depuis la dernière Release GitHub.
-2. Vérifier que Google Drive et/ou OneDrive sont installés et démarrés.
-3. Lancer l’exécutable, sans installation.
-4. Choisir les éléments du volet Explorer ou ouvrir **Dossiers personnels…**.
-5. Vérifier le récapitulatif, puis accepter la demande d’administration Windows lorsqu’elle est nécessaire.
+1. Download `CloudNav.exe` from the latest GitHub Release.
+2. Make sure Google Drive for desktop and/or OneDrive is installed and running, depending on the features you need.
+3. Run the executable directly; no installation is required.
+4. Choose the navigation-pane entries, or open **Dossiers personnels…** to manage personal folders.
+5. Review the summary, then accept the Windows elevation prompt when required.
 
-L’Explorateur peut redémarrer une fois pour relire sa configuration ; les fenêtres de dossiers ouvertes sont alors fermées.
+File Explorer may restart once to reload its configuration. Any open folder windows will close when that happens.
 
-## Configuration requise
+## Requirements
 
-- Windows 11 x64 ;
-- Google Drive pour ordinateur et/ou OneDrive selon les fonctions utilisées ;
-- aucune bibliothèque ni aucun runtime applicatif supplémentaire.
+- Windows 11 x64;
+- Google Drive for desktop and/or OneDrive, depending on the selected features;
+- no additional library or application runtime.
 
-L’interface de CloudNav est actuellement en français.
+The CloudNav user interface is currently available in French.
 
-## Compiler
+## Build from source
 
-Visual Studio Build Tools 2022 avec les outils C++ x64 est requis. Depuis PowerShell :
+Visual Studio Build Tools 2022 with the x64 C++ toolchain is required. From PowerShell:
 
 ```powershell
 .\build.ps1 -Configuration Release
 ```
 
-La Release utilise le runtime C++ statique (`/MT`) et produit :
+The Release build uses the static C++ runtime (`/MT`) and produces:
 
-- `build\Release\CloudNav.exe` ;
-- `build\Release\CloudNavTests.exe` ;
+- `build\Release\CloudNav.exe`;
+- `build\Release\CloudNavTests.exe`;
 - `build\Release\CloudNavWindowPositionTests.exe`.
 
-Le script exécute automatiquement les tests logiques. Les scénarios d’interface et d’intégration destinés au banc Windows isolé se trouvent dans `tests/`.
+The build script runs the logic tests automatically. UI and integration scenarios for the isolated Windows test harness are available in `tests/`.
