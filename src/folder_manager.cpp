@@ -94,6 +94,8 @@ struct DialogContext {
     IStream* googleDriveLogoStream = nullptr;
     Gdiplus::Image* oneDriveLogo = nullptr;
     Gdiplus::Image* googleDriveLogo = nullptr;
+    Gdiplus::Rect oneDriveVisibleBounds;
+    Gdiplus::Rect googleDriveVisibleBounds;
 };
 
 enum class ProviderIcon : LONG_PTR {
@@ -597,7 +599,67 @@ Gdiplus::Image* LoadPngResource(HINSTANCE instance, int resourceId, IStream*& st
     return image;
 }
 
-void DrawProviderLogo(HDC dc, const RECT& bounds, Gdiplus::Image* image) {
+Gdiplus::Rect MeasureVisibleBounds(Gdiplus::Image* image) {
+    if (!image || image->GetWidth() == 0 || image->GetHeight() == 0) {
+        return {};
+    }
+    Gdiplus::Rect fullBounds(
+        0, 0, static_cast<INT>(image->GetWidth()), static_cast<INT>(image->GetHeight()));
+    auto* bitmap = static_cast<Gdiplus::Bitmap*>(image);
+    Gdiplus::BitmapData data = {};
+    if (bitmap->LockBits(&fullBounds, Gdiplus::ImageLockModeRead,
+                         PixelFormat32bppARGB, &data) != Gdiplus::Ok) {
+        return fullBounds;
+    }
+    int left = fullBounds.Width;
+    int top = fullBounds.Height;
+    int right = -1;
+    int bottom = -1;
+    BYTE* base = static_cast<BYTE*>(data.Scan0);
+    for (int y = 0; y < fullBounds.Height; ++y) {
+        BYTE* row = base + y * data.Stride;
+        for (int x = 0; x < fullBounds.Width; ++x) {
+            if (row[x * 4 + 3] != 0) {
+                left = (std::min)(left, x);
+                top = (std::min)(top, y);
+                right = (std::max)(right, x);
+                bottom = (std::max)(bottom, y);
+            }
+        }
+    }
+    bitmap->UnlockBits(&data);
+    return right >= left && bottom >= top
+        ? Gdiplus::Rect(left, top, right - left + 1, bottom - top + 1)
+        : fullBounds;
+}
+
+int PathControlForProvider(int providerControl) {
+    for (const FolderSpec& spec : kFolderSpecs) {
+        if (spec.providerControl == providerControl) {
+            return spec.pathControl;
+        }
+    }
+    return 0;
+}
+
+int TextLineHeight(HWND control, int fallback) {
+    HDC dc = GetDC(control);
+    if (!dc) {
+        return fallback;
+    }
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    TEXTMETRICW metrics = {};
+    const int height = GetTextMetricsW(dc, &metrics) ? metrics.tmHeight : fallback;
+    if (oldFont) {
+        SelectObject(dc, oldFont);
+    }
+    ReleaseDC(control, dc);
+    return height;
+}
+
+void DrawProviderLogo(HDC dc, const RECT& bounds, Gdiplus::Image* image,
+                      const Gdiplus::Rect& visibleBounds, int textLineHeight) {
     if (!image) {
         return;
     }
@@ -610,19 +672,21 @@ void DrawProviderLogo(HDC dc, const RECT& bounds, Gdiplus::Image* image) {
     const int availableHeight = bounds.bottom - bounds.top;
     const UINT sourceWidth = image->GetWidth();
     const UINT sourceHeight = image->GetHeight();
-    if (sourceWidth == 0 || sourceHeight == 0) {
+    if (sourceWidth == 0 || sourceHeight == 0 ||
+        visibleBounds.Width <= 0 || visibleBounds.Height <= 0) {
         return;
     }
-    int drawWidth = availableWidth;
-    int drawHeight = MulDiv(drawWidth, static_cast<int>(sourceHeight),
-                            static_cast<int>(sourceWidth));
-    if (drawHeight > availableHeight) {
-        drawHeight = availableHeight;
-        drawWidth = MulDiv(drawHeight, static_cast<int>(sourceWidth),
-                           static_cast<int>(sourceHeight));
-    }
+    const float scaleForWidth = static_cast<float>(availableWidth) / sourceWidth;
+    const float scaleForVisibleHeight =
+        static_cast<float>((std::min)(textLineHeight, availableHeight)) /
+        visibleBounds.Height;
+    const float scale = (std::min)(scaleForWidth, scaleForVisibleHeight);
+    const int drawWidth = static_cast<int>(sourceWidth * scale + 0.5f);
+    const int drawHeight = static_cast<int>(sourceHeight * scale + 0.5f);
     const int x = bounds.left + (availableWidth - drawWidth) / 2;
-    const int y = bounds.top + (availableHeight - drawHeight) / 2;
+    const float visibleCenter = visibleBounds.Y + visibleBounds.Height / 2.0f;
+    const int y = bounds.top + static_cast<int>(
+        textLineHeight / 2.0f - visibleCenter * scale + 0.5f);
     graphics.DrawImage(image, x, y, drawWidth, drawHeight);
 }
 
@@ -1408,10 +1472,19 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
             GetWindowLongPtrW(item->hwndItem, GWLP_USERDATA));
         RECT iconBounds = item->rcItem;
         DialogContext* context = GetContext(item->hwndItem ? GetParent(item->hwndItem) : nullptr);
+        const int pathControlId = PathControlForProvider(static_cast<int>(item->CtlID));
+        HWND pathControl = pathControlId && context
+            ? GetDlgItem(GetParent(item->hwndItem), pathControlId)
+            : nullptr;
+        const int textLineHeight = pathControl
+            ? TextLineHeight(pathControl, iconBounds.bottom - iconBounds.top)
+            : iconBounds.bottom - iconBounds.top;
         if (context && icon == ProviderIcon::OneDrive) {
-            DrawProviderLogo(item->hDC, iconBounds, context->oneDriveLogo);
+            DrawProviderLogo(item->hDC, iconBounds, context->oneDriveLogo,
+                             context->oneDriveVisibleBounds, textLineHeight);
         } else if (context && icon == ProviderIcon::GoogleDrive) {
-            DrawProviderLogo(item->hDC, iconBounds, context->googleDriveLogo);
+            DrawProviderLogo(item->hDC, iconBounds, context->googleDriveLogo,
+                             context->googleDriveVisibleBounds, textLineHeight);
         }
         return TRUE;
     }
@@ -1572,6 +1645,8 @@ bool ShowFolderManagerDialog(HWND owner, HINSTANCE instance,
             instance, IDR_ONEDRIVE_LOGO, context.oneDriveLogoStream);
         context.googleDriveLogo = LoadPngResource(
             instance, IDR_GOOGLE_DRIVE_LOGO, context.googleDriveLogoStream);
+        context.oneDriveVisibleBounds = MeasureVisibleBounds(context.oneDriveLogo);
+        context.googleDriveVisibleBounds = MeasureVisibleBounds(context.googleDriveLogo);
     }
     const INT_PTR result = DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_FOLDER_MANAGER),
                                             owner, FolderDialogProc,
