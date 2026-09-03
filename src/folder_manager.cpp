@@ -46,15 +46,16 @@ struct FolderSpec {
     const wchar_t* label;
     int pathControl;
     int targetControl;
+    int providerControl;
 };
 
 const std::array<FolderSpec, 6> kFolderSpecs = {{
-    {&FOLDERID_Desktop, L"Bureau", IDC_FOLDER_DESKTOP_PATH, IDC_FOLDER_DESKTOP_TARGET},
-    {&FOLDERID_Documents, L"Documents", IDC_FOLDER_DOCUMENTS_PATH, IDC_FOLDER_DOCUMENTS_TARGET},
-    {&FOLDERID_Pictures, L"Images", IDC_FOLDER_PICTURES_PATH, IDC_FOLDER_PICTURES_TARGET},
-    {&FOLDERID_Downloads, L"Téléchargements", IDC_FOLDER_DOWNLOADS_PATH, IDC_FOLDER_DOWNLOADS_TARGET},
-    {&FOLDERID_Music, L"Musique", IDC_FOLDER_MUSIC_PATH, IDC_FOLDER_MUSIC_TARGET},
-    {&FOLDERID_Videos, L"Vidéos", IDC_FOLDER_VIDEOS_PATH, IDC_FOLDER_VIDEOS_TARGET}
+    {&FOLDERID_Desktop, L"Bureau", IDC_FOLDER_DESKTOP_PATH, IDC_FOLDER_DESKTOP_TARGET, IDC_FOLDER_DESKTOP_PROVIDER},
+    {&FOLDERID_Documents, L"Documents", IDC_FOLDER_DOCUMENTS_PATH, IDC_FOLDER_DOCUMENTS_TARGET, IDC_FOLDER_DOCUMENTS_PROVIDER},
+    {&FOLDERID_Pictures, L"Images", IDC_FOLDER_PICTURES_PATH, IDC_FOLDER_PICTURES_TARGET, IDC_FOLDER_PICTURES_PROVIDER},
+    {&FOLDERID_Downloads, L"Téléchargements", IDC_FOLDER_DOWNLOADS_PATH, IDC_FOLDER_DOWNLOADS_TARGET, IDC_FOLDER_DOWNLOADS_PROVIDER},
+    {&FOLDERID_Music, L"Musique", IDC_FOLDER_MUSIC_PATH, IDC_FOLDER_MUSIC_TARGET, IDC_FOLDER_MUSIC_PROVIDER},
+    {&FOLDERID_Videos, L"Vidéos", IDC_FOLDER_VIDEOS_PATH, IDC_FOLDER_VIDEOS_TARGET, IDC_FOLDER_VIDEOS_PROVIDER}
 }};
 
 struct FolderRow {
@@ -85,6 +86,12 @@ struct DialogContext {
     bool changed = false;
     bool statusIsError = false;
     bool guidanceIsWarning = false;
+};
+
+enum class ProviderIcon : LONG_PTR {
+    None = 0,
+    OneDrive = 1,
+    GoogleDrive = 2
 };
 
 DialogContext* GetContext(HWND dialog) {
@@ -542,6 +549,19 @@ std::wstring DescribeCurrentLocation(const DialogContext& context, const FolderR
 }
 
 void UpdateRowPreview(HWND dialog, const DialogContext& context, const FolderRow& row) {
+    const FolderLocationKind location = ClassifyFolderLocation(
+        row.currentPath, row.defaultPath,
+        context.providers.oneDriveRoot, context.providers.googleDriveRoot);
+    ProviderIcon icon = ProviderIcon::None;
+    if (location == FolderLocationKind::OneDrive) {
+        icon = ProviderIcon::OneDrive;
+    } else if (location == FolderLocationKind::GoogleDrive) {
+        icon = ProviderIcon::GoogleDrive;
+    }
+    HWND providerControl = GetDlgItem(dialog, row.spec->providerControl);
+    SetWindowLongPtrW(providerControl, GWLP_USERDATA, static_cast<LONG_PTR>(icon));
+    InvalidateRect(providerControl, nullptr, TRUE);
+
     std::wstring text = L"Actuel : " + DescribeCurrentLocation(context, row);
     if (!row.currentPath.empty()) {
         text += L"  •  " + row.currentPath;
@@ -551,6 +571,55 @@ void UpdateRowPreview(HWND dialog, const DialogContext& context, const FolderRow
         text += target.empty() ? L"  →  destination indisponible" : L"  →  " + target;
     }
     SetDlgItemTextW(dialog, row.spec->pathControl, text.c_str());
+}
+
+void DrawOneDriveIcon(HDC dc, const RECT& bounds) {
+    const int width = bounds.right - bounds.left;
+    const int height = bounds.bottom - bounds.top;
+    HBRUSH brush = CreateSolidBrush(RGB(0, 120, 212));
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    Ellipse(dc, bounds.left + width / 10, bounds.top + height * 4 / 10,
+            bounds.left + width * 6 / 10, bounds.top + height * 9 / 10);
+    Ellipse(dc, bounds.left + width * 3 / 10, bounds.top + height / 10,
+            bounds.left + width * 8 / 10, bounds.top + height * 8 / 10);
+    Ellipse(dc, bounds.left + width * 6 / 10, bounds.top + height * 4 / 10,
+            bounds.left + width, bounds.top + height * 9 / 10);
+    Rectangle(dc, bounds.left + width / 5, bounds.top + height * 6 / 10,
+              bounds.right - width / 12, bounds.top + height * 9 / 10);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(brush);
+}
+
+void FillProviderPolygon(HDC dc, COLORREF color, const POINT* points, int count) {
+    HBRUSH brush = CreateSolidBrush(color);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    Polygon(dc, points, count);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(brush);
+}
+
+void DrawGoogleDriveIcon(HDC dc, const RECT& bounds) {
+    const int left = bounds.left;
+    const int top = bounds.top;
+    const int right = bounds.right;
+    const int bottom = bounds.bottom;
+    const int middleX = (left + right) / 2;
+    const int middleY = top + (bottom - top) * 6 / 10;
+    const POINT green[] = {{middleX, top}, {right, middleY},
+                           {right - (right - left) / 4, middleY},
+                           {middleX - (right - left) / 8, top + (bottom - top) / 4}};
+    const POINT yellow[] = {{right, middleY}, {right - (right - left) / 5, bottom},
+                            {left + (right - left) / 5, bottom},
+                            {left + (right - left) * 3 / 10, middleY}};
+    const POINT blue[] = {{left + (right - left) / 5, bottom}, {left, middleY},
+                          {middleX, top}, {middleX + (right - left) / 8, top + (bottom - top) / 4}};
+    FillProviderPolygon(dc, RGB(15, 157, 88), green, ARRAYSIZE(green));
+    FillProviderPolygon(dc, RGB(249, 171, 0), yellow, ARRAYSIZE(yellow));
+    FillProviderPolygon(dc, RGB(66, 133, 244), blue, ARRAYSIZE(blue));
 }
 
 void FillTargetCombo(HWND dialog, const DialogContext& context, FolderRow& row) {
@@ -578,7 +647,7 @@ void LoadRows(HWND dialog, DialogContext& context) {
         L"C:\\Users\\Example\\OneDrive\\Documents",
         L"C:\\Users\\Example\\OneDrive\\Images",
         L"D:\\Téléchargements",
-        L"C:\\Users\\Example\\Music",
+        L"C:\\Users\\Example\\My Drive\\Music",
         L"C:\\Users\\Example\\Videos"
     }};
     const std::array<std::wstring, 6> demoDefault = {{
@@ -1324,6 +1393,23 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
                 ? RGB(146, 64, 14) : RGB(20, 111, 78));
         }
         return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_3DFACE));
+    }
+    case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        if (!item || item->CtlType != ODT_STATIC) {
+            return FALSE;
+        }
+        FillRect(item->hDC, &item->rcItem, GetSysColorBrush(COLOR_3DFACE));
+        const ProviderIcon icon = static_cast<ProviderIcon>(
+            GetWindowLongPtrW(item->hwndItem, GWLP_USERDATA));
+        RECT iconBounds = item->rcItem;
+        InflateRect(&iconBounds, -1, -1);
+        if (icon == ProviderIcon::OneDrive) {
+            DrawOneDriveIcon(item->hDC, iconBounds);
+        } else if (icon == ProviderIcon::GoogleDrive) {
+            DrawGoogleDriveIcon(item->hDC, iconBounds);
+        }
+        return TRUE;
     }
     default:
         break;

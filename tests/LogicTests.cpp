@@ -8,6 +8,7 @@ int wmain() {
     using cloudnav::DriveBit;
     using cloudnav::IsDriveVisible;
     using cloudnav::CloudRelativePath;
+    using cloudnav::CanDetachOneDrive;
     using cloudnav::ClassifyFolderLocation;
     using cloudnav::FolderLocationKind;
     using cloudnav::IsMirroredCloudTransition;
@@ -99,6 +100,12 @@ int wmain() {
         L"C:\\Users\\Example\\My Drive\\Documents",
         L"C:\\Users\\Example\\OneDrive\\Documents",
         oneDriveRoot, googleDriveRoot));
+
+    assert(CanDetachOneDrive(true, true, true, false));
+    assert(!CanDetachOneDrive(true, true, true, true));
+    assert(!CanDetachOneDrive(true, false, true, false));
+    assert(!CanDetachOneDrive(true, true, false, false));
+    assert(!CanDetachOneDrive(false, true, true, false));
 
     std::wcout << L"CloudNav logic tests: OK\n";
     return 0;

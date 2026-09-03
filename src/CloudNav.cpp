@@ -12,6 +12,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <array>
 #include <cwchar>
 #include <cwctype>
 #include <string>
@@ -46,8 +47,10 @@ constexpr int IDC_GOOGLE_DRIVE = 1004;
 constexpr int IDC_REFRESH = 1005;
 constexpr int IDC_APPLY = 1006;
 constexpr int IDC_PERSONAL_FOLDERS = 1007;
-constexpr int kMainClientWidthDip = 620;
-constexpr int kMainClientHeightDip = 460;
+constexpr int IDC_DISABLE_ONEDRIVE_STARTUP = 1008;
+constexpr int IDC_UNINSTALL_ONEDRIVE = 1009;
+constexpr int kMainClientWidthDip = 680;
+constexpr int kMainClientHeightDip = 500;
 
 struct OneDriveInfo {
     std::wstring clsid;
@@ -57,6 +60,11 @@ struct OneDriveInfo {
     bool visible = false;
 };
 
+struct PersonalFolderUsage {
+    std::vector<std::wstring> names;
+    bool complete = true;
+};
+
 struct AppState {
     std::wstring myDrivePath;
     bool myDriveVisible = false;
@@ -64,6 +72,10 @@ struct AppState {
     OneDriveInfo oneDrive;
     wchar_t googleDriveLetter = 0;
     bool googleDriveVisible = false;
+    bool oneDriveAutoStart = false;
+    std::wstring oneDriveUninstaller;
+    std::vector<std::wstring> oneDrivePersonalFolders;
+    bool personalFolderScanComplete = true;
 };
 
 HINSTANCE g_instance = nullptr;
@@ -76,6 +88,9 @@ HWND g_myDriveDetail = nullptr;
 HWND g_browse = nullptr;
 HWND g_oneDrive = nullptr;
 HWND g_oneDriveDetail = nullptr;
+HWND g_oneDriveSafety = nullptr;
+HWND g_disableOneDriveStartup = nullptr;
+HWND g_uninstallOneDrive = nullptr;
 HWND g_googleDrive = nullptr;
 HWND g_googleDriveDetail = nullptr;
 HWND g_personalFolders = nullptr;
@@ -94,7 +109,9 @@ AppState g_state;
 bool g_demoMode = false;
 bool g_demoPlan = false;
 bool g_demoFailure = false;
+bool g_demoSafeOneDriveActions = false;
 bool g_statusIsError = false;
+bool g_oneDriveBlocked = false;
 
 std::wstring FormatWindowsError(DWORD code) {
     wchar_t* buffer = nullptr;
@@ -511,6 +528,71 @@ OneDriveInfo DetectOneDrive() {
     return result;
 }
 
+PersonalFolderUsage DetectPersonalFoldersInOneDrive(const std::wstring& oneDriveRoot) {
+    struct PersonalFolderSpec {
+        const KNOWNFOLDERID* id;
+        const wchar_t* label;
+    };
+    const std::array<PersonalFolderSpec, 6> folders = {{
+        {&FOLDERID_Desktop, L"Bureau"},
+        {&FOLDERID_Documents, L"Documents"},
+        {&FOLDERID_Pictures, L"Images"},
+        {&FOLDERID_Downloads, L"Téléchargements"},
+        {&FOLDERID_Music, L"Musique"},
+        {&FOLDERID_Videos, L"Vidéos"}
+    }};
+    PersonalFolderUsage result;
+    if (oneDriveRoot.empty()) {
+        result.complete = false;
+        return result;
+    }
+    for (const PersonalFolderSpec& folder : folders) {
+        PWSTR path = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(*folder.id, KF_FLAG_DONT_VERIFY, nullptr, &path)) && path) {
+            if (cloudnav::PathIsWithin(path, oneDriveRoot)) {
+                result.names.emplace_back(folder.label);
+            }
+            CoTaskMemFree(path);
+        } else {
+            result.complete = false;
+        }
+    }
+    return result;
+}
+
+bool DetectOneDriveAutoStart() {
+    std::wstring command;
+    return ReadRegistryString(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        L"OneDrive", command) && !command.empty();
+}
+
+std::wstring DetectOneDriveUninstaller() {
+    const std::wstring localAppData = ExpandEnvironment(L"%LOCALAPPDATA%");
+    const std::wstring windows = ExpandEnvironment(L"%SystemRoot%");
+    const std::array<std::wstring, 3> candidates = {{
+        localAppData + L"\\Microsoft\\OneDrive\\OneDriveSetup.exe",
+        windows + L"\\SysWOW64\\OneDriveSetup.exe",
+        windows + L"\\System32\\OneDriveSetup.exe"
+    }};
+    for (const std::wstring& candidate : candidates) {
+        const DWORD attributes = GetFileAttributesW(candidate.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+void DetectOneDriveClientState(AppState& state) {
+    state.oneDriveAutoStart = DetectOneDriveAutoStart();
+    state.oneDriveUninstaller = DetectOneDriveUninstaller();
+    const PersonalFolderUsage usage = DetectPersonalFoldersInOneDrive(state.oneDrive.path);
+    state.oneDrivePersonalFolders = usage.names;
+    state.personalFolderScanComplete = usage.complete;
+}
+
 AppState DetectState() {
     if (g_demoMode) {
         AppState demo;
@@ -520,6 +602,12 @@ AppState DetectState() {
         demo.oneDrive = {kOneDrivePersonalClsid, L"Compte personnel", L"C:\\Users\\Example\\OneDrive", true, true};
         demo.googleDriveLetter = L'G';
         demo.googleDriveVisible = false;
+        demo.oneDriveAutoStart = true;
+        demo.oneDriveUninstaller = L"C:\\Windows\\System32\\OneDriveSetup.exe";
+        demo.personalFolderScanComplete = true;
+        if (!g_demoSafeOneDriveActions) {
+            demo.oneDrivePersonalFolders = {L"Documents", L"Images"};
+        }
         return demo;
     }
 
@@ -533,6 +621,7 @@ AppState DetectState() {
                                       std::wstring(kMyDriveClsid);
     state.myDriveVisible = pinned != 0 && RegistryKeyExists(HKEY_LOCAL_MACHINE, namespaceKey);
     state.oneDrive = DetectOneDrive();
+    DetectOneDriveClientState(state);
 
     DetectGoogleDriveRoot(state.googleDriveLetter);
     if (state.googleDriveLetter) {
@@ -578,6 +667,17 @@ void ShowStatus(const std::wstring& message, bool error = false) {
     UpdateWindow(g_status);
 }
 
+std::wstring JoinFolderNames(const std::vector<std::wstring>& names) {
+    std::wstring result;
+    for (size_t index = 0; index < names.size(); ++index) {
+        if (index > 0) {
+            result += index + 1 == names.size() ? L" et " : L", ";
+        }
+        result += names[index];
+    }
+    return result;
+}
+
 void UpdateControlsFromState() {
     const std::wstring myDetail = g_state.myDrivePath.empty()
         ? L"Dossier non détecté : utilise « Choisir… »."
@@ -587,9 +687,12 @@ void UpdateControlsFromState() {
 
     if (g_state.oneDrive.detected) {
         SetWindowTextW(g_oneDrive, g_state.oneDrive.label.c_str());
-        const std::wstring detail = g_state.oneDrive.path.empty()
+        std::wstring detail = g_state.oneDrive.path.empty()
             ? L"Compte OneDrive détecté."
             : g_state.oneDrive.path;
+        detail += g_state.oneDriveAutoStart
+            ? L"  •  démarrage automatique activé"
+            : L"  •  démarrage automatique désactivé";
         SetWindowTextW(g_oneDriveDetail, detail.c_str());
         EnableWindow(g_oneDrive, TRUE);
         Button_SetCheck(g_oneDrive, g_state.oneDrive.visible ? BST_CHECKED : BST_UNCHECKED);
@@ -600,10 +703,127 @@ void UpdateControlsFromState() {
         Button_SetCheck(g_oneDrive, BST_UNCHECKED);
     }
 
+    const bool anyPersonalFolderUsesOneDrive = !g_state.oneDrivePersonalFolders.empty();
+    const bool canDetach = cloudnav::CanDetachOneDrive(
+        g_state.oneDrive.detected, !g_state.oneDrive.path.empty(),
+        g_state.personalFolderScanComplete, anyPersonalFolderUsesOneDrive);
+    g_oneDriveBlocked = g_state.oneDrive.detected &&
+        (anyPersonalFolderUsesOneDrive || !g_state.personalFolderScanComplete ||
+         g_state.oneDrive.path.empty());
+    if (!g_state.oneDrivePersonalFolders.empty()) {
+        const std::wstring warning = L"⚠ OneDrive est encore utilisé par : " +
+            JoinFolderNames(g_state.oneDrivePersonalFolders) +
+            L". Déplace ces dossiers avant de désactiver ou désinstaller OneDrive.";
+        SetWindowTextW(g_oneDriveSafety, warning.c_str());
+    } else if (g_oneDriveBlocked) {
+        SetWindowTextW(g_oneDriveSafety,
+            L"⚠ Impossible de vérifier tous les dossiers personnels ; actions OneDrive bloquées.");
+    } else if (g_state.oneDrive.detected) {
+        SetWindowTextW(g_oneDriveSafety,
+            L"Aucun dossier personnel ne dépend de OneDrive.");
+    } else {
+        SetWindowTextW(g_oneDriveSafety, L"");
+    }
+    EnableWindow(g_disableOneDriveStartup,
+                 canDetach && g_state.oneDriveAutoStart ? TRUE : FALSE);
+    EnableWindow(g_uninstallOneDrive,
+                 canDetach && !g_state.oneDriveUninstaller.empty() ? TRUE : FALSE);
+    InvalidateRect(g_oneDriveSafety, nullptr, TRUE);
+
     SetWindowTextW(g_googleDrive, GoogleDriveLabel(g_state).c_str());
     SetWindowTextW(g_googleDriveDetail, GoogleDriveDetail(g_state).c_str());
     EnableWindow(g_googleDrive, g_state.googleDriveLetter != 0);
     Button_SetCheck(g_googleDrive, g_state.googleDriveVisible ? BST_CHECKED : BST_UNCHECKED);
+}
+
+bool VerifyOneDriveActionGuard() {
+    if (!g_demoMode) {
+        const PersonalFolderUsage usage = DetectPersonalFoldersInOneDrive(g_state.oneDrive.path);
+        g_state.oneDrivePersonalFolders = usage.names;
+        g_state.personalFolderScanComplete = usage.complete;
+    }
+    UpdateControlsFromState();
+    if (!cloudnav::CanDetachOneDrive(
+            g_state.oneDrive.detected, !g_state.oneDrive.path.empty(),
+            g_state.personalFolderScanComplete,
+            !g_state.oneDrivePersonalFolders.empty())) {
+        const std::wstring message = !g_state.oneDrivePersonalFolders.empty()
+            ? L"Action bloquée : " + JoinFolderNames(g_state.oneDrivePersonalFolders) +
+              L" pointe encore vers OneDrive. Déplace d’abord ce dossier dans « Dossiers personnels… »."
+            : (g_state.oneDrive.detected
+                ? L"CloudNav ne peut pas vérifier avec certitude tous les dossiers personnels. Action bloquée."
+                : L"OneDrive n’est pas détecté sur ce PC.");
+        MessageBoxW(g_window, message.c_str(), L"CloudNav — OneDrive",
+                    MB_OK | MB_ICONWARNING);
+        ShowStatus(L"Action OneDrive bloquée pour protéger les dossiers personnels.", true);
+        return false;
+    }
+    return true;
+}
+
+void DisableOneDriveStartup() {
+    if (!VerifyOneDriveActionGuard()) {
+        return;
+    }
+    if (g_demoMode) {
+        g_state.oneDriveAutoStart = false;
+        UpdateControlsFromState();
+        ShowStatus(L"Mode test : démarrage automatique OneDrive désactivé.");
+        return;
+    }
+    const LSTATUS status = DeleteRegistryValue(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", L"OneDrive");
+    if (status != ERROR_SUCCESS) {
+        ShowStatus(L"Impossible de désactiver le démarrage OneDrive : " +
+                   FormatWindowsError(status), true);
+        return;
+    }
+    g_state.oneDriveAutoStart = DetectOneDriveAutoStart();
+    UpdateControlsFromState();
+    ShowStatus(g_state.oneDriveAutoStart
+        ? L"OneDrive est toujours configuré pour démarrer automatiquement."
+        : L"OneDrive ne démarrera plus automatiquement.", g_state.oneDriveAutoStart);
+}
+
+void UninstallOneDrive() {
+    if (!VerifyOneDriveActionGuard()) {
+        return;
+    }
+    if (g_state.oneDriveUninstaller.empty()) {
+        ShowStatus(L"Programme de désinstallation OneDrive introuvable.", true);
+        return;
+    }
+    const int confirmation = MessageBoxW(
+        g_window,
+        L"Désinstaller le client OneDrive de ce PC ?\n\n"
+        L"Les fichiers stockés dans le cloud ne seront pas supprimés.",
+        L"CloudNav — désinstaller OneDrive",
+        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    if (confirmation != IDYES) {
+        ShowStatus(L"Désinstallation OneDrive annulée.");
+        return;
+    }
+    if (g_demoMode) {
+        ShowStatus(L"Mode test : désinstallation OneDrive simulée.");
+        return;
+    }
+    SHELLEXECUTEINFOW execute = {sizeof(execute)};
+    execute.fMask = SEE_MASK_NOCLOSEPROCESS;
+    execute.hwnd = g_window;
+    execute.lpVerb = L"runas";
+    execute.lpFile = g_state.oneDriveUninstaller.c_str();
+    execute.lpParameters = L"/uninstall";
+    execute.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&execute)) {
+        ShowStatus(L"Impossible de lancer la désinstallation OneDrive : " +
+                   FormatWindowsError(GetLastError()), true);
+        return;
+    }
+    if (execute.hProcess) {
+        CloseHandle(execute.hProcess);
+    }
+    ShowStatus(L"Désinstallation OneDrive lancée. Actualise ensuite l’état.");
 }
 
 std::wstring PickFolder(HWND owner) {
@@ -1035,27 +1255,30 @@ HWND CreateCheckbox(HWND parent, int id, const wchar_t* text) {
 }
 
 void LayoutMainControls(UINT dpi) {
-    MoveControl(g_title, 26, 20, 560, 36, dpi);
-    MoveControl(g_subtitle, 28, 58, 564, 24, dpi);
+    MoveControl(g_title, 26, 20, 620, 36, dpi);
+    MoveControl(g_subtitle, 28, 58, 624, 24, dpi);
     MoveControl(g_sectionTitle, 28, 96, 300, 18, dpi);
 
     MoveControl(g_myDrive, 32, 122, 430, 25, dpi);
-    MoveControl(g_myDriveDetail, 55, 149, 420, 22, dpi);
-    MoveControl(g_browse, 494, 120, 96, 32, dpi);
+    MoveControl(g_myDriveDetail, 55, 149, 480, 22, dpi);
+    MoveControl(g_browse, 554, 120, 98, 32, dpi);
 
-    MoveControl(g_oneDrive, 32, 190, 430, 25, dpi);
-    MoveControl(g_oneDriveDetail, 55, 217, 535, 22, dpi);
+    MoveControl(g_oneDrive, 32, 190, 280, 25, dpi);
+    MoveControl(g_disableOneDriveStartup, 330, 186, 184, 32, dpi);
+    MoveControl(g_uninstallOneDrive, 522, 186, 130, 32, dpi);
+    MoveControl(g_oneDriveDetail, 55, 219, 597, 20, dpi);
+    MoveControl(g_oneDriveSafety, 55, 241, 597, 31, dpi);
 
-    MoveControl(g_googleDrive, 32, 258, 430, 25, dpi);
-    MoveControl(g_googleDriveDetail, 55, 285, 535, 22, dpi);
+    MoveControl(g_googleDrive, 32, 284, 430, 25, dpi);
+    MoveControl(g_googleDriveDetail, 55, 311, 597, 22, dpi);
 
-    MoveControl(g_personalFolders, 28, 326, 184, 32, dpi);
-    MoveControl(g_personalFoldersDetail, 226, 331, 364, 22, dpi);
-    MoveControl(g_explanation, 28, 372, 565, 22, dpi);
+    MoveControl(g_personalFolders, 28, 352, 184, 32, dpi);
+    MoveControl(g_personalFoldersDetail, 226, 357, 426, 22, dpi);
+    MoveControl(g_explanation, 28, 398, 624, 22, dpi);
 
-    MoveControl(g_status, 28, 405, 355, 30, dpi);
-    MoveControl(g_refresh, 386, 400, 96, 34, dpi);
-    MoveControl(g_apply, 492, 400, 98, 34, dpi);
+    MoveControl(g_status, 28, 445, 403, 30, dpi);
+    MoveControl(g_refresh, 446, 440, 96, 34, dpi);
+    MoveControl(g_apply, 552, 440, 100, 34, dpi);
 }
 
 void CreateInterface(HWND window) {
@@ -1074,6 +1297,21 @@ void CreateInterface(HWND window) {
 
     g_oneDrive = CreateCheckbox(window, IDC_ONEDRIVE, L"OneDrive");
     g_oneDriveDetail = CreateLabel(window, L"", g_smallFont);
+    g_oneDriveSafety = CreateLabel(window, L"", g_smallFont);
+    g_disableOneDriveStartup = CreateWindowExW(
+        0, L"BUTTON", L"Désactiver au démarrage",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        0, 0, 0, 0, window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DISABLE_ONEDRIVE_STARTUP)),
+        g_instance, nullptr);
+    SetControlFont(g_disableOneDriveStartup, g_bodyFont);
+    g_uninstallOneDrive = CreateWindowExW(
+        0, L"BUTTON", L"Désinstaller",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        0, 0, 0, 0, window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UNINSTALL_ONEDRIVE)),
+        g_instance, nullptr);
+    SetControlFont(g_uninstallOneDrive, g_bodyFont);
 
     g_googleDrive = CreateCheckbox(window, IDC_GOOGLE_DRIVE, L"Google Drive");
     g_googleDriveDetail = CreateLabel(window, L"", g_smallFont);
@@ -1131,6 +1369,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case IDC_REFRESH:
             RefreshState();
             return 0;
+        case IDC_DISABLE_ONEDRIVE_STARTUP:
+            DisableOneDriveStartup();
+            return 0;
+        case IDC_UNINSTALL_ONEDRIVE:
+            UninstallOneDrive();
+            return 0;
         case IDC_PERSONAL_FOLDERS: {
             cloudnav::FolderProviders providers;
             providers.oneDriveLabel = g_state.oneDrive.label;
@@ -1142,6 +1386,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             providers.simulateOneDriveBackupActive = g_demoPlan;
             const bool changed = cloudnav::ShowFolderManagerDialog(
                 window, g_instance, providers, g_demoMode);
+            if (!g_demoMode) {
+                g_state = DetectState();
+                UpdateControlsFromState();
+            }
             ShowStatus(changed
                 ? L"Emplacements des dossiers personnels mis à jour."
                 : L"Gestionnaire de dossiers fermé.");
@@ -1160,7 +1408,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetBkMode(dc, TRANSPARENT);
         if (control == g_status) {
             SetTextColor(dc, g_statusIsError ? RGB(176, 32, 37) : RGB(20, 111, 78));
+        } else if (control == g_oneDriveSafety && g_oneDriveBlocked) {
+            SetTextColor(dc, RGB(146, 64, 14));
         } else if (control == g_myDriveDetail || control == g_oneDriveDetail ||
+                   control == g_oneDriveSafety ||
                    control == g_googleDriveDetail) {
             SetTextColor(dc, RGB(91, 101, 116));
         } else {
@@ -1196,13 +1447,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         HPEN linePen = CreatePen(PS_SOLID, 1, RGB(226, 232, 240));
         HGDIOBJ oldPen = SelectObject(dc, linePen);
         MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(178, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(590, g_uiDpi), ScaleDip(178, g_uiDpi));
-        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(246, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(590, g_uiDpi), ScaleDip(246, g_uiDpi));
-        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(315, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(590, g_uiDpi), ScaleDip(315, g_uiDpi));
-        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(365, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(590, g_uiDpi), ScaleDip(365, g_uiDpi));
+        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(178, g_uiDpi));
+        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(273, g_uiDpi), nullptr);
+        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(273, g_uiDpi));
+        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(340, g_uiDpi), nullptr);
+        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(340, g_uiDpi));
+        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(391, g_uiDpi), nullptr);
+        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(391, g_uiDpi));
+        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(430, g_uiDpi), nullptr);
+        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(430, g_uiDpi));
         SelectObject(dc, oldPen);
         DeleteObject(linePen);
         EndPaint(window, &paint);
@@ -1243,6 +1496,9 @@ void RecreateUiFonts(UINT dpi) {
     SetControlFont(g_browse, g_bodyFont);
     SetControlFont(g_oneDrive, g_bodyBoldFont);
     SetControlFont(g_oneDriveDetail, g_smallFont);
+    SetControlFont(g_oneDriveSafety, g_smallFont);
+    SetControlFont(g_disableOneDriveStartup, g_bodyFont);
+    SetControlFont(g_uninstallOneDrive, g_bodyFont);
     SetControlFont(g_googleDrive, g_bodyBoldFont);
     SetControlFont(g_googleDriveDetail, g_smallFont);
     SetControlFont(g_personalFolders, g_bodyBoldFont);
@@ -1342,6 +1598,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
             g_demoMode = true;
             g_demoPlan = true;
             g_demoFailure = true;
+        } else if (EqualsInsensitive(arguments[index], L"--demo-safe-onedrive")) {
+            g_demoMode = true;
+            g_demoSafeOneDriveActions = true;
         }
     }
     if (arguments) {

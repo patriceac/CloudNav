@@ -1,0 +1,16 @@
+[
+  { "type": "wait_window", "timeoutMs": 30000 },
+  { "type": "screenshot", "name": "cloudnav-onedrive-safe.png", "timeoutMs": 30000, "attempts": 5 },
+  { "type": "click_control", "name": "Désactiver au démarrage", "timeoutMs": 10000 },
+  { "type": "wait", "ms": 300 },
+  { "type": "screenshot", "name": "cloudnav-onedrive-startup-disabled.png", "timeoutMs": 30000, "attempts": 5 },
+  { "type": "click_control", "name": "Désinstaller", "timeoutMs": 10000 },
+  { "type": "wait", "ms": 300 },
+  { "type": "screenshot", "name": "cloudnav-onedrive-uninstall-confirm.png", "timeoutMs": 30000, "attempts": 5 },
+  { "type": "click_control", "name": "Oui", "timeoutMs": 10000 },
+  { "type": "wait", "ms": 300 },
+  { "type": "screenshot", "name": "cloudnav-onedrive-uninstall-simulated.png", "timeoutMs": 30000, "attempts": 5 },
+  { "type": "focus_window" },
+  { "type": "send_keys", "keys": "ALT+F4", "holdMs": 75 },
+  { "type": "wait_process_exit", "timeoutMs": 30000, "expectedExitCode": 0 }
+]

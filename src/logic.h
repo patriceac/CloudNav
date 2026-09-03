@@ -205,4 +205,12 @@ inline bool NeedsOneDriveBackupDisable(bool isManagedFolder,
            PathIsWithin(target, googleDriveRoot);
 }
 
+inline bool CanDetachOneDrive(bool oneDriveDetected,
+                              bool oneDriveRootKnown,
+                              bool personalFolderScanComplete,
+                              bool anyPersonalFolderUsesOneDrive) {
+    return oneDriveDetected && oneDriveRootKnown &&
+           personalFolderScanComplete && !anyPersonalFolderUsesOneDrive;
+}
+
 }  // namespace cloudnav

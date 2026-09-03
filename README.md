@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.2.2
+# CloudNav 1.3.0
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -16,6 +16,8 @@ One standalone `.exe`, with no installer or additional application runtime.
 - show or hide the detected **OneDrive** account entry;
 - hide the **Google Drive** virtual drive letter without blocking access to its files;
 - redirect Desktop, Documents, Pictures, Downloads, Music, and Videos to their local location, OneDrive, Google Drive, or a custom folder;
+- identify OneDrive and Google Drive locations at a glance with provider icons in the personal-folder manager;
+- disable OneDrive automatic startup or launch its uninstaller when no managed personal folder still depends on OneDrive;
 - copy files, move files, or redirect the folder only, with an explicit final confirmation;
 - remember the window position and bring it back onto a visible display if the monitor layout changes.
 
@@ -26,6 +28,8 @@ CloudNav detects the paths and account labels available on the current PC. No us
 The checkboxes in the main window only control visibility in the File Explorer navigation pane. Hiding the Google Drive letter uses the Windows `NoDrives` policy: the icon disappears, but the drive and its files remain accessible.
 
 Personal-folder changes are shown in a separate review before anything is applied. CloudNav validates every destination, blocks nested paths, and restores the previous locations if a grouped operation fails.
+
+OneDrive client actions stay disabled while Desktop, Documents, Pictures, Downloads, Music, or Videos points anywhere inside the detected OneDrive root. CloudNav names the folders that must be moved and checks their locations again immediately before disabling automatic startup or launching the uninstaller.
 
 When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudNav can disable OneDrive Known Folder Backup before redirecting the folder. The confirmation dialog explains the scope of this strategy, and no OneDrive file is deleted.
 
