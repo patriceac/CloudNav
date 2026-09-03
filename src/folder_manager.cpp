@@ -536,26 +536,6 @@ std::wstring ResolveTarget(const DialogContext& context, const FolderRow& row) {
     return {};
 }
 
-std::wstring DescribeCurrentLocation(const DialogContext& context, const FolderRow& row) {
-    switch (ClassifyFolderLocation(row.currentPath, row.defaultPath,
-                                   context.providers.oneDriveRoot,
-                                   context.providers.googleDriveRoot)) {
-    case FolderLocationKind::Unavailable:
-        return L"indisponible";
-    case FolderLocationKind::ThisComputer:
-        return L"cet ordinateur";
-    case FolderLocationKind::OneDrive:
-        return context.providers.oneDriveLabel.empty()
-            ? L"OneDrive"
-            : context.providers.oneDriveLabel + L" (OneDrive)";
-    case FolderLocationKind::GoogleDrive:
-        return L"My Drive (Google Drive)";
-    case FolderLocationKind::Other:
-        return L"autre emplacement";
-    }
-    return L"indisponible";
-}
-
 void UpdateRowPreview(HWND dialog, const DialogContext& context, const FolderRow& row) {
     const FolderLocationKind location = ClassifyFolderLocation(
         row.currentPath, row.defaultPath,
@@ -570,10 +550,9 @@ void UpdateRowPreview(HWND dialog, const DialogContext& context, const FolderRow
     SetWindowLongPtrW(providerControl, GWLP_USERDATA, static_cast<LONG_PTR>(icon));
     InvalidateRect(providerControl, nullptr, TRUE);
 
-    std::wstring text = L"Actuel : " + DescribeCurrentLocation(context, row);
-    if (!row.currentPath.empty()) {
-        text += L"  •  " + row.currentPath;
-    }
+    std::wstring text = row.currentPath.empty()
+        ? L"Emplacement indisponible"
+        : row.currentPath;
     if (row.choice != TargetChoice::Keep) {
         const std::wstring target = ResolveTarget(context, row);
         text += target.empty() ? L"  →  destination indisponible" : L"  →  " + target;
