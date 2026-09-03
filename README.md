@@ -53,6 +53,8 @@ File Explorer may restart once to reload its configuration. Any open folder wind
 
 The CloudNav user interface is currently available in French.
 
+Official OneDrive and Google Drive artwork is used only to identify the corresponding storage provider. Source and trademark details are documented in [`assets/BRAND_ASSETS.md`](assets/BRAND_ASSETS.md).
+
 ## Build from source
 
 Visual Studio Build Tools 2022 with the x64 C++ toolchain is required. From PowerShell:

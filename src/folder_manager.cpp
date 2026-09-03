@@ -2,9 +2,12 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <knownfolders.h>
+#include <objidl.h>
+#include <propidl.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <gdiplus.h>
 
 #include <algorithm>
 #include <array>
@@ -18,6 +21,7 @@
 #include "resource.h"
 
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
 
@@ -86,6 +90,10 @@ struct DialogContext {
     bool changed = false;
     bool statusIsError = false;
     bool guidanceIsWarning = false;
+    IStream* oneDriveLogoStream = nullptr;
+    IStream* googleDriveLogoStream = nullptr;
+    Gdiplus::Image* oneDriveLogo = nullptr;
+    Gdiplus::Image* googleDriveLogo = nullptr;
 };
 
 enum class ProviderIcon : LONG_PTR {
@@ -573,53 +581,70 @@ void UpdateRowPreview(HWND dialog, const DialogContext& context, const FolderRow
     SetDlgItemTextW(dialog, row.spec->pathControl, text.c_str());
 }
 
-void DrawOneDriveIcon(HDC dc, const RECT& bounds) {
-    const int width = bounds.right - bounds.left;
-    const int height = bounds.bottom - bounds.top;
-    HBRUSH brush = CreateSolidBrush(RGB(0, 120, 212));
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    Ellipse(dc, bounds.left + width / 10, bounds.top + height * 4 / 10,
-            bounds.left + width * 6 / 10, bounds.top + height * 9 / 10);
-    Ellipse(dc, bounds.left + width * 3 / 10, bounds.top + height / 10,
-            bounds.left + width * 8 / 10, bounds.top + height * 8 / 10);
-    Ellipse(dc, bounds.left + width * 6 / 10, bounds.top + height * 4 / 10,
-            bounds.left + width, bounds.top + height * 9 / 10);
-    Rectangle(dc, bounds.left + width / 5, bounds.top + height * 6 / 10,
-              bounds.right - width / 12, bounds.top + height * 9 / 10);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(brush);
+Gdiplus::Image* LoadPngResource(HINSTANCE instance, int resourceId, IStream*& stream) {
+    HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+    if (!resource) {
+        return nullptr;
+    }
+    const DWORD size = SizeofResource(instance, resource);
+    HGLOBAL loaded = LoadResource(instance, resource);
+    const void* bytes = loaded ? LockResource(loaded) : nullptr;
+    if (!bytes || size == 0) {
+        return nullptr;
+    }
+    HGLOBAL copy = GlobalAlloc(GMEM_MOVEABLE, size);
+    if (!copy) {
+        return nullptr;
+    }
+    void* destination = GlobalLock(copy);
+    if (!destination) {
+        GlobalFree(copy);
+        return nullptr;
+    }
+    CopyMemory(destination, bytes, size);
+    GlobalUnlock(copy);
+    if (FAILED(CreateStreamOnHGlobal(copy, TRUE, &stream))) {
+        GlobalFree(copy);
+        stream = nullptr;
+        return nullptr;
+    }
+    Gdiplus::Image* image = Gdiplus::Image::FromStream(stream, FALSE);
+    if (!image || image->GetLastStatus() != Gdiplus::Ok) {
+        delete image;
+        stream->Release();
+        stream = nullptr;
+        return nullptr;
+    }
+    return image;
 }
 
-void FillProviderPolygon(HDC dc, COLORREF color, const POINT* points, int count) {
-    HBRUSH brush = CreateSolidBrush(color);
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    Polygon(dc, points, count);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(brush);
-}
-
-void DrawGoogleDriveIcon(HDC dc, const RECT& bounds) {
-    const int left = bounds.left;
-    const int top = bounds.top;
-    const int right = bounds.right;
-    const int bottom = bounds.bottom;
-    const int middleX = (left + right) / 2;
-    const int middleY = top + (bottom - top) * 6 / 10;
-    const POINT green[] = {{middleX, top}, {right, middleY},
-                           {right - (right - left) / 4, middleY},
-                           {middleX - (right - left) / 8, top + (bottom - top) / 4}};
-    const POINT yellow[] = {{right, middleY}, {right - (right - left) / 5, bottom},
-                            {left + (right - left) / 5, bottom},
-                            {left + (right - left) * 3 / 10, middleY}};
-    const POINT blue[] = {{left + (right - left) / 5, bottom}, {left, middleY},
-                          {middleX, top}, {middleX + (right - left) / 8, top + (bottom - top) / 4}};
-    FillProviderPolygon(dc, RGB(15, 157, 88), green, ARRAYSIZE(green));
-    FillProviderPolygon(dc, RGB(249, 171, 0), yellow, ARRAYSIZE(yellow));
-    FillProviderPolygon(dc, RGB(66, 133, 244), blue, ARRAYSIZE(blue));
+void DrawProviderLogo(HDC dc, const RECT& bounds, Gdiplus::Image* image) {
+    if (!image) {
+        return;
+    }
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    const int availableWidth = bounds.right - bounds.left;
+    const int availableHeight = bounds.bottom - bounds.top;
+    const UINT sourceWidth = image->GetWidth();
+    const UINT sourceHeight = image->GetHeight();
+    if (sourceWidth == 0 || sourceHeight == 0) {
+        return;
+    }
+    int drawWidth = availableWidth;
+    int drawHeight = MulDiv(drawWidth, static_cast<int>(sourceHeight),
+                            static_cast<int>(sourceWidth));
+    if (drawHeight > availableHeight) {
+        drawHeight = availableHeight;
+        drawWidth = MulDiv(drawHeight, static_cast<int>(sourceWidth),
+                           static_cast<int>(sourceHeight));
+    }
+    const int x = bounds.left + (availableWidth - drawWidth) / 2;
+    const int y = bounds.top + (availableHeight - drawHeight) / 2;
+    graphics.DrawImage(image, x, y, drawWidth, drawHeight);
 }
 
 void FillTargetCombo(HWND dialog, const DialogContext& context, FolderRow& row) {
@@ -1403,11 +1428,11 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
         const ProviderIcon icon = static_cast<ProviderIcon>(
             GetWindowLongPtrW(item->hwndItem, GWLP_USERDATA));
         RECT iconBounds = item->rcItem;
-        InflateRect(&iconBounds, -1, -1);
-        if (icon == ProviderIcon::OneDrive) {
-            DrawOneDriveIcon(item->hDC, iconBounds);
-        } else if (icon == ProviderIcon::GoogleDrive) {
-            DrawGoogleDriveIcon(item->hDC, iconBounds);
+        DialogContext* context = GetContext(item->hwndItem ? GetParent(item->hwndItem) : nullptr);
+        if (context && icon == ProviderIcon::OneDrive) {
+            DrawProviderLogo(item->hDC, iconBounds, context->oneDriveLogo);
+        } else if (context && icon == ProviderIcon::GoogleDrive) {
+            DrawProviderLogo(item->hDC, iconBounds, context->googleDriveLogo);
         }
         return TRUE;
     }
@@ -1559,9 +1584,30 @@ bool ShowFolderManagerDialog(HWND owner, HINSTANCE instance,
     DialogContext context;
     context.providers = providers;
     context.demoMode = demoMode;
+    ULONG_PTR gdiplusToken = 0;
+    Gdiplus::GdiplusStartupInput gdiplusInput;
+    const bool gdiplusStarted = Gdiplus::GdiplusStartup(
+        &gdiplusToken, &gdiplusInput, nullptr) == Gdiplus::Ok;
+    if (gdiplusStarted) {
+        context.oneDriveLogo = LoadPngResource(
+            instance, IDR_ONEDRIVE_LOGO, context.oneDriveLogoStream);
+        context.googleDriveLogo = LoadPngResource(
+            instance, IDR_GOOGLE_DRIVE_LOGO, context.googleDriveLogoStream);
+    }
     const INT_PTR result = DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_FOLDER_MANAGER),
                                             owner, FolderDialogProc,
                                             reinterpret_cast<LPARAM>(&context));
+    delete context.oneDriveLogo;
+    delete context.googleDriveLogo;
+    if (context.oneDriveLogoStream) {
+        context.oneDriveLogoStream->Release();
+    }
+    if (context.googleDriveLogoStream) {
+        context.googleDriveLogoStream->Release();
+    }
+    if (gdiplusStarted) {
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+    }
     if (result == -1) {
         MessageBoxW(owner, L"Impossible d’ouvrir le gestionnaire de dossiers.",
                     L"CloudNav", MB_OK | MB_ICONERROR);
