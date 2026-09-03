@@ -768,7 +768,7 @@ void DisableOneDriveStartup() {
     if (g_demoMode) {
         g_state.oneDriveAutoStart = false;
         UpdateControlsFromState();
-        ShowStatus(L"Mode test : démarrage automatique OneDrive désactivé.");
+        ShowStatus(L"Mode test : démarrage désactivé ; OneDrive resterait actif.");
         return;
     }
     const LSTATUS status = DeleteRegistryValue(
@@ -783,7 +783,8 @@ void DisableOneDriveStartup() {
     UpdateControlsFromState();
     ShowStatus(g_state.oneDriveAutoStart
         ? L"OneDrive est toujours configuré pour démarrer automatiquement."
-        : L"OneDrive ne démarrera plus automatiquement.", g_state.oneDriveAutoStart);
+        : L"Démarrage désactivé ; OneDrive reste actif pour cette session.",
+        g_state.oneDriveAutoStart);
 }
 
 void UninstallOneDrive() {
@@ -797,7 +798,11 @@ void UninstallOneDrive() {
     const int confirmation = MessageBoxW(
         g_window,
         L"Désinstaller le client OneDrive de ce PC ?\n\n"
-        L"Les fichiers stockés dans le cloud ne seront pas supprimés.",
+        L"CloudNav a vérifié que Bureau, Documents, Images, Téléchargements, Musique et Vidéos "
+        L"ne pointent pas vers OneDrive. Les autres dossiers synchronisés ne sont pas vérifiés.\n\n"
+        L"Avant de continuer, assure-toi que OneDrive indique « À jour ». Les fichiers stockés "
+        L"dans le cloud ne seront pas supprimés ; ceux disponibles uniquement en ligne resteront "
+        L"accessibles sur OneDrive.com.",
         L"CloudNav — désinstaller OneDrive",
         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
     if (confirmation != IDYES) {
@@ -1263,8 +1268,8 @@ void LayoutMainControls(UINT dpi) {
     MoveControl(g_myDriveDetail, 55, 149, 480, 22, dpi);
     MoveControl(g_browse, 554, 120, 98, 32, dpi);
 
-    MoveControl(g_oneDrive, 32, 190, 280, 25, dpi);
-    MoveControl(g_disableOneDriveStartup, 330, 186, 184, 32, dpi);
+    MoveControl(g_oneDrive, 32, 190, 245, 25, dpi);
+    MoveControl(g_disableOneDriveStartup, 285, 186, 229, 32, dpi);
     MoveControl(g_uninstallOneDrive, 522, 186, 130, 32, dpi);
     MoveControl(g_oneDriveDetail, 55, 219, 597, 20, dpi);
     MoveControl(g_oneDriveSafety, 55, 241, 597, 31, dpi);
@@ -1299,7 +1304,7 @@ void CreateInterface(HWND window) {
     g_oneDriveDetail = CreateLabel(window, L"", g_smallFont);
     g_oneDriveSafety = CreateLabel(window, L"", g_smallFont);
     g_disableOneDriveStartup = CreateWindowExW(
-        0, L"BUTTON", L"Désactiver au démarrage",
+        0, L"BUTTON", L"Ne plus lancer à la connexion",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DISABLE_ONEDRIVE_STARTUP)),

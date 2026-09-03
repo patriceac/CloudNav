@@ -29,7 +29,7 @@ The checkboxes in the main window only control visibility in the File Explorer n
 
 Personal-folder changes are shown in a separate review before anything is applied. CloudNav validates every destination, blocks nested paths, and restores the previous locations if a grouped operation fails.
 
-OneDrive client actions stay disabled while Desktop, Documents, Pictures, Downloads, Music, or Videos points anywhere inside the detected OneDrive root. CloudNav names the folders that must be moved and checks their locations again immediately before disabling automatic startup or launching the uninstaller.
+OneDrive client actions stay disabled while Desktop, Documents, Pictures, Downloads, Music, or Videos points anywhere inside the detected OneDrive root. CloudNav names the folders that must be moved and checks their locations again immediately before disabling automatic startup or launching the uninstaller. This check covers those six managed personal folders only, not every other folder that OneDrive may synchronize. Before uninstalling, CloudNav asks the user to verify that OneDrive is up to date and warns that online-only files will remain accessible through OneDrive.com.
 
 When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudNav can disable OneDrive Known Folder Backup before redirecting the folder. The confirmation dialog explains the scope of this strategy, and no OneDrive file is deleted.
 
