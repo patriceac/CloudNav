@@ -3,6 +3,7 @@
 #include <string>
 
 #include "../src/logic.h"
+#include "../src/migration_logic.h"
 
 int wmain() {
     using cloudnav::DriveBit;
@@ -106,6 +107,16 @@ int wmain() {
     assert(!CanDetachOneDrive(true, false, true, false));
     assert(!CanDetachOneDrive(true, true, false, false));
     assert(!CanDetachOneDrive(false, true, true, false));
+
+    double value = 0;
+    assert(cloudnav::JsonNumber("{\"bytes\":524288,\"totalBytes\":1048576}", "bytes", value));
+    assert(value == 524288.0);
+    assert(!cloudnav::JsonNumber("{\"bytes\":1}", "speed", value));
+    assert(cloudnav::MigrationPercent(50, 100, 0, 0) == 50);
+    assert(cloudnav::MigrationPercent(0, 0, 3, 4) == 75);
+    assert(cloudnav::MigrationPercent(200, 100, 0, 0) == 100);
+    assert(cloudnav::FormatBytes(1048576) == L"1.0 Mo");
+    assert(cloudnav::FormatEta(125) == L"ETA 2m 05s");
 
     std::wcout << L"CloudNav logic tests: OK\n";
     return 0;

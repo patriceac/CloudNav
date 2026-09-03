@@ -13,6 +13,7 @@
 
 # Local test evidence
 /output/
+/.third-party/
 
 # OS metadata
 .DS_Store

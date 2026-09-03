@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.3.0
+# CloudNav 1.4.0
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -18,6 +18,7 @@ One standalone `.exe`, with no installer or additional application runtime.
 - redirect Desktop, Documents, Pictures, Downloads, Music, and Videos to their local location, OneDrive, Google Drive, or a custom folder;
 - identify OneDrive and Google Drive locations at a glance with provider icons in the personal-folder manager;
 - disable OneDrive automatic startup or launch its uninstaller when no managed personal folder still depends on OneDrive;
+- migrate OneDrive to Google Drive with a one-way copy, live percentage/speed/ETA, independent verification, safe cancellation and resume;
 - copy files, move files, or redirect the folder only, with an explicit final confirmation;
 - remember the window position and bring it back onto a visible display if the monitor layout changes.
 
@@ -30,6 +31,10 @@ The checkboxes in the main window only control visibility in the File Explorer n
 Personal-folder changes are shown in a separate review before anything is applied. CloudNav validates every destination, blocks nested paths, and restores the previous locations if a grouped operation fails.
 
 OneDrive client actions stay disabled while Desktop, Documents, Pictures, Downloads, Music, or Videos points anywhere inside the detected OneDrive root. CloudNav names the folders that must be moved and checks their locations again immediately before disabling automatic startup or launching the uninstaller. This check covers those six managed personal folders only, not every other folder that OneDrive may synchronize. Before uninstalling, CloudNav asks the user to verify that OneDrive is up to date and warns that online-only files will remain accessible through OneDrive.com.
+
+The migration assistant uses `rclone copy`: it never deletes destination files. It asks the user to pause any separate synchronization first, analyzes the remaining work, copies from OneDrive to Google Drive, and then runs an independent one-way comparison. An interrupted migration can be restarted; identical files are skipped. Only after successful verification does CloudNav offer to preselect Google Drive and **Redirect only** in the personal-folder manager.
+
+CloudNav embeds the pinned rclone 1.75.0 engine, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. OAuth credentials and migration state remain per-user in `%LOCALAPPDATA%\CloudNav`; no credentials are embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
 
 When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudNav can disable OneDrive Known Folder Backup before redirecting the folder. The confirmation dialog explains the scope of this strategy, and no OneDrive file is deleted.
 
@@ -63,7 +68,7 @@ Visual Studio Build Tools 2022 with the x64 C++ toolchain is required. From Powe
 .\build.ps1 -Configuration Release
 ```
 
-The Release build uses the static C++ runtime (`/MT`) and produces:
+The build downloads the official pinned rclone archive, verifies its SHA-256 checksum, and embeds the engine as a resource. The Release build uses the static C++ runtime (`/MT`) and produces:
 
 - `build\Release\CloudNav.exe`;
 - `build\Release\CloudNavTests.exe`;

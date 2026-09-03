@@ -741,7 +741,9 @@ void LoadRows(HWND dialog, DialogContext& context) {
                                 row.defaultPath);
             row.redirectable = IsRedirectable(*row.spec->id);
         }
-        if (context.demoMode && context.providers.preloadDemoPlan && index == 1) {
+        if ((context.demoMode && context.providers.preloadDemoPlan && index == 1) ||
+            (context.providers.oneDriveToGoogleVerified &&
+             PathIsWithin(row.currentPath, context.providers.oneDriveRoot))) {
             row.choice = TargetChoice::GoogleDrive;
         }
         context.rows.push_back(row);
@@ -784,7 +786,8 @@ PlanProfile AnalyzePlan(const DialogContext& context) {
             continue;
         }
         profile.hasChanges = true;
-        const bool mirroredCloudChange = context.providers.rootMirrorTaskDetected &&
+        const bool mirroredCloudChange = (context.providers.rootMirrorTaskDetected ||
+                                          context.providers.oneDriveToGoogleVerified) &&
             IsMirroredCloudTransition(row.currentPath, target,
                                       context.providers.oneDriveRoot,
                                       context.providers.googleDriveRoot);
@@ -802,8 +805,8 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
         SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(TransferChoice::Copy), 0);
         context.guidanceIsWarning = false;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            context.providers.rootMirrorTaskDetected
-                ? L"Aucun changement sélectionné. La synchronisation OneDrive ↔ Google Drive est détectée ; le conseil s’adaptera au trajet."
+            (context.providers.rootMirrorTaskDetected || context.providers.oneDriveToGoogleVerified)
+                ? L"Aucun changement sélectionné. Les données cloud sont signalées comme synchronisées ou vérifiées ; le conseil s’adaptera au trajet."
                 : L"Aucun changement sélectionné. Le conseil s’adaptera automatiquement au trajet choisi.");
         InvalidateRect(GetDlgItem(dialog, IDC_FOLDER_WARNING), nullptr, TRUE);
         return;
@@ -828,8 +831,8 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
     if (profile.hasMirroredCloudChanges) {
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
             selected == recommended
-                ? L"Recommandation appliquée : « Repointage seulement », car OneDrive et Google Drive sont déjà synchronisés."
-                : L"Recommandation : « Repointage seulement » entre OneDrive et Google Drive déjà synchronisés.");
+                ? L"Recommandation appliquée : « Repointage seulement », car les données OneDrive ont déjà été synchronisées et vérifiées dans Google Drive."
+                : L"Recommandation : « Repointage seulement » pour les données cloud déjà vérifiées.");
     } else {
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
             selected == recommended

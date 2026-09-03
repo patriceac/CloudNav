@@ -20,6 +20,7 @@
 
 #include "logic.h"
 #include "folder_manager.h"
+#include "migration.h"
 #include "resource.h"
 
 #pragma comment(lib, "advapi32.lib")
@@ -49,8 +50,9 @@ constexpr int IDC_APPLY = 1006;
 constexpr int IDC_PERSONAL_FOLDERS = 1007;
 constexpr int IDC_DISABLE_ONEDRIVE_STARTUP = 1008;
 constexpr int IDC_UNINSTALL_ONEDRIVE = 1009;
+constexpr int IDC_MIGRATE_CLOUD = 1010;
 constexpr int kMainClientWidthDip = 680;
-constexpr int kMainClientHeightDip = 500;
+constexpr int kMainClientHeightDip = 568;
 
 struct OneDriveInfo {
     std::wstring clsid;
@@ -95,6 +97,8 @@ HWND g_googleDrive = nullptr;
 HWND g_googleDriveDetail = nullptr;
 HWND g_personalFolders = nullptr;
 HWND g_personalFoldersDetail = nullptr;
+HWND g_migrateCloud = nullptr;
+HWND g_migrateCloudDetail = nullptr;
 HWND g_explanation = nullptr;
 HWND g_status = nullptr;
 HWND g_refresh = nullptr;
@@ -110,6 +114,8 @@ bool g_demoMode = false;
 bool g_demoPlan = false;
 bool g_demoFailure = false;
 bool g_demoSafeOneDriveActions = false;
+bool g_demoMigration = false;
+std::wstring g_demoMigrationResult;
 bool g_statusIsError = false;
 bool g_oneDriveBlocked = false;
 
@@ -1279,11 +1285,13 @@ void LayoutMainControls(UINT dpi) {
 
     MoveControl(g_personalFolders, 28, 352, 184, 32, dpi);
     MoveControl(g_personalFoldersDetail, 226, 357, 426, 22, dpi);
-    MoveControl(g_explanation, 28, 398, 624, 22, dpi);
+    MoveControl(g_migrateCloud, 28, 398, 236, 32, dpi);
+    MoveControl(g_migrateCloudDetail, 278, 403, 374, 28, dpi);
+    MoveControl(g_explanation, 28, 448, 624, 22, dpi);
 
-    MoveControl(g_status, 28, 445, 403, 30, dpi);
-    MoveControl(g_refresh, 446, 440, 96, 34, dpi);
-    MoveControl(g_apply, 552, 440, 100, 34, dpi);
+    MoveControl(g_status, 28, 513, 403, 30, dpi);
+    MoveControl(g_refresh, 446, 508, 96, 34, dpi);
+    MoveControl(g_apply, 552, 508, 100, 34, dpi);
 }
 
 void CreateInterface(HWND window) {
@@ -1331,6 +1339,16 @@ void CreateInterface(HWND window) {
     g_personalFoldersDetail = CreateLabel(
         window, L"Bureau, Documents, Images, Téléchargements, Musique et Vidéos", g_smallFont);
 
+    g_migrateCloud = CreateWindowExW(
+        0, L"BUTTON", L"Migrer OneDrive → Google Drive…",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        0, 0, 0, 0, window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MIGRATE_CLOUD)),
+        g_instance, nullptr);
+    SetControlFont(g_migrateCloud, g_bodyBoldFont);
+    g_migrateCloudDetail = CreateLabel(
+        window, L"Copie à sens unique, progression, vérification et bascule facultative", g_smallFont);
+
     g_explanation = CreateLabel(
         window,
         L"« Appliquer » concerne le volet Explorer. Les déplacements de fichiers sont confirmés séparément.",
@@ -1358,6 +1376,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         CreateInterface(window);
         UpdateControlsFromState();
         ShowStatus(g_demoMode ? L"Mode test : aucune modification du système." : L"Prêt.");
+        if (g_demoMigration) {
+            PostMessageW(window, WM_COMMAND, MAKEWPARAM(IDC_MIGRATE_CLOUD, BN_CLICKED), 0);
+        }
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
@@ -1400,6 +1421,23 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 : L"Gestionnaire de dossiers fermé.");
             return 0;
         }
+        case IDC_MIGRATE_CLOUD: {
+            const cloudnav::MigrationResult result = cloudnav::ShowMigrationDialog(
+                window, g_instance, g_demoMode, g_demoMigrationResult);
+            if (result == cloudnav::MigrationResult::ConfigureFolders) {
+                cloudnav::FolderProviders providers;
+                providers.oneDriveLabel = g_state.oneDrive.label;
+                providers.oneDriveRoot = g_state.oneDrive.path;
+                providers.googleDriveRoot = g_state.myDrivePath;
+                providers.oneDriveToGoogleVerified = true;
+                providers.preloadDemoPlan = g_demoMode;
+                cloudnav::ShowFolderManagerDialog(window, g_instance, providers, g_demoMode);
+            }
+            ShowStatus(result == cloudnav::MigrationResult::ConfigureFolders
+                ? L"Migration vérifiée ; gestion des dossiers ouverte."
+                : L"Assistant de migration fermé.");
+            return 0;
+        }
         case IDC_APPLY:
             ApplySelections();
             return 0;
@@ -1417,7 +1455,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetTextColor(dc, RGB(146, 64, 14));
         } else if (control == g_myDriveDetail || control == g_oneDriveDetail ||
                    control == g_oneDriveSafety ||
-                   control == g_googleDriveDetail) {
+                   control == g_googleDriveDetail || control == g_migrateCloudDetail) {
             SetTextColor(dc, RGB(91, 101, 116));
         } else {
             SetTextColor(dc, RGB(30, 41, 59));
@@ -1580,6 +1618,13 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
         CoUninitialize();
         return result;
     }
+    if (arguments && argumentCount == 3 &&
+        EqualsInsensitive(arguments[1], L"--self-test-embedded-rclone")) {
+        const int result = cloudnav::RunEmbeddedRcloneSelfTest(instance, arguments[2]);
+        LocalFree(arguments);
+        CoUninitialize();
+        return result;
+    }
     if (arguments && argumentCount == 2 &&
         EqualsInsensitive(arguments[1], L"--elevated-disable-onedrive-backup")) {
         const int result = cloudnav::RunDisableOneDriveFolderBackupHelper();
@@ -1606,13 +1651,17 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
         } else if (EqualsInsensitive(arguments[index], L"--demo-safe-onedrive")) {
             g_demoMode = true;
             g_demoSafeOneDriveActions = true;
+        } else if (EqualsInsensitive(arguments[index], L"--demo-migration")) {
+            g_demoMode = true;
+            g_demoMigration = true;
+            if (index + 1 < argumentCount) g_demoMigrationResult = arguments[++index];
         }
     }
     if (arguments) {
         LocalFree(arguments);
     }
 
-    INITCOMMONCONTROLSEX controls = {sizeof(controls), ICC_STANDARD_CLASSES};
+    INITCOMMONCONTROLSEX controls = {sizeof(controls), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS};
     InitCommonControlsEx(&controls);
     g_backgroundBrush = CreateSolidBrush(RGB(248, 250, 252));
     g_state = DetectState();

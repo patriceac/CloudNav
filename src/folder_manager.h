@@ -11,6 +11,7 @@ struct FolderProviders {
     std::wstring oneDriveRoot;
     std::wstring googleDriveRoot;
     bool rootMirrorTaskDetected = false;
+    bool oneDriveToGoogleVerified = false;
     bool preloadDemoPlan = false;
     bool simulateRepointFailure = false;
     bool simulateOneDriveBackupActive = false;
