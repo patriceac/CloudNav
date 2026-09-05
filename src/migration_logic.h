@@ -7,6 +7,34 @@
 
 namespace cloudnav {
 
+enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, CopyAndVerify };
+enum class MigrationStage { Preparing, Connecting, Analyzing, Copying, Verifying };
+
+inline void InvalidateMigrationValidation(MigrationTask task, bool& analyzed, bool& verified) {
+    verified = false;
+    if (task != MigrationTask::CopyAndVerify) analyzed = false;
+}
+
+inline const wchar_t* MigrationStageTitle(MigrationStage stage) {
+    switch (stage) {
+    case MigrationStage::Connecting: return L"Connexion du compte…";
+    case MigrationStage::Analyzing: return L"1 / 3 — Analyse des écarts";
+    case MigrationStage::Copying: return L"2 / 3 — Copie OneDrive → Google Drive";
+    case MigrationStage::Verifying: return L"3 / 3 — Vérification des fichiers copiés";
+    default: return L"Préparation de l’opération…";
+    }
+}
+
+inline const wchar_t* MigrationStageDetails(MigrationStage stage) {
+    switch (stage) {
+    case MigrationStage::Connecting: return L"Termine la connexion dans le navigateur, puis reviens ici.";
+    case MigrationStage::Analyzing: return L"Comparaison des comptes. Aucun fichier n’est copié pendant l’analyse.";
+    case MigrationStage::Copying: return L"Les fichiers identiques sont ignorés. Tu peux annuler et reprendre la copie.";
+    case MigrationStage::Verifying: return L"Comparaison indépendante. La configuration des dossiers sera proposée après réussite.";
+    default: return L"La progression apparaîtra au démarrage. Tu peux annuler à tout moment.";
+    }
+}
+
 inline bool JsonNumber(const std::string& json, const char* name, double& value) {
     const std::string key = std::string("\"") + name + "\"";
     size_t position = json.find(key);

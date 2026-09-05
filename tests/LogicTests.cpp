@@ -108,6 +108,35 @@ int wmain() {
     assert(!CanDetachOneDrive(true, true, false, false));
     assert(!CanDetachOneDrive(false, true, true, false));
 
+    const auto documentsSource = JoinPath(oneDriveRoot, L"Documents");
+    const auto documentsTarget = JoinPath(googleDriveRoot, L"Documents");
+    // Task detection must never substitute for successful migration verification.
+    assert(!cloudnav::IsVerifiedCloudTransition(false, documentsSource, documentsTarget, oneDriveRoot, googleDriveRoot));
+    assert(cloudnav::IsVerifiedCloudTransition(true, documentsSource, documentsTarget, oneDriveRoot, googleDriveRoot));
+    assert(!cloudnav::IsVerifiedCloudTransition(true, documentsTarget, documentsSource, oneDriveRoot, googleDriveRoot));
+    assert(!cloudnav::IsVerifiedCloudTransition(true, documentsSource, JoinPath(googleDriveRoot, L"Other"), oneDriveRoot, googleDriveRoot));
+    assert(!cloudnav::IsVerifiedCloudTransition(true, documentsSource, documentsTarget, L"", googleDriveRoot));
+    assert(cloudnav::FolderReturnsLocalAfterBackupRelease(true, true, true, documentsSource, oneDriveRoot));
+    assert(!cloudnav::FolderReturnsLocalAfterBackupRelease(false, true, true, documentsSource, oneDriveRoot));
+    assert(!cloudnav::FolderReturnsLocalAfterBackupRelease(true, false, true, documentsSource, oneDriveRoot));
+    assert(!cloudnav::FolderReturnsLocalAfterBackupRelease(true, true, false, documentsSource, oneDriveRoot));
+    assert(!cloudnav::FolderReturnsLocalAfterBackupRelease(true, true, true, documentsTarget, oneDriveRoot));
+    assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"Compte personnel") == L"OneDrive — Compte personnel");
+    assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"OneDrive - Work") == L"OneDrive - Work");
+    assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"") == L"OneDrive");
+
+    for (auto task : {cloudnav::MigrationTask::Analyze, cloudnav::MigrationTask::AuthenticateGoogle,
+                      cloudnav::MigrationTask::AuthenticateOneDrive, cloudnav::MigrationTask::CopyAndVerify}) {
+        bool analyzed = true, verified = true;
+        cloudnav::InvalidateMigrationValidation(task, analyzed, verified);
+        assert(!verified);
+        assert(analyzed == (task == cloudnav::MigrationTask::CopyAndVerify));
+    }
+    assert(std::wstring(cloudnav::MigrationStageTitle(cloudnav::MigrationStage::Copying)).find(L"2 / 3") != std::wstring::npos);
+    assert(std::wstring(cloudnav::MigrationStageTitle(cloudnav::MigrationStage::Verifying)).find(L"3 / 3") != std::wstring::npos);
+    assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Copying)).find(L"moteur") == std::wstring::npos);
+    assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Verifying)).find(L"indépendante") != std::wstring::npos);
+
     double value = 0;
     assert(cloudnav::JsonNumber("{\"bytes\":524288,\"totalBytes\":1048576}", "bytes", value));
     assert(value == 524288.0);

@@ -1,18 +1,76 @@
 [
-  { "type": "wait_window", "timeoutMs": 30000 },
-  { "type": "click_control", "name": "Dossiers personnels…", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "click_control", "name": "Appliquer", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "click_control", "name": "Oui", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "screenshot", "name": "cloudnav-112-repoint-error.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "OK", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "screenshot", "name": "cloudnav-112-repoint-status.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Fermer", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "focus_window" },
-  { "type": "send_keys", "keys": "ALT+F4", "holdMs": 75 },
-  { "type": "wait_process_exit", "timeoutMs": 30000, "expectedExitCode": 0 }
+  {
+    "type": "wait_window",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "click_control",
+    "name": "Dossiers personnels…",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait",
+    "ms": 500
+  },
+  {
+    "type": "click_control",
+    "name": "Vérifier…",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait",
+    "ms": 500
+  },
+  {
+    "type": "click_control",
+    "name": "Copier et appliquer",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait",
+    "ms": 500
+  },
+  {
+    "type": "screenshot",
+    "name": "cloudnav-112-repoint-error.png",
+    "timeoutMs": 30000,
+    "attempts": 5
+  },
+  {
+    "type": "click_control",
+    "name": "OK",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait",
+    "ms": 500
+  },
+  {
+    "type": "screenshot",
+    "name": "cloudnav-112-repoint-status.png",
+    "timeoutMs": 30000,
+    "attempts": 5
+  },
+  {
+    "type": "click_control",
+    "name": "Fermer",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait",
+    "ms": 500
+  },
+  {
+    "type": "focus_window"
+  },
+  {
+    "type": "send_keys",
+    "keys": "ALT+F4",
+    "holdMs": 75
+  },
+  {
+    "type": "wait_process_exit",
+    "timeoutMs": 30000,
+    "expectedExitCode": 0
+  }
 ]

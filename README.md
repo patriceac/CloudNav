@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.0
+# CloudNav 1.4.1
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -16,10 +16,11 @@ One standalone `.exe`, with no installer or additional application runtime.
 - show or hide the detected **OneDrive** account entry;
 - hide the **Google Drive** virtual drive letter without blocking access to its files;
 - redirect Desktop, Documents, Pictures, Downloads, Music, and Videos to their local location, OneDrive, Google Drive, or a custom folder;
-- identify OneDrive and Google Drive locations at a glance with provider icons in the personal-folder manager;
+- identify providers consistently across Explorer visibility, personal folders, and migration;
 - disable OneDrive automatic startup or launch its uninstaller when no managed personal folder still depends on OneDrive;
 - migrate OneDrive to Google Drive with a one-way copy, live percentage/speed/ETA, independent verification, safe cancellation and resume;
-- copy files, move files, or redirect the folder only, with an explicit final confirmation;
+- inspect complete current/proposed paths and collateral folder changes before an action-specific final confirmation;
+- apply Explorer visibility independently, with the Apply button enabled only for pending changes;
 - remember the window position and bring it back onto a visible display if the monitor layout changes.
 
 CloudNav detects the paths and account labels available on the current PC. No user name, account name, or user-specific path is hard-coded in the application.
@@ -28,7 +29,7 @@ CloudNav detects the paths and account labels available on the current PC. No us
 
 The checkboxes in the main window only control visibility in the File Explorer navigation pane. Hiding the Google Drive letter uses the Windows `NoDrives` policy: the icon disappears, but the drive and its files remain accessible.
 
-Personal-folder changes are shown in a separate review before anything is applied. CloudNav validates every destination, blocks nested paths, and restores the previous locations if a grouped operation fails.
+Personal-folder changes are shown in a separate review before anything is applied. Current and proposed paths can be selected and copied in full. CloudNav validates destinations, blocks nested paths, and attempts to restore previous locations if a redirect-only operation fails. Copy/move failures report any steps that already completed.
 
 OneDrive client actions stay disabled while Desktop, Documents, Pictures, Downloads, Music, or Videos points anywhere inside the detected OneDrive root. CloudNav names the folders that must be moved and checks their locations again immediately before disabling automatic startup or launching the uninstaller. This check covers those six managed personal folders only, not every other folder that OneDrive may synchronize. Before uninstalling, CloudNav asks the user to verify that OneDrive is up to date and warns that online-only files will remain accessible through OneDrive.com.
 
@@ -36,17 +37,19 @@ The migration assistant uses `rclone copy`: it never deletes destination files. 
 
 CloudNav embeds the pinned rclone 1.75.0 engine, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. OAuth credentials and migration state remain per-user in `%LOCALAPPDATA%\CloudNav`; no credentials are embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
 
-When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudNav can disable OneDrive Known Folder Backup before redirecting the folder. The confirmation dialog explains the scope of this strategy, and no OneDrive file is deleted.
+When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudNav can disable OneDrive Known Folder Backup before a redirect-only operation. The preview and final review explicitly list other protected folders that will return to their local locations. No OneDrive file is deleted. Copy/move plans requiring this backup release are blocked: use the migration assistant to copy and verify the original cloud data before redirecting, so releasing backup cannot change the copy source to an empty local folder.
 
-If a scheduled task named `OneDrive-GDrive-Bidirectional-Sync` is present, CloudNav assumes that the OneDrive and Google Drive roots are already synchronized and recommends **Redirect only**. Without that signal, **Copy** remains the cautious default.
+If a scheduled task named `OneDrive-GDrive-Bidirectional-Sync` is present, CloudNav reports **external synchronization detected**, without claiming that its files have been verified. **Copy** remains the default until CloudNav's migration comparison succeeds. The redirect-only recommendation then applies only to corresponding folders in the verified OneDrive-to-Google Drive direction. Reconnecting an account, rerunning analysis, or starting a new copy invalidates earlier verification.
+
+Migration progress identifies analysis, copy, and verification as separate phases. The status text and progress statistics update together, and successful verification makes the optional folder-configuration action the primary button.
 
 ## Usage
 
 1. Download `CloudNav.exe` from the latest GitHub Release.
 2. Make sure Google Drive for desktop and/or OneDrive is installed and running, depending on the features you need.
 3. Run the executable directly; no installation is required.
-4. Choose the navigation-pane entries, or open **Dossiers personnels…** to manage personal folders.
-5. Review the summary, then accept the Windows elevation prompt when required.
+4. Use **Appliquer la visibilité** for Explorer entries, **Dossiers personnels…** for folder locations, or the separate **Migration cloud** section for cloud transfer.
+5. In the folder manager, select **Vérifier…**, review all affected folders, then choose the explicit copy, move, or redirect action.
 
 File Explorer may restart once to reload its configuration. Any open folder windows will close when that happens.
 
@@ -72,6 +75,19 @@ The build downloads the official pinned rclone archive, verifies its SHA-256 che
 
 - `build\Release\CloudNav.exe`;
 - `build\Release\CloudNavTests.exe`;
-- `build\Release\CloudNavWindowPositionTests.exe`.
+- `build\Release\CloudNavWindowPositionTests.exe`;
+- `build\Release\CloudNavUiTests.exe`.
 
 The build script runs the logic tests automatically. UI and integration scenarios for the isolated Windows test harness are available in `tests/`.
+
+With the Codex Hyper-V SYSTEM broker installed, run the repeatable offline release checks:
+
+```powershell
+.\tests\Invoke-ReleaseChecks.ps1
+# Reuse an existing release build and resume matching passed checks:
+.\tests\Invoke-ReleaseChecks.ps1 -SkipBuild
+# Run only the relevant scenarios:
+.\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Ui,MigrationResume
+```
+
+The runner keys checkpoints to the exact executable, test driver, action file, and runner hashes. It checks declared assertions, screenshot presence, process cleanup, VM shutdown, and disposable payload deletion before saving a pass. Screenshots still require visual review. Tests use synthetic accounts and offline demo operations; they do not qualify real OAuth, cloud transfers, or actual OneDrive uninstallation.

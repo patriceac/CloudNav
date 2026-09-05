@@ -18,6 +18,7 @@
 #include "migration.h"
 #include "migration_logic.h"
 #include "resource.h"
+#include "ui.h"
 
 namespace cloudnav {
 namespace {
@@ -27,11 +28,11 @@ constexpr wchar_t kGoogleRemote[] = L"cloudnav-gdrive";
 constexpr UINT WM_MIGRATION_PROGRESS = WM_APP + 41;
 constexpr UINT WM_MIGRATION_COMPLETE = WM_APP + 42;
 
-enum class Task { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, CopyAndVerify };
+using Task = MigrationTask;
 
 struct ProgressUpdate {
     int percent = 0;
-    std::wstring phase;
+    MigrationStage stage = MigrationStage::Preparing;
     std::wstring statistics;
     std::wstring details;
 };
@@ -53,6 +54,12 @@ struct DialogContext {
     bool verified = false;
     bool oneDriveReady = false;
     bool googleReady = false;
+    bool sawCopyProgress = false;
+    bool sawVerifyProgress = false;
+    bool progressConsistent = true;
+    bool cancellationConsistent = true;
+    ui::DialogTheme theme;
+    ui::ProviderImages images;
     Task task = Task::None;
     std::wstring demoResultPath;
     std::wstring runtimePath;
@@ -140,9 +147,10 @@ bool ExtractRclone(HINSTANCE instance, std::wstring& path, std::wstring& error) 
     return true;
 }
 
-void PostProgress(DialogContext& context, int percent, const std::wstring& phase,
-                  const std::wstring& statistics, const std::wstring& details = {}) {
-    auto* update = new ProgressUpdate{percent, phase, statistics, details};
+void PostProgress(DialogContext& context, int percent, MigrationStage stage,
+                  const std::wstring& statistics) {
+    if (!context.dialog) return;
+    auto* update = new ProgressUpdate{percent, stage, statistics, MigrationStageDetails(stage)};
     if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
 }
 
@@ -156,7 +164,7 @@ bool HasRemote(const std::wstring& configPath, const wchar_t* remote) {
 }
 
 bool RunProcess(DialogContext& context, const std::vector<std::wstring>& arguments,
-                const std::wstring& phase, std::wstring& error) {
+                MigrationStage stage, std::wstring& error) {
     SECURITY_ATTRIBUTES security = {sizeof(security), nullptr, TRUE};
     HANDLE readPipe = nullptr;
     HANDLE writePipe = nullptr;
@@ -184,6 +192,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     context.childProcess = process.hProcess;
     LeaveCriticalSection(&context.processLock);
 
+    PostProgress(context, 0, stage, L"Progression en attente…");
     std::string pending;
     char buffer[8192];
     DWORD read = 0;
@@ -211,7 +220,10 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
                     FormatBytes(static_cast<std::uint64_t>(total));
                 if (speed > 0) stats += L" — " + FormatBytes(static_cast<std::uint64_t>(speed)) + L"/s";
                 stats += L" — " + FormatEta(eta);
-                PostProgress(context, percent, phase, stats);
+                if (stage == MigrationStage::Verifying)
+                    stats = std::to_wstring(percent) + L" % — " + std::to_wstring(static_cast<unsigned long long>(checks)) +
+                        L" / " + std::to_wstring(static_cast<unsigned long long>(totalChecks)) + L" fichiers vérifiés — " + FormatEta(eta);
+                PostProgress(context, percent, stage, stats);
             }
         }
     }
@@ -247,20 +259,21 @@ DWORD WINAPI WorkerProc(void* parameter) {
     if (!ExtractRclone(context.instance, context.runtimePath, error)) {
         success = false;
     } else if (context.demoMode) {
-        const wchar_t* phase = context.task == Task::Analyze ? L"Analyse des écarts…" : L"Copie OneDrive → Google Drive…";
-        const int delay = context.task == Task::Analyze ? 22 : 35;
+        const auto stage = context.task == Task::Analyze ? MigrationStage::Analyzing :
+            context.task == Task::CopyAndVerify ? MigrationStage::Copying : MigrationStage::Connecting;
+        const int delay = context.task == Task::Analyze ? 60 : 100;
         for (int percent = 0; percent <= 100 && !context.cancelRequested; percent += 2) {
             const std::uint64_t total = 8ULL * 1024 * 1024 * 1024;
             const auto done = total * static_cast<std::uint64_t>(percent) / 100;
-            PostProgress(context, percent, phase, std::to_wstring(percent) + L" % — " + FormatBytes(done) +
+            PostProgress(context, percent, stage, std::to_wstring(percent) + L" % — " + FormatBytes(done) +
                          L" / " + FormatBytes(total) + L" — 42.0 Mo/s — " + FormatEta((100 - percent) * 1.9));
             Sleep(delay);
         }
         if (!context.cancelRequested && context.task == Task::CopyAndVerify) {
             for (int percent = 0; percent <= 100 && !context.cancelRequested; percent += 4) {
-                PostProgress(context, percent, L"Vérification indépendante…",
+                PostProgress(context, percent, MigrationStage::Verifying,
                              std::to_wstring(percent) + L" % — contrôle des fichiers — " + FormatEta((100 - percent) * 0.4));
-                Sleep(22);
+                Sleep(80);
             }
         }
         success = !context.cancelRequested;
@@ -270,17 +283,17 @@ DWORD WINAPI WorkerProc(void* parameter) {
         std::vector<std::wstring> args;
         if (HasRemote(context.configPath, remote)) args = {L"config", L"reconnect", std::wstring(remote) + L":", L"--config", context.configPath};
         else args = {L"config", L"create", remote, oneDrive ? L"onedrive" : L"drive", L"config_is_local=true", L"--config", context.configPath};
-        success = RunProcess(context, args, L"Connexion du compte…", error);
+        success = RunProcess(context, args, MigrationStage::Connecting, error);
     } else if (context.task == Task::Analyze) {
-        success = RunProcess(context, TransferArguments(context, true), L"Analyse des écarts…", error);
+        success = RunProcess(context, TransferArguments(context, true), MigrationStage::Analyzing, error);
     } else if (context.task == Task::CopyAndVerify) {
-        success = RunProcess(context, TransferArguments(context, false), L"Copie OneDrive → Google Drive…", error);
+        success = RunProcess(context, TransferArguments(context, false), MigrationStage::Copying, error);
         if (success && !context.cancelRequested) {
-            PostProgress(context, 0, L"Vérification indépendante…", L"0 % — comparaison OneDrive / Google Drive");
+            PostProgress(context, 0, MigrationStage::Verifying, L"0 % — comparaison OneDrive / Google Drive");
             const std::vector<std::wstring> verify = {L"check", std::wstring(kOneDriveRemote) + L":", std::wstring(kGoogleRemote) + L":",
                 L"--one-way", L"--config", context.configPath, L"--drive-skip-gdocs", L"--exclude", L"/Personal Vault/**",
                 L"--use-json-log", L"--stats", L"1s", L"--stats-log-level", L"INFO"};
-            success = RunProcess(context, verify, L"Vérification indépendante…", error);
+            success = RunProcess(context, verify, MigrationStage::Verifying, error);
         }
     }
     auto* completion = new CompletionUpdate{context.task, success, context.cancelRequested.load(), error};
@@ -296,22 +309,36 @@ void RefreshButtons(DialogContext& context) {
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE), !context.running && acknowledged && context.oneDriveReady && context.googleReady);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_COPY), !context.running && acknowledged && context.analyzed);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_CUTOVER), !context.running && context.verified);
+    const int primary = context.running ? IDCANCEL : context.verified ? IDC_MIGRATION_CUTOVER :
+        context.analyzed ? IDC_MIGRATION_COPY :
+        IsWindowEnabled(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE)) ? IDC_MIGRATION_ANALYZE : IDCANCEL;
+    for (int id : {IDC_MIGRATION_ANALYZE, IDC_MIGRATION_COPY, IDC_MIGRATION_CUTOVER, IDCANCEL}) {
+        SendDlgItemMessageW(context.dialog, id, BM_SETSTYLE, id == primary ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON, TRUE);
+        SendDlgItemMessageW(context.dialog, id, WM_SETFONT, id == primary
+            ? reinterpret_cast<WPARAM>(context.theme.bold) : SendMessageW(context.dialog, WM_GETFONT, 0, 0), TRUE);
+    }
+    SendMessageW(context.dialog, DM_SETDEFID, primary, 0);
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_ONEDRIVE_CONNECT, context.oneDriveReady ? L"Reconnecter…" : L"Connecter…");
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_GOOGLE_CONNECT, context.googleReady ? L"Reconnecter…" : L"Connecter…");
     SetDlgItemTextW(context.dialog, IDCANCEL, context.running ? L"Annuler" : L"Fermer");
 }
 
 void StartTask(DialogContext& context, Task task) {
     if (context.running) return;
+    InvalidateMigrationValidation(task, context.analyzed, context.verified);
+    if (task == Task::Analyze || task == Task::CopyAndVerify) {
+        context.sawCopyProgress = false;
+        context.sawVerifyProgress = false;
+        context.progressConsistent = true;
+    }
     context.running = true;
     context.task = task;
     context.cancelRequested = false;
+    SendDlgItemMessageW(context.dialog, IDC_MIGRATION_PROGRESS, PBM_SETSTATE, PBST_NORMAL, 0);
     SendDlgItemMessageW(context.dialog, IDC_MIGRATION_PROGRESS, PBM_SETPOS, 0, 0);
-    const wchar_t* phase = L"Préparation…";
-    if (task == Task::Analyze) phase = L"Préparation de l’analyse…";
-    else if (task == Task::CopyAndVerify) phase = L"Préparation de la copie…";
-    else phase = L"Ouverture de la connexion sécurisée…";
-    SetDlgItemTextW(context.dialog, IDC_MIGRATION_PHASE, phase);
-    SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS,
-                    L"CloudNav prépare son moteur intégré. Tu peux annuler sans perdre les fichiers déjà validés.");
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_PHASE, MigrationStageTitle(MigrationStage::Preparing));
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_STATS, L"Progression en attente…");
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, MigrationStageDetails(MigrationStage::Preparing));
     RefreshButtons(context);
     context.worker = CreateThread(nullptr, 0, WorkerProc, &context, 0, nullptr);
     if (!context.worker) {
@@ -329,17 +356,23 @@ void CancelTask(DialogContext& context) {
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, L"Annulation… Les fichiers déjà copiés seront réutilisés à la reprise.");
 }
 
-bool WriteDemoResult(const std::wstring& path) {
+bool WriteEvidence(const std::wstring& path, const std::string& json) {
     if (path.empty()) return true;
     if (!EnsureParentDirectory(path)) return false;
     const std::wstring temporary = path + L".tmp";
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
-    const char json[] = "{\"passed\":true,\"copyDirection\":\"onedrive-to-google-drive\",\"verified\":true,\"cutoverOffered\":true}\n";
     DWORD written = 0;
-    const bool ok = WriteFile(file, json, static_cast<DWORD>(sizeof(json) - 1), &written, nullptr) && written == sizeof(json) - 1;
+    const bool ok = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();
     CloseHandle(file);
     return ok && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+
+void WriteMilestone(const DialogContext& context, const wchar_t* name, bool passed) {
+    if (!context.demoMode || context.demoResultPath.empty()) return;
+    const size_t slash = context.demoResultPath.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return;
+    WriteEvidence(context.demoResultPath.substr(0, slash + 1) + name, passed ? "{\"passed\":true}" : "{\"passed\":false}");
 }
 
 INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -348,15 +381,20 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         context = reinterpret_cast<DialogContext*>(lParam);
         context->dialog = dialog;
         SetWindowLongPtrW(dialog, DWLP_USER, lParam);
+        context->theme.Initialize(dialog, IDC_DIALOG_HEADING);
+        context->images.Load(context->instance);
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETRANGE32, 0, 100);
         context->configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
         context->logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\migration.log";
         EnsureParentDirectory(context->configPath);
         context->oneDriveReady = context->demoMode || HasRemote(context->configPath, kOneDriveRemote);
         context->googleReady = context->demoMode || HasRemote(context->configPath, kGoogleRemote);
-        SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, context->oneDriveReady ? L"Prêt" : L"Non connecté");
-        SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->googleReady ? L"Prêt" : L"Non connecté");
+        SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, context->demoMode ? L"Compte de démonstration" : context->oneDriveReady ? L"Connexion enregistrée" : L"Non connecté");
+        SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Compte de démonstration" : context->googleReady ? L"Connexion enregistrée" : L"Non connecté");
         if (context->demoMode) Button_SetCheck(GetDlgItem(dialog, IDC_MIGRATION_REMINDER), BST_CHECKED);
+        if (context->oneDriveReady && context->googleReady)
+            SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"L’analyse vérifie l’accès aux comptes et estime la copie. Aucun fichier n’est transféré.");
+        SendDlgItemMessageW(dialog, IDC_MIGRATION_PHASE, WM_SETFONT, reinterpret_cast<WPARAM>(context->theme.bold), TRUE);
         RefreshButtons(*context);
         return TRUE;
     }
@@ -368,13 +406,29 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         case IDC_MIGRATION_GOOGLE_CONNECT: StartTask(*context, Task::AuthenticateGoogle); return TRUE;
         case IDC_MIGRATION_ANALYZE: StartTask(*context, Task::Analyze); return TRUE;
         case IDC_MIGRATION_COPY: StartTask(*context, Task::CopyAndVerify); return TRUE;
-        case IDC_MIGRATION_CUTOVER:
-            WriteDemoResult(context->demoResultPath);
+        case IDC_MIGRATION_CUTOVER: {
+            if (context->running || !context->verified) return TRUE;
+            const bool passed = context->analyzed && context->verified && context->sawCopyProgress &&
+                context->sawVerifyProgress && context->progressConsistent && context->cancellationConsistent &&
+                LOWORD(SendMessageW(dialog, DM_GETDEFID, 0, 0)) == IDC_MIGRATION_CUTOVER;
+            if (context->demoMode) WriteEvidence(context->demoResultPath, passed
+                ? "{\"passed\":true,\"verified\":true,\"progressConsistent\":true,\"cutoverPrimary\":true}"
+                : "{\"passed\":false}");
             EndDialog(dialog, 2); return TRUE;
+        }
         case IDCANCEL:
             if (context->running) CancelTask(*context); else EndDialog(dialog, 1);
             return TRUE;
         default: break;
+        }
+    } else if (message == WM_CTLCOLORSTATIC || message == WM_CTLCOLORDLG) {
+        return context->theme.Color(reinterpret_cast<HDC>(wParam));
+    } else if (message == WM_DRAWITEM) {
+        const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        if (item && (item->CtlID == IDC_MIGRATION_ONEDRIVE_ICON || item->CtlID == IDC_MIGRATION_GOOGLE_ICON)) {
+            FillRect(item->hDC, &item->rcItem, context->theme.background);
+            context->images.Draw(item->hDC, item->rcItem, item->CtlID == IDC_MIGRATION_ONEDRIVE_ICON);
+            return TRUE;
         }
     } else if (message == WM_CLOSE) {
         if (context->running) { context->closeRequested = true; CancelTask(*context); }
@@ -382,10 +436,23 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         return TRUE;
     } else if (message == WM_MIGRATION_PROGRESS) {
         auto* update = reinterpret_cast<ProgressUpdate*>(lParam);
+        if (context->cancelRequested) { delete update; return TRUE; }
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETPOS, update->percent, 0);
-        SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, update->phase.c_str());
+        SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, MigrationStageTitle(update->stage));
         SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, update->statistics.c_str());
-        if (!update->details.empty()) SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, update->details.c_str());
+        SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, update->details.c_str());
+        RedrawWindow(dialog, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        const bool consistent = ui::ControlText(dialog, IDC_MIGRATION_PHASE) == MigrationStageTitle(update->stage) &&
+            ui::ControlText(dialog, IDC_MIGRATION_DETAILS) == MigrationStageDetails(update->stage);
+        context->progressConsistent &= consistent;
+        if (update->stage == MigrationStage::Copying && update->percent >= 30 && !context->sawCopyProgress) {
+            context->sawCopyProgress = true;
+            WriteMilestone(*context, L"copy-progress.json", consistent);
+        }
+        if (update->stage == MigrationStage::Verifying && !context->sawVerifyProgress) {
+            context->sawVerifyProgress = true;
+            WriteMilestone(*context, L"verify-progress.json", consistent);
+        }
         delete update;
         return TRUE;
     } else if (message == WM_MIGRATION_COMPLETE) {
@@ -393,31 +460,52 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         if (context->worker) { CloseHandle(context->worker); context->worker = nullptr; }
         context->running = false;
         if (update->success) {
+            if (update->task == Task::AuthenticateOneDrive || update->task == Task::AuthenticateGoogle) {
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 3 — Analyser avant de copier");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analyse requise après une reconnexion");
+            }
             if (update->task == Task::AuthenticateOneDrive) {
-                context->oneDriveReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, L"Prêt");
+                context->oneDriveReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, L"Connexion enregistrée");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Compte OneDrive connecté.");
             } else if (update->task == Task::AuthenticateGoogle) {
-                context->googleReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, L"Prêt");
+                context->googleReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, L"Connexion enregistrée");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Compte Google Drive connecté.");
             } else if (update->task == Task::Analyze) {
                 context->analyzed = true;
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"Analyse terminée.");
+                SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETPOS, 100, 0);
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 3 — Analyse terminée : prête pour la copie");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analyse terminée — aucun fichier transféré");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Tu peux lancer la copie. Les fichiers Google Drive supplémentaires seront conservés.");
             } else if (update->task == Task::CopyAndVerify) {
                 context->verified = true;
                 SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETPOS, 100, 0);
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"Migration copiée et vérifiée.");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"3 / 3 — Migration copiée et vérifiée");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"100 % — vérification réussie");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Aucune suppression côté Google Drive. La bascule des dossiers Windows est maintenant facultative.");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Tu peux maintenant configurer les dossiers Windows, ou fermer l’assistant.");
             }
         } else {
             SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, update->cancelled ? L"Opération annulée." : L"Opération interrompue.");
+            SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Opération arrêtée — aucun transfert en cours");
+            SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETSTATE, update->cancelled ? PBST_PAUSED : PBST_ERROR, 0);
             SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS,
                             update->cancelled ? L"Reprends quand tu veux : les fichiers identiques seront ignorés." : update->message.c_str());
         }
         const bool close = context->closeRequested;
         delete update;
         RefreshButtons(*context);
+        if (context->verified || context->analyzed)
+            SendMessageW(dialog, WM_NEXTDLGCTL, reinterpret_cast<WPARAM>(GetDlgItem(dialog,
+                context->verified ? IDC_MIGRATION_CUTOVER : IDC_MIGRATION_COPY)), TRUE);
+        if (context->analyzed && !context->verified)
+            WriteMilestone(*context, L"analysis-ready.json", IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_COPY)) != FALSE);
+        if (context->verified)
+            WriteMilestone(*context, L"verified.json", LOWORD(SendMessageW(dialog, DM_GETDEFID, 0, 0)) == IDC_MIGRATION_CUTOVER);
+        if (context->cancelRequested) {
+            context->cancellationConsistent &= !context->verified &&
+                !IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_CUTOVER)) &&
+                ui::ControlText(dialog, IDC_MIGRATION_STATS) == L"Opération arrêtée — aucun transfert en cours";
+            WriteMilestone(*context, L"cancelled.json", context->cancellationConsistent);
+        }
         if (close) EndDialog(dialog, 1);
         return TRUE;
     }
@@ -451,7 +539,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     InitializeCriticalSection(&context.processLock);
     bool passed = ExtractRclone(instance, runtime, error) && ResourceMatchesFile(instance, runtime);
     context.runtimePath = runtime;
-    if (passed) passed = RunProcess(context, {L"version"}, L"Vérification rclone…", error);
+    if (passed) passed = RunProcess(context, {L"version"}, MigrationStage::Preparing, error);
     DeleteCriticalSection(&context.processLock);
     if (!EnsureParentDirectory(resultPath)) return 3;
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);

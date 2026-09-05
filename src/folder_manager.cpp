@@ -19,6 +19,7 @@
 #include "folder_manager.h"
 #include "logic.h"
 #include "resource.h"
+#include "ui.h"
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "gdiplus.lib")
@@ -90,6 +91,11 @@ struct DialogContext {
     bool changed = false;
     bool statusIsError = false;
     bool guidanceIsWarning = false;
+    bool backupWillDisable = false;
+    bool backupReleaseRequired = false;
+    size_t selectedChanges = 0;
+    size_t sideEffects = 0;
+    ui::DialogTheme theme;
     IStream* oneDriveLogoStream = nullptr;
     IStream* googleDriveLogoStream = nullptr;
     Gdiplus::Image* oneDriveLogo = nullptr;
@@ -552,14 +558,22 @@ void UpdateRowPreview(HWND dialog, const DialogContext& context, const FolderRow
     SetWindowLongPtrW(providerControl, GWLP_USERDATA, static_cast<LONG_PTR>(icon));
     InvalidateRect(providerControl, nullptr, TRUE);
 
-    std::wstring text = row.currentPath.empty()
-        ? L"Emplacement indisponible"
-        : row.currentPath;
-    if (row.choice != TargetChoice::Keep) {
-        const std::wstring target = ResolveTarget(context, row);
-        text += target.empty() ? L"  →  destination indisponible" : L"  →  " + target;
-    }
-    SetDlgItemTextW(dialog, row.spec->pathControl, text.c_str());
+    const bool returnsLocal = FolderReturnsLocalAfterBackupRelease(context.backupWillDisable,
+        row.spec == &kFolderSpecs[0] || row.spec == &kFolderSpecs[1] || row.spec == &kFolderSpecs[2],
+        row.choice == TargetChoice::Keep, row.currentPath, context.providers.oneDriveRoot);
+    const std::wstring target = returnsLocal ? row.defaultPath : ResolveTarget(context, row);
+    const bool changes = !PathEquals(row.currentPath, target);
+    const std::wstring label = std::wstring(row.spec->label) +
+        (returnsLocal ? L" — retour local induit" : changes ? L" — à modifier" : L"");
+    SetDlgItemTextW(dialog, row.spec->pathControl - 1, label.c_str());
+    SetDlgItemTextW(dialog, row.spec->pathControl,
+        row.currentPath.empty() ? L"Emplacement indisponible" : row.currentPath.c_str());
+    SetDlgItemTextW(dialog, row.spec->pathControl + 2,
+        target.empty() ? L"Destination indisponible" : changes ? target.c_str() : L"Identique à l’emplacement actuel");
+    SetWindowLongPtrW(GetDlgItem(dialog, row.spec->pathControl + 2), GWLP_USERDATA,
+                      returnsLocal ? 2 : changes ? 1 : 0);
+    SendDlgItemMessageW(dialog, row.spec->pathControl - 1, WM_SETFONT,
+                       reinterpret_cast<WPARAM>(context.theme.bold), TRUE);
 }
 
 Gdiplus::Image* LoadPngResource(HINSTANCE instance, int resourceId, IStream*& stream) {
@@ -697,7 +711,7 @@ void FillTargetCombo(HWND dialog, const DialogContext& context, FolderRow& row) 
     SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Cet ordinateur"));
     std::wstring oneDrive = context.providers.oneDriveRoot.empty()
         ? L"OneDrive (non détecté)"
-        : (context.providers.oneDriveLabel.empty() ? L"OneDrive" : context.providers.oneDriveLabel);
+        : ProviderAccountLabel(L"OneDrive", context.providers.oneDriveLabel);
     SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(oneDrive.c_str()));
     SendMessageW(combo, CB_ADDSTRING, 0,
                  reinterpret_cast<LPARAM>(context.providers.googleDriveRoot.empty()
@@ -786,9 +800,8 @@ PlanProfile AnalyzePlan(const DialogContext& context) {
             continue;
         }
         profile.hasChanges = true;
-        const bool mirroredCloudChange = (context.providers.rootMirrorTaskDetected ||
-                                          context.providers.oneDriveToGoogleVerified) &&
-            IsMirroredCloudTransition(row.currentPath, target,
+        const bool mirroredCloudChange = IsVerifiedCloudTransition(context.providers.oneDriveToGoogleVerified,
+            row.currentPath, target,
                                       context.providers.oneDriveRoot,
                                       context.providers.googleDriveRoot);
         profile.hasMirroredCloudChanges |= mirroredCloudChange;
@@ -800,19 +813,54 @@ PlanProfile AnalyzePlan(const DialogContext& context) {
 void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectRecommendation) {
     const PlanProfile profile = AnalyzePlan(context);
     HWND combo = GetDlgItem(dialog, IDC_FOLDER_TRANSFER_MODE);
+    const TransferChoice recommended = profile.hasMirroredCloudChanges ? TransferChoice::Repoint : TransferChoice::Copy;
+    if (selectRecommendation || !profile.hasChanges)
+        SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(recommended), 0);
+    const TransferChoice selected = ReadTransferChoice(dialog);
+    context.selectedChanges = 0;
+    context.sideEffects = 0;
+    context.backupWillDisable = false;
+    context.backupReleaseRequired = false;
+    const bool backupActive = context.demoMode ? context.providers.simulateOneDriveBackupActive : OneDriveFolderBackupActive();
+    for (size_t index = 0; index < context.rows.size(); ++index) {
+        const FolderRow& row = context.rows[index];
+        const std::wstring target = ResolveTarget(context, row);
+        if (row.choice == TargetChoice::Keep || PathEquals(row.currentPath, target)) continue;
+        ++context.selectedChanges;
+        context.backupReleaseRequired |= backupActive && NeedsOneDriveBackupDisable(index <= 2,
+            row.currentPath, target, context.providers.oneDriveRoot, context.providers.googleDriveRoot);
+    }
+    context.backupWillDisable = context.backupReleaseRequired && selected == TransferChoice::Repoint;
+    for (size_t index = 0; index < context.rows.size(); ++index) {
+        const FolderRow& row = context.rows[index];
+        if (FolderReturnsLocalAfterBackupRelease(context.backupWillDisable, index <= 2,
+            row.choice == TargetChoice::Keep, row.currentPath, context.providers.oneDriveRoot)) ++context.sideEffects;
+        UpdateRowPreview(dialog, context, row);
+    }
+    const std::wstring summary = std::to_wstring(context.selectedChanges) + L" changement(s) choisi(s)" +
+        (context.sideEffects ? L" + " + std::to_wstring(context.sideEffects) + L" retour(s) local(aux)" : L"");
+    SetDlgItemTextW(dialog, IDC_FOLDER_SUMMARY, summary.c_str());
+    EnableWindow(GetDlgItem(dialog, IDOK), profile.hasChanges && !(profile.hasMirroredCloudChanges && profile.hasOtherChanges));
     if (!profile.hasChanges) {
         EnableWindow(combo, FALSE);
         SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(TransferChoice::Copy), 0);
         context.guidanceIsWarning = false;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            (context.providers.rootMirrorTaskDetected || context.providers.oneDriveToGoogleVerified)
-                ? L"Aucun changement sélectionné. Les données cloud sont signalées comme synchronisées ou vérifiées ; le conseil s’adaptera au trajet."
-                : L"Aucun changement sélectionné. Le conseil s’adaptera automatiquement au trajet choisi.");
+            context.providers.oneDriveToGoogleVerified ? L"Migration OneDrive → Google Drive vérifiée dans cette session. Choisis les dossiers à configurer."
+                : context.providers.rootMirrorTaskDetected ? L"Synchronisation externe détectée. Son état et les fichiers n’ont pas été vérifiés."
+                : L"Choisis une destination pour préparer un changement.");
         InvalidateRect(GetDlgItem(dialog, IDC_FOLDER_WARNING), nullptr, TRUE);
         return;
     }
 
     EnableWindow(combo, TRUE);
+    if (context.backupReleaseRequired && selected != TransferChoice::Repoint) {
+        context.guidanceIsWarning = true;
+        SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
+            L"Sauvegarde OneDrive active : utilise « Migration cloud » pour copier et vérifier les fichiers avant de changer ces emplacements.");
+        InvalidateRect(GetDlgItem(dialog, IDC_FOLDER_WARNING), nullptr, TRUE);
+        return;
+    }
     if (profile.hasMirroredCloudChanges && profile.hasOtherChanges) {
         context.guidanceIsWarning = true;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
@@ -821,21 +869,18 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
         return;
     }
 
-    const TransferChoice recommended = profile.hasMirroredCloudChanges
-        ? TransferChoice::Repoint : TransferChoice::Copy;
-    if (selectRecommendation) {
-        SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(recommended), 0);
-    }
-    const TransferChoice selected = ReadTransferChoice(dialog);
     context.guidanceIsWarning = selected != recommended;
     if (profile.hasMirroredCloudChanges) {
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
             selected == recommended
-                ? L"Recommandation appliquée : « Repointage seulement », car les données OneDrive ont déjà été synchronisées et vérifiées dans Google Drive."
-                : L"Recommandation : « Repointage seulement » pour les données cloud déjà vérifiées.");
+                ? L"Migration vérifiée : « Repointage seulement » vers les dossiers Google Drive correspondants. Aucun transfert."
+                : L"Migration vérifiée : « Repointage seulement » suffit pour ce trajet OneDrive → Google Drive.");
     } else {
+        context.guidanceIsWarning = context.providers.rootMirrorTaskDetected || selected != recommended;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            selected == recommended
+            context.providers.rootMirrorTaskDetected
+                ? L"Synchronisation détectée, fichiers non vérifiés. « Copier » reste conseillé ; suspends la synchronisation externe avant l’opération."
+                : selected == recommended
                 ? L"Recommandation appliquée : « Copier », puis vérifier avant de supprimer l’ancien contenu."
                 : L"Recommandation : « Copier » et conserver l’ancien contenu jusqu’à vérification.");
     }
@@ -843,10 +888,17 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
 }
 
 bool BuildOperations(const DialogContext& context, std::vector<FolderOperation>& operations,
-                     std::wstring& error) {
+                     std::wstring& error, const std::vector<FolderOperation>* approvedPlan = nullptr) {
     operations.clear();
     for (size_t index = 0; index < context.rows.size(); ++index) {
         const FolderRow& row = context.rows[index];
+        const FolderOperation* approved = nullptr;
+        if (approvedPlan) {
+            const auto found = std::find_if(approvedPlan->begin(), approvedPlan->end(),
+                [index](const FolderOperation& operation) { return operation.rowIndex == index; });
+            if (found == approvedPlan->end()) continue;
+            approved = &*found;
+        }
         if (row.choice == TargetChoice::Keep) {
             continue;
         }
@@ -854,7 +906,7 @@ bool BuildOperations(const DialogContext& context, std::vector<FolderOperation>&
             error = std::wstring(row.spec->label) + L" ne peut pas être redirigé sur ce PC.";
             return false;
         }
-        const std::wstring target = ResolveTarget(context, row);
+        const std::wstring target = approved ? approved->target : ResolveTarget(context, row);
         if (target.empty()) {
             error = L"La destination de " + std::wstring(row.spec->label) + L" n’est pas disponible.";
             return false;
@@ -937,6 +989,9 @@ bool PrepareOneDriveBackupForGoogle(HWND dialog, DialogContext& context,
         return true;
     }
 
+    // Backup release changes sources, never the destinations or rows the user approved.
+    const std::vector<FolderOperation> approvedPlan = operations;
+
     if (context.demoMode) {
         context.providers.simulateOneDriveBackupActive = false;
         for (size_t index = 0; index < context.rows.size() && index <= 2; ++index) {
@@ -949,7 +1004,7 @@ bool PrepareOneDriveBackupForGoogle(HWND dialog, DialogContext& context,
         }
         std::wstring error;
         operations.clear();
-        if (!BuildOperations(context, operations, error)) {
+        if (!BuildOperations(context, operations, error, &approvedPlan)) {
             SetStatus(dialog, error, true);
             return false;
         }
@@ -1007,7 +1062,7 @@ bool PrepareOneDriveBackupForGoogle(HWND dialog, DialogContext& context,
     }
 
     operations.clear();
-    if (!BuildOperations(context, operations, error)) {
+    if (!BuildOperations(context, operations, error, &approvedPlan)) {
         SetStatus(dialog, L"Sauvegarde OneDrive arrêtée ; plan à actualiser.", true);
         MessageBoxW(dialog, error.c_str(), L"CloudNav", MB_OK | MB_ICONERROR);
         context.changed = true;
@@ -1017,37 +1072,76 @@ bool PrepareOneDriveBackupForGoogle(HWND dialog, DialogContext& context,
     return true;
 }
 
+struct ReviewContext {
+    std::wstring plan;
+    std::wstring effects;
+    std::wstring notes;
+    std::wstring action;
+    ui::DialogTheme theme;
+};
+
+INT_PTR CALLBACK ReviewDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* context = reinterpret_cast<ReviewContext*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (message == WM_INITDIALOG) {
+        context = reinterpret_cast<ReviewContext*>(lParam);
+        SetWindowLongPtrW(dialog, DWLP_USER, lParam);
+        context->theme.Initialize(dialog, IDC_DIALOG_HEADING);
+        SetDlgItemTextW(dialog, IDC_REVIEW_PLAN, context->plan.c_str());
+        SetDlgItemTextW(dialog, IDC_REVIEW_EFFECTS, context->effects.c_str());
+        SetDlgItemTextW(dialog, IDC_REVIEW_NOTES, context->notes.c_str());
+        SetDlgItemTextW(dialog, IDOK, context->action.c_str());
+        SetFocus(GetDlgItem(dialog, IDCANCEL));
+        return FALSE;
+    }
+    if (message == WM_COMMAND && (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)) {
+        EndDialog(dialog, LOWORD(wParam)); return TRUE;
+    }
+    if (message == WM_CLOSE) { EndDialog(dialog, IDCANCEL); return TRUE; }
+    if (context && (message == WM_CTLCOLORSTATIC || message == WM_CTLCOLOREDIT || message == WM_CTLCOLORDLG))
+        return context->theme.Color(reinterpret_cast<HDC>(wParam));
+    return FALSE;
+}
+
 bool ConfirmOperations(HWND dialog, const DialogContext& context,
                        const std::vector<FolderOperation>& operations,
                        TransferChoice transfer) {
-    std::wstring message = L"CloudNav va modifier :\n";
+    ReviewContext review;
+    std::wstring& message = review.notes;
     for (const FolderOperation& operation : operations) {
         const FolderRow& row = context.rows[operation.rowIndex];
-        message += L"\n" + std::wstring(row.spec->label) + L"\n  " + operation.source +
-                   L"\n  → " + operation.target + L"\n";
+        review.plan += std::wstring(row.spec->label) + L"\r\n    Actuel : " + operation.source +
+                       L"\r\n    Prévu : " + operation.target + L"\r\n\r\n";
     }
 
     switch (transfer) {
     case TransferChoice::Copy:
-        message += L"\nLes fichiers seront copiés. L’ancien contenu sera conservé.";
+        message = L"Les fichiers seront copiés. L’ancien contenu sera conservé.";
+        review.action = L"Copier et appliquer";
         break;
     case TransferChoice::Move:
-        message += L"\nLes fichiers seront déplacés et retirés de leurs anciens emplacements.";
+        message = L"Les fichiers seront déplacés et retirés de leurs anciens emplacements.";
+        review.action = L"Déplacer et appliquer";
         break;
     case TransferChoice::Repoint:
-        message += L"\nAucun fichier ne sera transféré. Les destinations doivent déjà contenir les données.";
+        message = L"Aucun transfert. Les destinations doivent déjà contenir les données.";
+        review.action = L"Confirmer le repointage";
         break;
     }
 
-    bool warn = transfer != TransferChoice::Copy;
     if (PlanNeedsOneDriveBackupDisable(context, operations) &&
         IsOneDriveBackupActive(context)) {
-        message += L"\n\nOneDrive : CloudNav désactivera automatiquement la sauvegarde "
-                   L"des dossiers sur ce PC avant le repointage. Les fichiers resteront dans "
-                   L"OneDrive et rien ne sera supprimé. Cette désactivation concerne tous les "
-                   L"dossiers actuellement protégés ; ceux qui ne vont pas vers Google Drive "
-                   L"reviendront à leur emplacement local. Une confirmation administrateur peut apparaître.";
-        warn = true;
+        review.effects = L"La sauvegarde OneDrive sera désactivée pour tous les dossiers protégés.\r\n";
+        for (size_t index = 0; index < context.rows.size(); ++index) {
+            const FolderRow& row = context.rows[index];
+            if (FolderReturnsLocalAfterBackupRelease(true, index <= 2, row.choice == TargetChoice::Keep,
+                row.currentPath, context.providers.oneDriveRoot)) {
+                review.effects += std::wstring(row.spec->label) + L" — retour local induit\r\n    Actuel : " +
+                    row.currentPath + L"\r\n    Prévu : " + row.defaultPath + L"\r\n";
+            }
+        }
+        review.effects += L"Les fichiers restent dans OneDrive. Une autorisation administrateur peut être demandée.";
+    } else {
+        review.effects = L"Aucun autre dossier ne sera modifié. La sauvegarde OneDrive restera inchangée.";
     }
     const bool crossesMirroredClouds = context.providers.rootMirrorTaskDetected &&
         std::any_of(operations.begin(), operations.end(),
@@ -1056,9 +1150,7 @@ bool ConfirmOperations(HWND dialog, const DialogContext& context,
                     context.providers.oneDriveRoot, context.providers.googleDriveRoot);
             });
     if (crossesMirroredClouds && transfer != TransferChoice::Repoint) {
-        message += L"\n\nATTENTION : ces deux racines sont déjà synchronisées. "
-                   L"« Repointage seulement » évite de recopier ou déplacer les mêmes données.";
-        warn = true;
+        message += L"\r\nSuspends la synchronisation externe détectée ; ses fichiers n’ont pas été vérifiés.";
     }
     if (transfer == TransferChoice::Move && context.providers.rootMirrorTaskDetected) {
         const bool touchesCloud = std::any_of(operations.begin(), operations.end(),
@@ -1067,14 +1159,13 @@ bool ConfirmOperations(HWND dialog, const DialogContext& context,
                        PathTouchesCloud(context, operation.target);
             });
         if (touchesCloud) {
-            message += L"\n\nATTENTION : la synchronisation OneDrive ↔ Google Drive détectée peut "
+            message += L"\r\nATTENTION : la synchronisation OneDrive ↔ Google Drive détectée peut "
                        L"propager les suppressions. Arrête-la avant de déplacer hors d’un cloud.";
-            warn = true;
         }
     }
 
-    const UINT flags = MB_YESNO | MB_DEFBUTTON2 | (warn ? MB_ICONWARNING : MB_ICONQUESTION);
-    return MessageBoxW(dialog, message.c_str(), L"Confirmer les nouveaux emplacements", flags) == IDYES;
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_FOLDER_REVIEW), dialog,
+        ReviewDialogProc, reinterpret_cast<LPARAM>(&review)) == IDOK;
 }
 
 bool EnsureTargetDirectory(HWND dialog, const std::wstring& path, std::wstring& error) {
@@ -1350,6 +1441,11 @@ void HandleTargetSelection(HWND dialog, DialogContext& context, int controlId) {
             row.customPath = selectedPath;
         }
     }
+    // Equivalent destinations stay outside the confirmed plan, including backup side effects.
+    if (row.choice != TargetChoice::Keep && PathEquals(row.currentPath, ResolveTarget(context, row))) {
+        row.choice = TargetChoice::Keep;
+        row.customPath.clear();
+    }
     SendDlgItemMessageW(dialog, controlId, CB_SETCURSEL,
                         static_cast<WPARAM>(row.choice), 0);
     UpdateRowPreview(dialog, context, row);
@@ -1365,6 +1461,7 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
     case WM_INITDIALOG: {
         auto* context = reinterpret_cast<DialogContext*>(lParam);
         SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(context));
+        context->theme.Initialize(dialog);
         HINSTANCE instance = GetModuleHandleW(nullptr);
         SendMessageW(dialog, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(
             LoadImageW(instance, MAKEINTRESOURCEW(IDI_CLOUDNAV),
@@ -1387,6 +1484,7 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
         if (HIWORD(wParam) == CBN_SELCHANGE) {
             if (controlId == IDC_FOLDER_TRANSFER_MODE) {
                 UpdateTransferGuidance(dialog, *context, false);
+                SetStatus(dialog, L"Mode de transfert mis à jour. Vérifie le récapitulatif avant d’appliquer.");
                 return TRUE;
             }
             HandleTargetSelection(dialog, *context, controlId);
@@ -1417,6 +1515,15 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
                 return TRUE;
             }
             const TransferChoice transfer = ReadTransferChoice(dialog);
+            if (PlanNeedsOneDriveBackupDisable(*context, operations) && IsOneDriveBackupActive(*context) &&
+                transfer != TransferChoice::Repoint) {
+                SetStatus(dialog, L"Copie requise : ouvre Migration cloud depuis la fenêtre principale.", true);
+                MessageBoxW(dialog,
+                    L"La sauvegarde OneDrive protège ces dossiers. Pour conserver tous les fichiers, utilise l’assistant Migration cloud : "
+                    L"il copie et vérifie les données avant de proposer le repointage. Aucun emplacement n’a été modifié.",
+                    L"CloudNav — migrer avant de repointer", MB_OK | MB_ICONINFORMATION);
+                return TRUE;
+            }
             if (!ConfirmOperations(dialog, *context, operations, transfer)) {
                 SetStatus(dialog, L"Annulé. Rien n’a été modifié.");
                 return TRUE;
@@ -1430,7 +1537,7 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
                     ApplyOperations(dialog, *context, operations, transfer);
                 }
             }
-            EnableWindow(GetDlgItem(dialog, IDOK), TRUE);
+            UpdateTransferGuidance(dialog, *context, false);
             return TRUE;
         }
         case IDC_FOLDER_REFRESH:
@@ -1451,30 +1558,37 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
         EndDialog(dialog, context && context->changed ? IDOK : IDCANCEL);
         return TRUE;
     }
+    case WM_CTLCOLORDLG:
+    case WM_CTLCOLOREDIT:
     case WM_CTLCOLORSTATIC: {
         DialogContext* context = GetContext(dialog);
         HDC dc = reinterpret_cast<HDC>(wParam);
         HWND control = reinterpret_cast<HWND>(lParam);
-        SetBkMode(dc, TRANSPARENT);
+        COLORREF color = ui::Text;
         if (control == GetDlgItem(dialog, IDC_FOLDER_STATUS)) {
-            SetTextColor(dc, context && context->statusIsError
-                ? RGB(176, 32, 37) : RGB(20, 111, 78));
+            color = context && context->statusIsError ? RGB(176, 32, 37) : ui::Muted;
         } else if (control == GetDlgItem(dialog, IDC_FOLDER_WARNING)) {
-            SetTextColor(dc, context && context->guidanceIsWarning
-                ? RGB(146, 64, 14) : RGB(20, 111, 78));
+            color = context && context->guidanceIsWarning ? ui::Warning : ui::Muted;
+        } else if (context) {
+            for (const auto& row : context->rows) {
+                if (control == GetDlgItem(dialog, row.spec->pathControl + 2)) {
+                    const LONG_PTR state = GetWindowLongPtrW(control, GWLP_USERDATA);
+                    color = state == 2 ? ui::Warning : state == 1 ? ui::Accent : ui::Muted;
+                }
+            }
         }
-        return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_3DFACE));
+        return context ? context->theme.Color(dc, color) : FALSE;
     }
     case WM_DRAWITEM: {
         const DRAWITEMSTRUCT* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
         if (!item || item->CtlType != ODT_STATIC) {
             return FALSE;
         }
-        FillRect(item->hDC, &item->rcItem, GetSysColorBrush(COLOR_3DFACE));
+        DialogContext* context = GetContext(dialog);
+        FillRect(item->hDC, &item->rcItem, context ? context->theme.background : GetSysColorBrush(COLOR_WINDOW));
         const ProviderIcon icon = static_cast<ProviderIcon>(
             GetWindowLongPtrW(item->hwndItem, GWLP_USERDATA));
         RECT iconBounds = item->rcItem;
-        DialogContext* context = GetContext(item->hwndItem ? GetParent(item->hwndItem) : nullptr);
         const int pathControlId = PathControlForProvider(static_cast<int>(item->CtlID));
         HWND pathControl = pathControlId && context
             ? GetDlgItem(GetParent(item->hwndItem), pathControlId)

@@ -1,18 +1,4 @@
 [
-  { "type": "wait_window", "timeoutMs": 30000 },
-  { "type": "screenshot", "name": "cloudnav-111-main.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Dossiers personnels…", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "screenshot", "name": "cloudnav-111-plan.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Appliquer", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "screenshot", "name": "cloudnav-111-confirm.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Oui", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "screenshot", "name": "cloudnav-111-applied.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Fermer", "timeoutMs": 10000 },
-  { "type": "wait", "ms": 500 },
-  { "type": "focus_window" },
-  { "type": "send_keys", "keys": "ALT+F4", "holdMs": 75 },
+  { "type": "wait_result_file", "path": "{OUTDIR}\\ui-result.json", "timeoutMs": 90000 },
   { "type": "wait_process_exit", "timeoutMs": 30000, "expectedExitCode": 0 }
 ]

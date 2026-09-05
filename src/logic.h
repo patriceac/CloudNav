@@ -193,6 +193,37 @@ inline bool IsMirroredCloudTransition(const std::wstring& source,
            (sourceIsGoogleDrive && targetIsOneDrive);
 }
 
+// Verification is directional and only covers the corresponding relative folder.
+// A scheduled task, a reverse move, or a different destination is not proof.
+inline bool IsVerifiedCloudTransition(bool oneDriveToGoogleVerified,
+                                      const std::wstring& source,
+                                      const std::wstring& target,
+                                      const std::wstring& oneDriveRoot,
+                                      const std::wstring& googleDriveRoot) {
+    return oneDriveToGoogleVerified && PathIsWithin(source, oneDriveRoot) &&
+           PathIsWithin(target, googleDriveRoot) &&
+           PathEquals(PathRelativeToRoot(source, oneDriveRoot),
+                      PathRelativeToRoot(target, googleDriveRoot));
+}
+
+inline bool FolderReturnsLocalAfterBackupRelease(bool backupWillDisable, bool managedFolder,
+                                                 bool keepLocation,
+                                                 const std::wstring& currentPath,
+                                                 const std::wstring& oneDriveRoot) {
+    return backupWillDisable && managedFolder && keepLocation &&
+           PathIsWithin(currentPath, oneDriveRoot);
+}
+
+inline std::wstring ProviderAccountLabel(const std::wstring& provider, const std::wstring& account) {
+    if (account.empty()) return provider;
+    std::wstring normalized = account;
+    std::wstring normalizedProvider = provider;
+    for (auto& ch : normalized) ch = static_cast<wchar_t>(std::towlower(ch));
+    for (auto& ch : normalizedProvider) ch = static_cast<wchar_t>(std::towlower(ch));
+    return normalized.find(normalizedProvider) != std::wstring::npos
+        ? account : provider + L" — " + account;
+}
+
 inline bool NeedsOneDriveBackupDisable(bool isManagedFolder,
                                        const std::wstring& source,
                                        const std::wstring& target,

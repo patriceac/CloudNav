@@ -22,6 +22,7 @@
 #include "folder_manager.h"
 #include "migration.h"
 #include "resource.h"
+#include "ui.h"
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -51,8 +52,8 @@ constexpr int IDC_PERSONAL_FOLDERS = 1007;
 constexpr int IDC_DISABLE_ONEDRIVE_STARTUP = 1008;
 constexpr int IDC_UNINSTALL_ONEDRIVE = 1009;
 constexpr int IDC_MIGRATE_CLOUD = 1010;
-constexpr int kMainClientWidthDip = 680;
-constexpr int kMainClientHeightDip = 568;
+constexpr int kMainClientWidthDip = 740;
+constexpr int kMainClientHeightDip = 650;
 
 struct OneDriveInfo {
     std::wstring clsid;
@@ -103,6 +104,14 @@ HWND g_explanation = nullptr;
 HWND g_status = nullptr;
 HWND g_refresh = nullptr;
 HWND g_apply = nullptr;
+HWND g_foldersSection = nullptr;
+HWND g_migrationSection = nullptr;
+HWND g_oneDriveSection = nullptr;
+HWND g_startupDetail = nullptr;
+HWND g_providerIcons[3] = {};
+cloudnav::ui::ProviderImages g_providerImages;
+std::wstring g_chosenMyDrivePath;
+void UpdateVisibilityPending();
 HFONT g_titleFont = nullptr;
 HFONT g_bodyFont = nullptr;
 HFONT g_bodyBoldFont = nullptr;
@@ -649,9 +658,9 @@ std::wstring GoogleDriveLabel(const AppState& state) {
     if (!state.googleDriveLetter) {
         return L"Google Drive (non détecté)";
     }
-    std::wstring label = L"Google Drive (";
+    std::wstring label = L"Google Drive — lecteur ";
     label.push_back(state.googleDriveLetter);
-    label += L":)";
+    label += L":";
     return label;
 }
 
@@ -659,7 +668,7 @@ std::wstring GoogleDriveDetail(const AppState& state) {
     if (!state.googleDriveLetter) {
         return L"Lance Google Drive pour que CloudNav retrouve sa lettre.";
     }
-    return L"Masque seulement l’icône du lecteur ; les fichiers restent accessibles.";
+    return L"Afficher le lecteur virtuel dans l’Explorateur ; les fichiers restent accessibles même masqués.";
 }
 
 void SetControlFont(HWND control, HFONT font) {
@@ -685,6 +694,7 @@ std::wstring JoinFolderNames(const std::vector<std::wstring>& names) {
 }
 
 void UpdateControlsFromState() {
+    g_chosenMyDrivePath = g_state.myDrivePath;
     const std::wstring myDetail = g_state.myDrivePath.empty()
         ? L"Dossier non détecté : utilise « Choisir… »."
         : g_state.myDrivePath;
@@ -692,18 +702,20 @@ void UpdateControlsFromState() {
     Button_SetCheck(g_myDrive, g_state.myDriveVisible ? BST_CHECKED : BST_UNCHECKED);
 
     if (g_state.oneDrive.detected) {
-        SetWindowTextW(g_oneDrive, g_state.oneDrive.label.c_str());
+        SetWindowTextW(g_oneDrive, cloudnav::ProviderAccountLabel(L"OneDrive", g_state.oneDrive.label).c_str());
         std::wstring detail = g_state.oneDrive.path.empty()
             ? L"Compte OneDrive détecté."
             : g_state.oneDrive.path;
-        detail += g_state.oneDriveAutoStart
-            ? L"  •  démarrage automatique activé"
-            : L"  •  démarrage automatique désactivé";
+        const std::wstring startup = g_state.oneDriveAutoStart
+            ? L"Démarrage automatique activé"
+            : L"Démarrage automatique désactivé";
+        SetWindowTextW(g_startupDetail, startup.c_str());
         SetWindowTextW(g_oneDriveDetail, detail.c_str());
         EnableWindow(g_oneDrive, TRUE);
         Button_SetCheck(g_oneDrive, g_state.oneDrive.visible ? BST_CHECKED : BST_UNCHECKED);
     } else {
         SetWindowTextW(g_oneDrive, L"OneDrive (non détecté)");
+        SetWindowTextW(g_startupDetail, L"Client non détecté");
         SetWindowTextW(g_oneDriveDetail, L"Aucun compte OneDrive n’est enregistré sur ce PC.");
         EnableWindow(g_oneDrive, FALSE);
         Button_SetCheck(g_oneDrive, BST_UNCHECKED);
@@ -726,7 +738,7 @@ void UpdateControlsFromState() {
             L"⚠ Impossible de vérifier tous les dossiers personnels ; actions OneDrive bloquées.");
     } else if (g_state.oneDrive.detected) {
         SetWindowTextW(g_oneDriveSafety,
-            L"Aucun dossier personnel ne dépend de OneDrive.");
+            L"Aucun des six dossiers personnels gérés ne dépend de OneDrive. Les autres dossiers ne sont pas vérifiés.");
     } else {
         SetWindowTextW(g_oneDriveSafety, L"");
     }
@@ -740,6 +752,7 @@ void UpdateControlsFromState() {
     SetWindowTextW(g_googleDriveDetail, GoogleDriveDetail(g_state).c_str());
     EnableWindow(g_googleDrive, g_state.googleDriveLetter != 0);
     Button_SetCheck(g_googleDrive, g_state.googleDriveVisible ? BST_CHECKED : BST_UNCHECKED);
+    UpdateVisibilityPending();
 }
 
 bool VerifyOneDriveActionGuard() {
@@ -801,17 +814,16 @@ void UninstallOneDrive() {
         ShowStatus(L"Programme de désinstallation OneDrive introuvable.", true);
         return;
     }
-    const int confirmation = MessageBoxW(
-        g_window,
-        L"Désinstaller le client OneDrive de ce PC ?\n\n"
+    const bool confirmation = cloudnav::ui::Confirm(
+        g_window, L"CloudNav — désinstaller OneDrive", L"Désinstaller le client OneDrive de ce PC ?",
+        L""
         L"CloudNav a vérifié que Bureau, Documents, Images, Téléchargements, Musique et Vidéos "
         L"ne pointent pas vers OneDrive. Les autres dossiers synchronisés ne sont pas vérifiés.\n\n"
         L"Avant de continuer, assure-toi que OneDrive indique « À jour ». Les fichiers stockés "
         L"dans le cloud ne seront pas supprimés ; ceux disponibles uniquement en ligne resteront "
         L"accessibles sur OneDrive.com.",
-        L"CloudNav — désinstaller OneDrive",
-        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
-    if (confirmation != IDYES) {
+        L"Désinstaller OneDrive", true);
+    if (!confirmation) {
         ShowStatus(L"Désinstallation OneDrive annulée.");
         return;
     }
@@ -1186,20 +1198,23 @@ void ApplySelections() {
     const bool showOneDrive = Button_GetCheck(g_oneDrive) == BST_CHECKED;
     const bool showGoogleDrive = Button_GetCheck(g_googleDrive) == BST_CHECKED;
 
-    if (showMyDrive && g_state.myDrivePath.empty()) {
-        g_state.myDrivePath = PickFolder(g_window);
-        if (g_state.myDrivePath.empty()) {
+    if (showMyDrive && g_chosenMyDrivePath.empty()) {
+        g_chosenMyDrivePath = PickFolder(g_window);
+        if (g_chosenMyDrivePath.empty()) {
             ShowStatus(L"Choisis d’abord le dossier My Drive.", true);
             return;
         }
-        SetWindowTextW(g_myDriveDetail, g_state.myDrivePath.c_str());
+        SetWindowTextW(g_myDriveDetail, g_chosenMyDrivePath.c_str());
     }
 
+    if (!IsWindowEnabled(g_apply)) return;
     if (g_demoMode) {
+        g_state.myDrivePath = g_chosenMyDrivePath;
         g_state.myDriveVisible = showMyDrive;
         g_state.oneDrive.visible = showOneDrive;
         g_state.googleDriveVisible = showGoogleDrive;
-        ShowStatus(L"Mode test : configuration simulée, interface validée.");
+        UpdateVisibilityPending();
+        ShowStatus(L"Mode test : visibilité simulée avec succès.");
         return;
     }
 
@@ -1207,7 +1222,7 @@ void ApplySelections() {
     ShowStatus(L"Application en cours…");
     std::wstring error;
 
-    if (!RunElevatedApply(showMyDrive, g_state.myDrivePath,
+    if (!RunElevatedApply(showMyDrive, g_chosenMyDrivePath,
                           showOneDrive,
                           g_state.oneDrive.detected ? g_state.oneDrive.clsid : L"",
                           showGoogleDrive, g_state.googleDriveLetter, error)) {
@@ -1220,7 +1235,7 @@ void ApplySelections() {
     const bool restarted = RestartExplorer();
     g_state = DetectState();
     UpdateControlsFromState();
-    EnableWindow(GetDlgItem(g_window, IDC_APPLY), TRUE);
+    UpdateVisibilityPending();
     ShowStatus(restarted
         ? L"Appliqué. L’Explorateur a été relancé."
         : L"Appliqué. Rouvre l’Explorateur pour voir le résultat.", !restarted);
@@ -1265,42 +1280,56 @@ HWND CreateCheckbox(HWND parent, int id, const wchar_t* text) {
     return control;
 }
 
+void UpdateVisibilityPending() {
+    if (!g_apply) return;
+    const bool myDrive = Button_GetCheck(g_myDrive) == BST_CHECKED;
+    int changes = myDrive != g_state.myDriveVisible ||
+        (myDrive && !cloudnav::PathEquals(g_chosenMyDrivePath, g_state.myDrivePath)) ? 1 : 0;
+    if ((Button_GetCheck(g_oneDrive) == BST_CHECKED) != g_state.oneDrive.visible) ++changes;
+    if ((Button_GetCheck(g_googleDrive) == BST_CHECKED) != g_state.googleDriveVisible) ++changes;
+    EnableWindow(g_apply, changes > 0);
+    const std::wstring summary = changes
+        ? std::to_wstring(changes) + L" modification(s) de visibilité. L’Explorateur sera relancé."
+        : L"Visibilité à jour. Coche une entrée pour l’afficher.";
+    SetWindowTextW(g_explanation, summary.c_str());
+}
+
 void LayoutMainControls(UINT dpi) {
-    MoveControl(g_title, 26, 20, 620, 36, dpi);
-    MoveControl(g_subtitle, 28, 58, 624, 24, dpi);
-    MoveControl(g_sectionTitle, 28, 96, 300, 18, dpi);
-
-    MoveControl(g_myDrive, 32, 122, 430, 25, dpi);
-    MoveControl(g_myDriveDetail, 55, 149, 480, 22, dpi);
-    MoveControl(g_browse, 554, 120, 98, 32, dpi);
-
-    MoveControl(g_oneDrive, 32, 190, 245, 25, dpi);
-    MoveControl(g_disableOneDriveStartup, 285, 186, 229, 32, dpi);
-    MoveControl(g_uninstallOneDrive, 522, 186, 130, 32, dpi);
-    MoveControl(g_oneDriveDetail, 55, 219, 597, 20, dpi);
-    MoveControl(g_oneDriveSafety, 55, 241, 597, 31, dpi);
-
-    MoveControl(g_googleDrive, 32, 284, 430, 25, dpi);
-    MoveControl(g_googleDriveDetail, 55, 311, 597, 22, dpi);
-
-    MoveControl(g_personalFolders, 28, 352, 184, 32, dpi);
-    MoveControl(g_personalFoldersDetail, 226, 357, 426, 22, dpi);
-    MoveControl(g_migrateCloud, 28, 398, 236, 32, dpi);
-    MoveControl(g_migrateCloudDetail, 278, 403, 374, 28, dpi);
-    MoveControl(g_explanation, 28, 448, 624, 22, dpi);
-
-    MoveControl(g_status, 28, 513, 403, 30, dpi);
-    MoveControl(g_refresh, 446, 508, 96, 34, dpi);
-    MoveControl(g_apply, 552, 508, 100, 34, dpi);
+    MoveControl(g_title, 28, 18, 684, 36, dpi);
+    MoveControl(g_subtitle, 28, 58, 684, 24, dpi);
+    MoveControl(g_sectionTitle, 28, 98, 684, 22, dpi);
+    MoveControl(g_myDrive, 56, 128, 540, 25, dpi);
+    MoveControl(g_myDriveDetail, 78, 154, 520, 20, dpi);
+    MoveControl(g_browse, 614, 128, 98, 32, dpi);
+    MoveControl(g_oneDrive, 56, 180, 656, 25, dpi);
+    MoveControl(g_oneDriveDetail, 78, 206, 634, 20, dpi);
+    MoveControl(g_googleDrive, 56, 232, 656, 25, dpi);
+    MoveControl(g_googleDriveDetail, 78, 258, 634, 20, dpi);
+    for (int i = 0; i < 3; ++i) MoveControl(g_providerIcons[i], 28, 130 + i * 52, 22, 22, dpi);
+    MoveControl(g_explanation, 28, 297, 476, 34, dpi);
+    MoveControl(g_apply, 520, 293, 192, 34, dpi);
+    MoveControl(g_foldersSection, 28, 352, 350, 22, dpi);
+    MoveControl(g_personalFoldersDetail, 28, 378, 400, 18, dpi);
+    MoveControl(g_personalFolders, 456, 357, 256, 34, dpi);
+    MoveControl(g_migrationSection, 28, 418, 400, 22, dpi);
+    MoveControl(g_migrateCloudDetail, 28, 444, 410, 26, dpi);
+    MoveControl(g_migrateCloud, 456, 425, 256, 34, dpi);
+    MoveControl(g_oneDriveSection, 28, 496, 344, 22, dpi);
+    MoveControl(g_startupDetail, 388, 498, 324, 20, dpi);
+    MoveControl(g_oneDriveSafety, 28, 522, 684, 30, dpi);
+    MoveControl(g_disableOneDriveStartup, 28, 562, 246, 32, dpi);
+    MoveControl(g_uninstallOneDrive, 286, 562, 166, 32, dpi);
+    MoveControl(g_status, 28, 615, 570, 28, dpi);
+    MoveControl(g_refresh, 614, 608, 98, 32, dpi);
 }
 
 void CreateInterface(HWND window) {
     g_title = CreateLabel(window, L"CloudNav", g_titleFont);
     g_subtitle = CreateLabel(window,
-        L"Choisis ce qui apparaît dans le volet gauche de l’Explorateur Windows.", g_bodyFont);
-    g_sectionTitle = CreateLabel(window, L"ÉLÉMENTS À AFFICHER", g_smallFont);
+        L"Visibilité dans l’Explorateur, dossiers personnels et migration cloud.", g_bodyFont);
+    g_sectionTitle = CreateLabel(window, L"Volet de l’Explorateur", g_bodyBoldFont);
 
-    g_myDrive = CreateCheckbox(window, IDC_MY_DRIVE, L"My Drive");
+    g_myDrive = CreateCheckbox(window, IDC_MY_DRIVE, L"Google Drive — dossier My Drive");
     g_myDriveDetail = CreateLabel(window, L"", g_smallFont);
     g_browse = CreateWindowExW(0, L"BUTTON", L"Choisir…",
                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -1319,7 +1348,7 @@ void CreateInterface(HWND window) {
         g_instance, nullptr);
     SetControlFont(g_disableOneDriveStartup, g_bodyFont);
     g_uninstallOneDrive = CreateWindowExW(
-        0, L"BUTTON", L"Désinstaller",
+        0, L"BUTTON", L"Désinstaller OneDrive",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UNINSTALL_ONEDRIVE)),
@@ -1337,21 +1366,21 @@ void CreateInterface(HWND window) {
         g_instance, nullptr);
     SetControlFont(g_personalFolders, g_bodyBoldFont);
     g_personalFoldersDetail = CreateLabel(
-        window, L"Bureau, Documents, Images, Téléchargements, Musique et Vidéos", g_smallFont);
+        window, L"Choisir où Windows range tes six dossiers personnels.", g_smallFont);
 
     g_migrateCloud = CreateWindowExW(
-        0, L"BUTTON", L"Migrer OneDrive → Google Drive…",
+        0, L"BUTTON", L"Migrer vers Google Drive…",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MIGRATE_CLOUD)),
         g_instance, nullptr);
     SetControlFont(g_migrateCloud, g_bodyBoldFont);
     g_migrateCloudDetail = CreateLabel(
-        window, L"Copie à sens unique, progression, vérification et bascule facultative", g_smallFont);
+        window, L"Copier OneDrive, vérifier, puis configurer les dossiers.", g_smallFont);
 
     g_explanation = CreateLabel(
         window,
-        L"« Appliquer » concerne le volet Explorer. Les déplacements de fichiers sont confirmés séparément.",
+        L"Visibilité à jour.",
         g_smallFont);
     g_status = CreateLabel(window, L"Prêt.", g_bodyFont);
 
@@ -1360,11 +1389,21 @@ void CreateInterface(HWND window) {
                                 0, 0, 0, 0, window,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_REFRESH)), g_instance, nullptr);
     SetControlFont(g_refresh, g_bodyFont);
-    g_apply = CreateWindowExW(0, L"BUTTON", L"Appliquer",
+    g_apply = CreateWindowExW(0, L"BUTTON", L"Appliquer la visibilité",
                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                               0, 0, 0, 0, window,
                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_APPLY)), g_instance, nullptr);
     SetControlFont(g_apply, g_bodyBoldFont);
+    g_foldersSection = CreateLabel(window, L"Dossiers personnels", g_bodyBoldFont);
+    g_migrationSection = CreateLabel(window, L"Migration cloud", g_bodyBoldFont);
+    g_oneDriveSection = CreateLabel(window, L"Gestion du client OneDrive", g_bodyBoldFont);
+    g_startupDetail = CreateLabel(window, L"", g_smallFont);
+    g_providerImages.Load(g_instance);
+    for (int i = 0; i < 3; ++i) {
+        g_providerIcons[i] = CreateWindowExW(0, L"STATIC", L"",
+            WS_CHILD | WS_VISIBLE | SS_OWNERDRAW, 0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(1011 + i)), g_instance, nullptr);
+    }
     LayoutMainControls(g_uiDpi);
 }
 
@@ -1385,13 +1424,19 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case IDC_BROWSE: {
             const std::wstring selected = PickFolder(window);
             if (!selected.empty()) {
-                g_state.myDrivePath = selected;
+                g_chosenMyDrivePath = selected;
                 SetWindowTextW(g_myDriveDetail, selected.c_str());
                 Button_SetCheck(g_myDrive, BST_CHECKED);
-                ShowStatus(L"Dossier choisi. Clique sur « Appliquer ». ");
+                UpdateVisibilityPending();
+                ShowStatus(L"Dossier choisi. Applique la visibilité pour enregistrer cette entrée.");
             }
             return 0;
         }
+        case IDC_MY_DRIVE:
+        case IDC_ONEDRIVE:
+        case IDC_GOOGLE_DRIVE:
+            UpdateVisibilityPending();
+            return 0;
         case IDC_REFRESH:
             RefreshState();
             return 0;
@@ -1409,7 +1454,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             providers.rootMirrorTaskDetected = DetectRootMirrorTask() || g_demoMode;
             providers.preloadDemoPlan = g_demoPlan;
             providers.simulateRepointFailure = g_demoFailure;
-            providers.simulateOneDriveBackupActive = g_demoPlan;
+            providers.simulateOneDriveBackupActive = g_demoPlan && !g_demoFailure;
             const bool changed = cloudnav::ShowFolderManagerDialog(
                 window, g_instance, providers, g_demoMode);
             if (!g_demoMode) {
@@ -1432,6 +1477,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 providers.oneDriveToGoogleVerified = true;
                 providers.preloadDemoPlan = g_demoMode;
                 cloudnav::ShowFolderManagerDialog(window, g_instance, providers, g_demoMode);
+                if (!g_demoMode) { g_state = DetectState(); UpdateControlsFromState(); }
             }
             ShowStatus(result == cloudnav::MigrationResult::ConfigureFolders
                 ? L"Migration vérifiée ; gestion des dossiers ouverte."
@@ -1445,6 +1491,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             break;
         }
         break;
+    case WM_DRAWITEM: {
+        const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        if (item && item->CtlID >= 1011 && item->CtlID <= 1013) {
+            FillRect(item->hDC, &item->rcItem, g_backgroundBrush);
+            g_providerImages.Draw(item->hDC, item->rcItem, item->CtlID == 1012);
+            return TRUE;
+        }
+        break;
+    }
     case WM_CTLCOLORSTATIC: {
         HDC dc = reinterpret_cast<HDC>(wParam);
         HWND control = reinterpret_cast<HWND>(lParam);
@@ -1489,16 +1544,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         HDC dc = BeginPaint(window, &paint);
         HPEN linePen = CreatePen(PS_SOLID, 1, RGB(226, 232, 240));
         HGDIOBJ oldPen = SelectObject(dc, linePen);
-        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(178, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(178, g_uiDpi));
-        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(273, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(273, g_uiDpi));
-        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(340, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(340, g_uiDpi));
-        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(391, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(391, g_uiDpi));
-        MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(430, g_uiDpi), nullptr);
-        LineTo(dc, ScaleDip(652, g_uiDpi), ScaleDip(430, g_uiDpi));
+        for (int y : {338, 406, 482}) {
+            MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(y, g_uiDpi), nullptr);
+            LineTo(dc, ScaleDip(712, g_uiDpi), ScaleDip(y, g_uiDpi));
+        }
         SelectObject(dc, oldPen);
         DeleteObject(linePen);
         EndPaint(window, &paint);
@@ -1533,7 +1582,13 @@ void RecreateUiFonts(UINT dpi) {
 
     SetControlFont(g_title, g_titleFont);
     SetControlFont(g_subtitle, g_bodyFont);
-    SetControlFont(g_sectionTitle, g_smallFont);
+    SetControlFont(g_sectionTitle, g_bodyBoldFont);
+    SetControlFont(g_foldersSection, g_bodyBoldFont);
+    SetControlFont(g_migrationSection, g_bodyBoldFont);
+    SetControlFont(g_oneDriveSection, g_bodyBoldFont);
+    SetControlFont(g_startupDetail, g_smallFont);
+    SetControlFont(g_migrateCloud, g_bodyBoldFont);
+    SetControlFont(g_migrateCloudDetail, g_smallFont);
     SetControlFont(g_myDrive, g_bodyBoldFont);
     SetControlFont(g_myDriveDetail, g_smallFont);
     SetControlFont(g_browse, g_bodyFont);
@@ -1687,7 +1742,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
                        FALSE, 0);
     g_window = CreateWindowExW(
         0, windowClass.lpszClassName,
-        g_demoMode ? L"CloudNav — test visuel" : L"CloudNav — volet de l’Explorateur",
+        g_demoMode ? L"CloudNav — test visuel" : L"CloudNav",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, dimensions.right - dimensions.left, dimensions.bottom - dimensions.top,
         nullptr, nullptr, instance, nullptr);
