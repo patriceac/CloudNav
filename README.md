@@ -45,6 +45,8 @@ Migration progress identifies analysis, copy, and verification as separate phase
 
 Root-level migration scans use rclone's `--fast-list` and `--onedrive-delta` to reduce directory-listing requests to both providers, in exchange for keeping the file lists in memory. The same listing options apply to analysis, copy, and verification. Analysis remains a dry run, with the same comparison rules and exclusions. See the [rclone OneDrive listing documentation](https://rclone.org/onedrive/#fast-list).
 
+After analysis, the assistant shows counts of new, changed, matching, and destination-only files, errors, and the estimated bytes to copy. **Voir les détails…** opens a file table with category filters and selectable full paths. The report comes from the same dry-run comparison, without a second cloud scan. Matching means equal under rclone's comparison rules; this is not a claim that every file was downloaded and compared byte for byte. Personal Vault and native Google documents are excluded before comparison and are explicitly marked as uncounted. Interrupted results are labeled partial, unknown sizes remain unavailable, and a new operation clears the previous report.
+
 ## Usage
 
 1. Download `CloudNav.exe` from the latest GitHub Release.
@@ -92,6 +94,8 @@ With the Codex Hyper-V SYSTEM broker installed, run the repeatable offline relea
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Ui,MigrationResume
 # Check analysis progress, cancellation/resume, and the embedded engine:
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Migration,MigrationResume,MigrationEngine
+# Check the KPI summary, category filters, and partial/stale report handling:
+.\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario MigrationReport,MigrationEngine
 ```
 
 The runner keys checkpoints to the exact executable, test driver, action file, and runner hashes. It checks declared assertions, screenshot presence, process cleanup, VM shutdown, and disposable payload deletion before saving a pass. Screenshots still require visual review. The migration engine test uses the embedded rclone with synthetic local directories and an empty account configuration: it checks that analysis leaves files and timestamps untouched, copying retains destination extras and exclusions, and independent verification detects a same-size content mismatch. Tests use offline fixtures and demo operations; they do not qualify real OAuth, cloud transfers, cloud performance, or actual OneDrive uninstallation.

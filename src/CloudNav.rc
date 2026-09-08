@@ -9,7 +9,7 @@ IDR_ONEDRIVE_LOGO RCDATA "../assets/onedrive-official.png"
 IDR_GOOGLE_DRIVE_LOGO RCDATA "../assets/google-drive-official.png"
 IDR_RCLONE_EXE RCDATA "../.third-party/rclone/v1.75.0/rclone.exe"
 
-IDD_CLOUD_MIGRATION DIALOGEX 0, 0, 500, 306
+IDD_CLOUD_MIGRATION DIALOGEX 0, 0, 500, 366
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "CloudNav — migration OneDrive vers Google Drive"
 FONT 9, "Segoe UI"
@@ -30,10 +30,28 @@ BEGIN
     CONTROL "", IDC_MIGRATION_PROGRESS, "msctls_progress32", PBS_SMOOTH, 16, 187, 468, 14
     LTEXT "En attente de l’analyse", IDC_MIGRATION_STATS, 16, 209, 468, 14
     LTEXT "Connecte les deux comptes, puis lance l’analyse.", IDC_MIGRATION_DETAILS, 16, 231, 468, 26
-    PUSHBUTTON "Analyser", IDC_MIGRATION_ANALYZE, 16, 269, 82, 24
-    PUSHBUTTON "Copier et vérifier", IDC_MIGRATION_COPY, 106, 269, 108, 24
-    PUSHBUTTON "Configurer les dossiers…", IDC_MIGRATION_CUTOVER, 222, 269, 156, 24
-    PUSHBUTTON "Fermer", IDCANCEL, 394, 269, 90, 24
+    LTEXT "Les résultats apparaîtront après l’analyse.", IDC_MIGRATION_SUMMARY, 16, 258, 468, 28
+    LTEXT "Exclus du bilan : coffre-fort OneDrive et documents Google natifs (non comptés).", -1, 16, 292, 370, 22
+    PUSHBUTTON "Voir les détails…", IDC_MIGRATION_REPORT, 394, 288, 90, 22
+    PUSHBUTTON "Analyser", IDC_MIGRATION_ANALYZE, 16, 328, 82, 24
+    PUSHBUTTON "Copier et vérifier", IDC_MIGRATION_COPY, 106, 328, 108, 24
+    PUSHBUTTON "Configurer les dossiers…", IDC_MIGRATION_CUTOVER, 222, 328, 156, 24
+    PUSHBUTTON "Fermer", IDCANCEL, 394, 328, 90, 24
+END
+
+IDD_MIGRATION_REPORT DIALOGEX 0, 0, 620, 352
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "CloudNav — résultats de l’analyse"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "Résultats de l’analyse", IDC_DIALOG_HEADING, 16, 10, 588, 22
+    LTEXT "", IDC_MIGRATION_SUMMARY, 16, 36, 588, 28
+    LTEXT "Afficher", -1, 16, 75, 42, 12
+    COMBOBOX IDC_REPORT_FILTER, 62, 71, 200, 140, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL "", IDC_REPORT_LIST, "SysListView32", WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 16, 99, 588, 170
+    EDITTEXT IDC_REPORT_SELECTED, 16, 277, 588, 30, ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL | WS_HSCROLL | WS_TABSTOP
+    LTEXT "Identiques selon les règles de comparaison. Exclusions non comptées : coffre-fort et documents Google natifs.", -1, 16, 316, 476, 23
+    DEFPUSHBUTTON "Retour", IDCANCEL, 524, 316, 80, 22
 END
 
 IDD_FOLDER_MANAGER DIALOGEX 0, 0, 540, 348

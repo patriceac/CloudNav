@@ -4,6 +4,7 @@
 
 #include "../src/logic.h"
 #include "../src/migration_logic.h"
+#include "../src/migration_report.h"
 
 int wmain() {
     using cloudnav::DriveBit;
@@ -198,6 +199,34 @@ int wmain() {
         assert(args[0] == (stage == MigrationStage::Verifying ? L"check" : L"copy"));
         assert(!has(L"--size-only") && !has(L"--ignore-existing") && !has(L"--ignore-errors"));
     }
+
+    cloudnav::AnalysisReport report;
+    report.Log(R"({"object":"Documents/été, \"copie\".txt","skipped":"copy","size":123})");
+    report.Log(R"({"object":"changed.txt","skipped":"copy","size":456})");
+    std::istringstream combined("+ Documents/été, \"copie\".txt\n* changed.txt\n= same.txt\n- extra.txt\n+ Documents/été, \"copie\".txt\n");
+    report.Combined(combined);
+    assert(!report.malformed && report.Count('+') == 1 && report.Count('*') == 1 && report.Count('=') == 1 && report.Count('-') == 1);
+    assert(report.CopySize() == L"579 o");
+    assert(report.Summary().find(L"Résultats partiels") == 0);
+    report.complete = true;
+    assert(report.Summary().find(L"Nouveaux : 1") == 0);
+    report.Log(R"({"level":"error","object":"changed.txt","msg":"access denied"})");
+    report.Log(R"({"level":"error","object":"changed.txt","msg":"access denied"})");
+    assert(report.Count('!') == 1 && report.Count('*') == 0);
+    cloudnav::AnalysisReport emptyReport;
+    std::istringstream emptyCombined("");
+    emptyReport.Combined(emptyCombined);
+    assert(emptyReport.available && emptyReport.CopySize() == L"0 o" && emptyReport.files.empty());
+    std::istringstream unknownSize("+ new.txt\n");
+    emptyReport.Combined(unknownSize);
+    assert(emptyReport.CopySize() == L"indisponible");
+    std::istringstream malformed("unexpected filename continuation\n");
+    emptyReport.Combined(malformed);
+    assert(emptyReport.malformed);
+    std::string decoded;
+    assert(cloudnav::JsonString("{\"object\":\"\\u00e9\\ud83d\\ude80\\\\file\"}", "object", decoded));
+    assert(decoded == "é🚀\\file");
+    assert(!cloudnav::JsonString("{\"object\":\"\\ud800\"}", "object", decoded));
 
     std::wcout << L"CloudNav logic tests: OK\n";
     return 0;

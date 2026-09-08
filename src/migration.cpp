@@ -21,6 +21,7 @@
 #include "logic.h"
 #include "migration.h"
 #include "migration_logic.h"
+#include "migration_report.h"
 #include "resource.h"
 #include "ui.h"
 
@@ -46,6 +47,7 @@ struct CompletionUpdate {
     bool success = false;
     bool cancelled = false;
     std::wstring message;
+    AnalysisReport report;
 };
 
 struct DialogContext {
@@ -64,6 +66,7 @@ struct DialogContext {
     bool indeterminate = false;
     bool progressConsistent = true;
     bool cancellationConsistent = true;
+    AnalysisReport report;
     ui::DialogTheme theme;
     ui::ProviderImages images;
     Task task = Task::None;
@@ -170,7 +173,7 @@ bool HasRemote(const std::wstring& configPath, const wchar_t* remote) {
 }
 
 bool RunProcess(DialogContext& context, const std::vector<std::wstring>& arguments,
-                MigrationStage stage, std::wstring& error, DWORD* processExitCode = nullptr) {
+                MigrationStage stage, std::wstring& error, DWORD* processExitCode = nullptr, AnalysisReport* report = nullptr) {
     if (context.cancelRequested) return false;
     SECURITY_ATTRIBUTES security = {sizeof(security), nullptr, TRUE};
     HANDLE readPipe = nullptr;
@@ -179,6 +182,8 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
     std::wstring command = QuoteArgument(context.runtimePath);
     for (const auto& argument : arguments) command += L" " + QuoteArgument(argument);
+    const std::wstring combinedPath = context.logPath + L".analysis-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    if (report) command += L" --combined " + QuoteArgument(combinedPath);
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
     mutableCommand.push_back(L'\0');
     STARTUPINFOW startup = {sizeof(startup)};
@@ -216,6 +221,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
         while ((newline = pending.find('\n')) != std::string::npos) {
             const std::string line = pending.substr(0, newline);
             pending.erase(0, newline + 1);
+            if (report) report->Log(line);
             MigrationStatistics stats;
             if (ParseMigrationStatistics(line, stats)) {
                 const auto progress = FormatMigrationProgress(stage, stats);
@@ -233,9 +239,21 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     context.childProcess = nullptr;
     LeaveCriticalSection(&context.processLock);
     CloseHandle(process.hProcess);
+    if (report) {
+        std::ifstream combined(combinedPath, std::ios::binary);
+        if (combined) report->Combined(combined);
+        else report->malformed = true;
+        combined.close();
+        DeleteFileW(combinedPath.c_str());
+        report->complete = exitCode == 0 && !context.cancelRequested && !report->malformed && report->Count('!') == 0;
+    }
     if (context.cancelRequested || exitCode == ERROR_CANCELLED) return false;
     if (exitCode != 0) {
         error = L"rclone a signalé une erreur (code " + std::to_wstring(exitCode) + L"). Journal : " + context.logPath;
+        return false;
+    }
+    if (report && !report->complete) {
+        error = L"Le bilan de l’analyse est incomplet. Relance l’analyse avant de copier.";
         return false;
     }
     return true;
@@ -245,6 +263,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
     auto& context = *static_cast<DialogContext*>(parameter);
     bool success = false;
     std::wstring error;
+    AnalysisReport report;
     if (!ExtractRclone(context.instance, context.runtimePath, error)) {
         success = false;
     } else if (context.demoMode) {
@@ -275,6 +294,15 @@ DWORD WINAPI WorkerProc(void* parameter) {
             }
         }
         success = !context.cancelRequested;
+        if (context.task == Task::Analyze) {
+            std::istringstream combined("+ Documents/nouveau.pdf\n* Photos/vacances.jpg\n= Documents/identique.txt\n- Archives/conservé.txt\n");
+            report.Combined(combined);
+            report.files["Documents/nouveau.pdf"].bytes = 1048576;
+            report.files["Documents/nouveau.pdf"].sizeKnown = true;
+            report.files["Photos/vacances.jpg"].bytes = 2097152;
+            report.files["Photos/vacances.jpg"].sizeKnown = true;
+            report.complete = success;
+        }
     } else if (context.task == Task::AuthenticateOneDrive || context.task == Task::AuthenticateGoogle) {
         const bool oneDrive = context.task == Task::AuthenticateOneDrive;
         const wchar_t* remote = oneDrive ? kOneDriveRemote : kGoogleRemote;
@@ -283,14 +311,14 @@ DWORD WINAPI WorkerProc(void* parameter) {
         else args = {L"config", L"create", remote, oneDrive ? L"onedrive" : L"drive", L"config_is_local=true", L"--config", context.configPath};
         success = RunProcess(context, args, MigrationStage::Connecting, error);
     } else if (context.task == Task::Analyze) {
-        success = RunProcess(context, MigrationArguments(MigrationStage::Analyzing, context.configPath), MigrationStage::Analyzing, error);
+        success = RunProcess(context, MigrationArguments(MigrationStage::Analyzing, context.configPath), MigrationStage::Analyzing, error, nullptr, &report);
     } else if (context.task == Task::CopyAndVerify) {
         success = RunProcess(context, MigrationArguments(MigrationStage::Copying, context.configPath), MigrationStage::Copying, error);
         if (success && !context.cancelRequested) {
             success = RunProcess(context, MigrationArguments(MigrationStage::Verifying, context.configPath), MigrationStage::Verifying, error);
         }
     }
-    auto* completion = new CompletionUpdate{context.task, success, context.cancelRequested.load(), error};
+    auto* completion = new CompletionUpdate{context.task, success, context.cancelRequested.load(), error, std::move(report)};
     if (!PostMessageW(context.dialog, WM_MIGRATION_COMPLETE, 0, reinterpret_cast<LPARAM>(completion))) delete completion;
     return 0;
 }
@@ -303,6 +331,7 @@ void RefreshButtons(DialogContext& context) {
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE), !context.running && acknowledged && context.oneDriveReady && context.googleReady);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_COPY), !context.running && acknowledged && context.analyzed);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_CUTOVER), !context.running && context.verified);
+    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_REPORT), !context.running && context.report.available);
     const int primary = context.running ? IDCANCEL : context.verified ? IDC_MIGRATION_CUTOVER :
         context.analyzed ? IDC_MIGRATION_COPY :
         IsWindowEnabled(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE)) ? IDC_MIGRATION_ANALYZE : IDCANCEL;
@@ -332,6 +361,8 @@ void SetMigrationProgress(DialogContext& context, int percent) {
 
 void StartTask(DialogContext& context, Task task) {
     if (context.running) return;
+    context.report = {};
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_SUMMARY, context.report.Summary().c_str());
     InvalidateMigrationValidation(task, context.analyzed, context.verified);
     if (task == Task::Analyze) context.sawAnalyzeProgress = false;
     if (task == Task::Analyze || task == Task::CopyAndVerify) {
@@ -385,6 +416,94 @@ void WriteMilestone(const DialogContext& context, const wchar_t* name, bool pass
     WriteEvidence(context.demoResultPath.substr(0, slash + 1) + name, passed ? "{\"passed\":true}" : "{\"passed\":false}");
 }
 
+struct ReportRow {
+    char category;
+    std::wstring status, path, size, error;
+};
+
+struct ReportDialog {
+    DialogContext* owner;
+    ui::DialogTheme theme;
+    std::vector<ReportRow> rows;
+    std::vector<size_t> visible;
+};
+
+void FilterReport(HWND dialog, ReportDialog& context) {
+    const int selection = ComboBox_GetCurSel(GetDlgItem(dialog, IDC_REPORT_FILTER));
+    const char category = selection > 0 && selection <= 5 ? "+*=-!"[selection - 1] : 0;
+    context.visible.clear();
+    for (size_t i = 0; i < context.rows.size(); ++i)
+        if (!category || context.rows[i].category == category) context.visible.push_back(i);
+    const HWND list = GetDlgItem(dialog, IDC_REPORT_LIST);
+    ListView_SetItemCountEx(list, static_cast<int>(context.visible.size()), 0);
+    InvalidateRect(list, nullptr, TRUE);
+    SetDlgItemTextW(dialog, IDC_REPORT_SELECTED, L"Sélectionne un fichier pour lire et copier son chemin complet.");
+    if (selection == 1) WriteMilestone(*context.owner, L"report-filtered.json",
+        context.visible.size() == context.owner->report.Count('+'));
+}
+
+INT_PTR CALLBACK ReportDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* context = reinterpret_cast<ReportDialog*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (message == WM_INITDIALOG) {
+        context = reinterpret_cast<ReportDialog*>(lParam);
+        SetWindowLongPtrW(dialog, DWLP_USER, lParam);
+        context->theme.Initialize(dialog, IDC_DIALOG_HEADING);
+        SetDlgItemTextW(dialog, IDC_MIGRATION_SUMMARY, context->owner->report.Summary().c_str());
+        for (const auto& item : context->owner->report.files) {
+            const auto& file = item.second;
+            context->rows.push_back({file.category, AnalysisCategory(file.category), Utf8ToWide(item.first),
+                file.sizeKnown ? FormatBytes(file.bytes) : L"—", Utf8ToWide(file.error)});
+        }
+        for (const wchar_t* label : {L"Tous les fichiers", L"Nouveaux", L"Modifiés", L"Identiques", L"Conservés sur Google Drive", L"Erreurs"})
+            ComboBox_AddString(GetDlgItem(dialog, IDC_REPORT_FILTER), label);
+        ComboBox_SetCurSel(GetDlgItem(dialog, IDC_REPORT_FILTER), 0);
+        const HWND list = GetDlgItem(dialog, IDC_REPORT_LIST);
+        ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+        RECT bounds = {};
+        GetClientRect(list, &bounds);
+        const int width = bounds.right;
+        int index = 0;
+        for (const wchar_t* title : {L"Résultat", L"Chemin du fichier", L"Taille à copier"}) {
+            LVCOLUMNW column = {};
+            column.mask = LVCF_TEXT | LVCF_WIDTH;
+            column.pszText = const_cast<wchar_t*>(title);
+            column.cx = index == 0 ? width * 25 / 100 : index == 1 ? width * 57 / 100 : width * 16 / 100;
+            ListView_InsertColumn(list, index++, &column);
+        }
+        FilterReport(dialog, *context);
+        WriteMilestone(*context->owner, L"report-open.json", context->rows.size() == context->owner->report.files.size() &&
+            ListView_GetItemCount(list) == static_cast<int>(context->rows.size()) &&
+            ui::ControlText(dialog, IDC_MIGRATION_SUMMARY) == context->owner->report.Summary());
+        return TRUE;
+    }
+    if (!context) return FALSE;
+    if (message == WM_COMMAND) {
+        if (LOWORD(wParam) == IDCANCEL) { EndDialog(dialog, 0); return TRUE; }
+        if (LOWORD(wParam) == IDC_REPORT_FILTER && HIWORD(wParam) == CBN_SELCHANGE) { FilterReport(dialog, *context); return TRUE; }
+    } else if (message == WM_NOTIFY) {
+        const auto* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header->idFrom == IDC_REPORT_LIST && header->code == LVN_GETDISPINFOW) {
+            auto* info = reinterpret_cast<NMLVDISPINFOW*>(lParam);
+            if ((info->item.mask & LVIF_TEXT) && info->item.iItem >= 0 && static_cast<size_t>(info->item.iItem) < context->visible.size()) {
+                const auto& row = context->rows[context->visible[info->item.iItem]];
+                const auto& text = info->item.iSubItem == 0 ? row.status : info->item.iSubItem == 1 ? row.path : row.size;
+                wcsncpy_s(info->item.pszText, info->item.cchTextMax, text.c_str(), _TRUNCATE);
+            }
+            return TRUE;
+        }
+        if (header->idFrom == IDC_REPORT_LIST && header->code == LVN_ITEMCHANGED) {
+            const int selected = ListView_GetNextItem(header->hwndFrom, -1, LVNI_SELECTED);
+            if (selected >= 0 && static_cast<size_t>(selected) < context->visible.size()) {
+                const auto& row = context->rows[context->visible[selected]];
+                SetDlgItemTextW(dialog, IDC_REPORT_SELECTED, (row.path + (row.error.empty() ? L"" : L"\r\n" + row.error)).c_str());
+            }
+        }
+    } else if (message == WM_CTLCOLORSTATIC || message == WM_CTLCOLORDLG) {
+        return context->theme.Color(reinterpret_cast<HDC>(wParam));
+    } else if (message == WM_CLOSE) { EndDialog(dialog, 0); return TRUE; }
+    return FALSE;
+}
+
 INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
     auto* context = reinterpret_cast<DialogContext*>(GetWindowLongPtrW(dialog, DWLP_USER));
     if (message == WM_INITDIALOG) {
@@ -415,6 +534,14 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         case IDC_MIGRATION_ONEDRIVE_CONNECT: StartTask(*context, Task::AuthenticateOneDrive); return TRUE;
         case IDC_MIGRATION_GOOGLE_CONNECT: StartTask(*context, Task::AuthenticateGoogle); return TRUE;
         case IDC_MIGRATION_ANALYZE: StartTask(*context, Task::Analyze); return TRUE;
+        case IDC_MIGRATION_REPORT: {
+            if (context->running || !context->report.available) return TRUE;
+            ReportDialog report;
+            report.owner = context;
+            DialogBoxParamW(context->instance, MAKEINTRESOURCEW(IDD_MIGRATION_REPORT), dialog,
+                ReportDialogProc, reinterpret_cast<LPARAM>(&report));
+            return TRUE;
+        }
         case IDC_MIGRATION_COPY: StartTask(*context, Task::CopyAndVerify); return TRUE;
         case IDC_MIGRATION_CUTOVER: {
             if (context->running || !context->verified) return TRUE;
@@ -477,6 +604,10 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         auto* update = reinterpret_cast<CompletionUpdate*>(lParam);
         if (context->worker) { CloseHandle(context->worker); context->worker = nullptr; }
         context->running = false;
+        if (update->task == Task::Analyze) {
+            context->report = std::move(update->report);
+            SetDlgItemTextW(dialog, IDC_MIGRATION_SUMMARY, context->report.Summary().c_str());
+        }
         SetMigrationProgress(*context, 0);
         if (update->success) {
             if (update->task == Task::AuthenticateOneDrive || update->task == Task::AuthenticateGoogle) {
@@ -518,6 +649,9 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         if (context->analyzed && !context->verified)
             WriteMilestone(*context, L"analysis-ready.json", context->sawAnalyzeProgress && !context->indeterminate &&
                 IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_COPY)) != FALSE);
+        if (context->report.complete) WriteMilestone(*context, L"analysis-summary.json",
+            ui::ControlText(dialog, IDC_MIGRATION_SUMMARY) == context->report.Summary() &&
+            IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_REPORT)) != FALSE);
         if (context->verified)
             WriteMilestone(*context, L"verified.json", LOWORD(SendMessageW(dialog, DM_GETDEFID, 0, 0)) == IDC_MIGRATION_CUTOVER);
         if (context->cancelRequested) {
@@ -581,9 +715,11 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
             }
             return result;
         };
+        AnalysisReport analysisReport;
         const auto run = [&](MigrationStage stage, DWORD* exitCode = nullptr) {
             error.clear();
-            return RunProcess(context, MigrationArguments(stage, context.configPath, source, destination), stage, error, exitCode);
+            return RunProcess(context, MigrationArguments(stage, context.configPath, source, destination), stage, error, exitCode,
+                stage == MigrationStage::Analyzing ? &analysisReport : nullptr);
         };
         if (passed) {
             step = "fixtures";
@@ -602,6 +738,12 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
             const auto beforeSource = snapshot(source), beforeDestination = snapshot(destination);
             step = "readOnlyAnalysis";
             passed = run(MigrationStage::Analyzing) && snapshot(source) == beforeSource && snapshot(destination) == beforeDestination;
+            if (passed) {
+                step = "analysisReportCounts";
+                passed = analysisReport.complete && analysisReport.Count('+') == 32 && analysisReport.Count('*') == 1 &&
+                    analysisReport.Count('=') == 1 && analysisReport.Count('-') == 1 && analysisReport.Count('!') == 0 &&
+                    analysisReport.CopySize() != L"indisponible" && analysisReport.files.count("Personal Vault/excluded.txt") == 0;
+            }
             if (passed) {
                 step = "copyAndVerify";
                 passed = run(MigrationStage::Copying) && run(MigrationStage::Verifying) &&

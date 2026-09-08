@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'OneDrive', 'Failure', 'WindowPosition')]
-    [string[]]$Scenario = @('Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'OneDrive', 'Failure', 'WindowPosition'),
+    [ValidateSet('Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition')]
+    [string[]]$Scenario = @('Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition'),
     [switch]$SkipBuild,
     [switch]$Force
 )
@@ -16,9 +16,10 @@ $checkpointRoot = Join-Path $projectRoot 'output\release-checks'
 New-Item -ItemType Directory -Force -Path $checkpointRoot | Out-Null
 $cases = @{
     Ui = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json"'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('ui-main.png','ui-unverified.png','ui-folder-preview.png','ui-folder-confirm.png','ui-folder-applied.png') }
-    Migration = @{ Exe = 'CloudNav.exe'; Args = '--demo-migration "{OUTDIR}\migration-result.json"'; Actions = 'vm-migration-actions.json'; Result = 'migration-result.json'; Images = @('migration-analysis-progress.png','migration-copy-progress.png','migration-verify-progress.png','migration-verified.png','migration-cutover.png') }
+    Migration = @{ Exe = 'CloudNav.exe'; Args = '--demo-migration "{OUTDIR}\migration-result.json"'; Actions = 'vm-migration-actions.json'; Result = 'migration-result.json'; Images = @('migration-analysis-progress.png','migration-analysis-complete.png','migration-copy-progress.png','migration-verify-progress.png','migration-verified.png','migration-cutover.png') }
     MigrationResume = @{ Exe = 'CloudNav.exe'; Args = '--demo-migration "{OUTDIR}\migration-result.json"'; Actions = 'vm-migration-resume-actions.json'; Result = 'migration-result.json'; Images = @('migration-cancelled.png','migration-resumed-verified.png') }
     MigrationEngine = @{ Exe = 'CloudNav.exe'; Args = '--self-test-embedded-rclone "{OUTDIR}\rclone-result.json"'; Actions = 'vm-rclone-self-test-actions.json'; Result = 'rclone-result.json'; Images = @() }
+    MigrationReport = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json" --migration-report'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('report-summary.png','report-all.png','report-new.png','report-partial.png') }
     OneDrive = @{ Exe = 'CloudNav.exe'; Args = '--demo-safe-onedrive'; Actions = 'vm-onedrive-actions.json'; Images = @('cloudnav-onedrive-uninstall-confirm.png','cloudnav-onedrive-uninstall-simulated.png') }
     Failure = @{ Exe = 'CloudNav.exe'; Args = '--demo-repoint-failure'; Actions = 'vm-repoint-failure-actions.json'; Images = @('cloudnav-112-repoint-error.png','cloudnav-112-repoint-status.png') }
     WindowPosition = @{ Exe = 'CloudNavWindowPositionTests.exe'; Args = '"{OUTDIR}\window-position-result.json"'; Actions = 'vm-window-position-actions.json'; Result = 'window-position-result.json'; Images = @() }

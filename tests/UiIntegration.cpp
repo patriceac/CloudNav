@@ -226,10 +226,46 @@ void Run(const std::wstring& executable) {
     Require(Wait([&] { return !IsWindow(folders); }), "second folder manager did not close");
 }
 
+void RunMigrationReport(const std::wstring& executable) {
+    App app(executable, L"--demo-migration");
+    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — migration OneDrive vers Google Drive");
+    Click(migration, IDC_MIGRATION_ANALYZE);
+    Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)) != FALSE; }), "analysis did not complete");
+    const auto summary = Text(migration, IDC_MIGRATION_SUMMARY);
+    Require(summary.find(L"Nouveaux : 1") != std::wstring::npos && summary.find(L"Modifiés : 1") != std::wstring::npos &&
+        summary.find(L"Identiques : 1") != std::wstring::npos && summary.find(L"Erreurs : 0") != std::wstring::npos &&
+        summary.find(L"À copier : 3.0 Mo") != std::wstring::npos, "analysis KPIs are incorrect");
+    CheckBounds(migration);
+    Capture(migration, L"report-summary.png");
+    Click(migration, IDC_MIGRATION_REPORT);
+    const HWND report = Window(app.process.dwProcessId, L"CloudNav — résultats de l’analyse");
+    const HWND list = GetDlgItem(report, IDC_REPORT_LIST);
+    Require(ListView_GetItemCount(list) == 4, "report omits files");
+    CheckBounds(report);
+    Capture(report, L"report-all.png");
+    for (int selection = 1; selection <= 5; ++selection) {
+        Select(report, IDC_REPORT_FILTER, selection);
+        Require(Wait([&] { return ListView_GetItemCount(list) == (selection == 5 ? 0 : 1); }), "category filter is incorrect");
+        if (selection == 1) Capture(report, L"report-new.png");
+    }
+    Click(report, IDCANCEL);
+    Require(Wait([&] { return !IsWindow(report); }), "report did not close");
+    Click(migration, IDC_MIGRATION_ANALYZE);
+    Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_REPORT)); }), "stale report remains available");
+    Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"Nouveaux") == std::wstring::npos, "stale KPIs remain visible");
+    Click(migration, IDCANCEL);
+    Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ANALYZE)) != FALSE; }), "analysis did not cancel");
+    Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"Résultats partiels") == 0 &&
+        !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)), "cancelled analysis looks complete");
+    Capture(migration, L"report-partial.png");
+    Click(migration, IDCANCEL);
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) return 2;
+    if (argc != 2 && argc != 3) return 2;
+    const bool migrationReport = argc == 3 && std::wstring(argv[2]) == L"--migration-report";
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     wchar_t module[32768] = {};
     GetModuleFileNameW(nullptr, module, ARRAYSIZE(module));
@@ -239,10 +275,10 @@ int wmain(int argc, wchar_t** argv) {
     ULONG_PTR token = 0;
     Gdiplus::GdiplusStartupInput graphicsInput;
     if (Gdiplus::GdiplusStartup(&token, &graphicsInput, nullptr) != Gdiplus::Ok) return 4;
-    try { Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
+    try { if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
     Gdiplus::GdiplusShutdown(token);
     const std::string json = error.empty()
-        ? "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"collateralPreview\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}"
+        ? (migrationReport ? "{\"passed\":true,\"summary\":true,\"filters\":true,\"partialResults\":true,\"staleReportCleared\":true,\"bounds\":true}" : "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"collateralPreview\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}")
         : "{\"passed\":false,\"error\":\"" + error + "\"}";
     HANDLE file = CreateFileW(argv[1], GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 3;
