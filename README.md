@@ -41,7 +41,9 @@ When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudN
 
 If a scheduled task named `OneDrive-GDrive-Bidirectional-Sync` is present, CloudNav reports **external synchronization detected**, without claiming that its files have been verified. **Copy** remains the default until CloudNav's migration comparison succeeds. The redirect-only recommendation then applies only to corresponding folders in the verified OneDrive-to-Google Drive direction. Reconnecting an account, rerunning analysis, or starting a new copy invalidates earlier verification.
 
-Migration progress identifies analysis, copy, and verification as separate phases. The status text and progress statistics update together, and successful verification makes the optional folder-configuration action the primary button.
+Migration progress identifies analysis, copy, and verification as separate phases. Analysis and verification show items listed, files compared, and elapsed time with an animated activity bar: the total is unknown until enumeration finishes. Transfer percentage, speed, and ETA appear during copying; an unavailable ETA stays unknown. Successful verification makes the optional folder-configuration action the primary button.
+
+Root-level migration scans use rclone's `--fast-list` and `--onedrive-delta` to reduce directory-listing requests to both providers, in exchange for keeping the file lists in memory. The same listing options apply to analysis, copy, and verification. Analysis remains a dry run, with the same comparison rules and exclusions. See the [rclone OneDrive listing documentation](https://rclone.org/onedrive/#fast-list).
 
 ## Usage
 
@@ -88,6 +90,8 @@ With the Codex Hyper-V SYSTEM broker installed, run the repeatable offline relea
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild
 # Run only the relevant scenarios:
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Ui,MigrationResume
+# Check analysis progress, cancellation/resume, and the embedded engine:
+.\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Migration,MigrationResume,MigrationEngine
 ```
 
-The runner keys checkpoints to the exact executable, test driver, action file, and runner hashes. It checks declared assertions, screenshot presence, process cleanup, VM shutdown, and disposable payload deletion before saving a pass. Screenshots still require visual review. Tests use synthetic accounts and offline demo operations; they do not qualify real OAuth, cloud transfers, or actual OneDrive uninstallation.
+The runner keys checkpoints to the exact executable, test driver, action file, and runner hashes. It checks declared assertions, screenshot presence, process cleanup, VM shutdown, and disposable payload deletion before saving a pass. Screenshots still require visual review. The migration engine test uses the embedded rclone with synthetic local directories and an empty account configuration: it checks that analysis leaves files and timestamps untouched, copying retains destination extras and exclusions, and independent verification detects a same-size content mismatch. Tests use offline fixtures and demo operations; they do not qualify real OAuth, cloud transfers, cloud performance, or actual OneDrive uninstallation.

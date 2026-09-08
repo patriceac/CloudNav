@@ -16,6 +16,17 @@
   },
   {
     "type": "wait_result_file",
+    "path": "{OUTDIR}\\analysis-progress.json",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "screenshot",
+    "name": "migration-analysis-progress.png",
+    "timeoutMs": 30000,
+    "attempts": 5
+  },
+  {
+    "type": "wait_result_file",
     "path": "{OUTDIR}\\analysis-ready.json",
     "timeoutMs": 30000
   },

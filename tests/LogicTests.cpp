@@ -147,6 +147,58 @@ int wmain() {
     assert(cloudnav::FormatBytes(1048576) == L"1.0 Mo");
     assert(cloudnav::FormatEta(125) == L"ETA 2m 05s");
 
+    // A null ETA from a real scan must remain unknown, not become zero seconds.
+    value = -1;
+    for (const char* json : {"{\"eta\":null}", "{\"eta\":\"12\"}", "{\"eta\":1e999}", "{\"eta\":12oops}"}) {
+        assert(!cloudnav::JsonNumber(json, "eta", value));
+        assert(value == -1);
+    }
+    assert(cloudnav::JsonNumber("{\"eta\":0}", "eta", value) && value == 0);
+    assert(cloudnav::JsonCounter("{\"checks\":-1}", "checks") == 0);
+    assert(cloudnav::JsonCounter("{\"bytes\":1e30}", "bytes") == 0);
+
+    using cloudnav::MigrationStage;
+    cloudnav::MigrationStatistics stats;
+    // Sanitized statistics from the reported 0% scan: all *known* checks were
+    // done, but more directories were still being discovered. No reliable %.
+    assert(cloudnav::ParseMigrationStatistics(R"({"stats":{"bytes":0,"checks":4933,"elapsedTime":438.0,"eta":null,"listed":13567,"speed":0,"totalBytes":283945,"totalChecks":4933,"transfers":0},"level":"info"})", stats));
+    assert(stats.eta == -1 && stats.checks == 4933 && stats.listed == 13567);
+    const auto analysis = cloudnav::FormatMigrationProgress(MigrationStage::Analyzing, stats);
+    assert(analysis.percent == -1);
+    assert(analysis.text == L"13567 éléments parcourus — 4933 fichiers comparés — durée 7m 18s");
+    const auto verification = cloudnav::FormatMigrationProgress(MigrationStage::Verifying, stats);
+    assert(verification.percent == -1);
+    assert(verification.text.find(L"4933 fichiers vérifiés") != std::wstring::npos);
+    assert(verification.text.find(L"ETA") == std::wstring::npos);
+    const auto preparingCopy = cloudnav::FormatMigrationProgress(MigrationStage::Copying, stats);
+    assert(preparingCopy.percent == -1);
+    assert(preparingCopy.text.find(L"Préparation de la copie") == 0);
+
+    assert(cloudnav::ParseMigrationStatistics(R"({"stats":{"bytes":524288,"totalBytes":1048576,"eta":2,"speed":262144,"transferring":[{"name":"folder/{file}","bytes":1,"speed":1}]}})", stats));
+    const auto copying = cloudnav::FormatMigrationProgress(MigrationStage::Copying, stats);
+    assert(copying.percent == 50);
+    assert(copying.text == L"50 % — 512.0 Ko / 1.0 Mo — 256.0 Ko/s — ETA 2s");
+    stats.bytes = stats.totalBytes;
+    assert(cloudnav::FormatMigrationProgress(MigrationStage::Copying, stats).percent == 99);
+    assert(!cloudnav::ParseMigrationStatistics(R"({"msg":"not a statistics event"})", stats));
+    assert(!cloudnav::ParseMigrationStatistics(R"({"stats":null})", stats));
+    assert(!cloudnav::ParseMigrationStatistics(R"({"stats":{"bytes":12)", stats));
+    assert(cloudnav::ParseMigrationStatistics(R"({"stats":{},"eta":0,"listed":999})", stats));
+    assert(stats.eta == -1 && stats.listed == 0);
+
+    // Fast enumeration must retain the same dry-run/copy/one-way-check contract.
+    for (auto stage : {MigrationStage::Analyzing, MigrationStage::Copying, MigrationStage::Verifying}) {
+        const auto args = cloudnav::MigrationArguments(stage, L"C:\\test config\\rclone.conf");
+        const auto has = [&](const wchar_t* arg) { return std::find(args.begin(), args.end(), arg) != args.end(); };
+        assert(has(L"--fast-list") && has(L"--onedrive-delta"));
+        assert(has(L"/Personal Vault/**") && has(L"--drive-skip-gdocs"));
+        assert(args[1] == L"cloudnav-onedrive:" && args[2] == L"cloudnav-gdrive:");
+        assert(has(L"--dry-run") == (stage == MigrationStage::Analyzing));
+        assert(has(L"--one-way") == (stage == MigrationStage::Verifying));
+        assert(args[0] == (stage == MigrationStage::Verifying ? L"check" : L"copy"));
+        assert(!has(L"--size-only") && !has(L"--ignore-existing") && !has(L"--ignore-errors"));
+    }
+
     std::wcout << L"CloudNav logic tests: OK\n";
     return 0;
 }
