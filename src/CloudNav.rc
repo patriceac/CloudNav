@@ -15,7 +15,7 @@ CAPTION "CloudNav — migration OneDrive vers Google Drive"
 FONT 9, "Segoe UI"
 BEGIN
     LTEXT "Migration OneDrive → Google Drive", IDC_DIALOG_HEADING, 16, 10, 468, 22
-    LTEXT "Copie à sens unique, puis vérification. Les fichiers Google Drive supplémentaires sont conservés.", -1, 16, 37, 468, 20
+    LTEXT "Copie des fichiers nouveaux ou modifiés de l’analyse. Les fichiers Google Drive supplémentaires sont conservés.", -1, 16, 37, 468, 20
     CONTROL "J’ai suspendu toute synchronisation externe entre OneDrive et Google Drive.", IDC_MIGRATION_REMINDER, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 16, 60, 468, 18
     CONTROL "", IDC_MIGRATION_ONEDRIVE_ICON, "STATIC", SS_OWNERDRAW | WS_CHILD | WS_VISIBLE, 16, 91, 14, 14
     LTEXT "OneDrive — source", -1, 36, 92, 136, 12
@@ -26,7 +26,7 @@ BEGIN
     LTEXT "Non connecté", IDC_MIGRATION_GOOGLE_STATUS, 183, 123, 180, 12
     PUSHBUTTON "Connecter…", IDC_MIGRATION_GOOGLE_CONNECT, 384, 117, 100, 22
     CONTROL "", -1, "STATIC", SS_ETCHEDHORZ, 16, 152, 468, 1
-    LTEXT "1 / 3 — Analyser avant de copier", IDC_MIGRATION_PHASE, 16, 164, 468, 16
+    LTEXT "1 / 2 — Analyser avant de copier", IDC_MIGRATION_PHASE, 16, 164, 468, 16
     CONTROL "", IDC_MIGRATION_PROGRESS, "msctls_progress32", PBS_SMOOTH, 16, 187, 468, 14
     LTEXT "En attente de l’analyse", IDC_MIGRATION_STATS, 16, 209, 468, 14
     LTEXT "Connecte les deux comptes, puis lance l’analyse.", IDC_MIGRATION_DETAILS, 16, 231, 468, 26
@@ -34,7 +34,7 @@ BEGIN
     LTEXT "Exclus du bilan : coffre-fort OneDrive et documents Google natifs (non comptés).", -1, 16, 292, 370, 22
     PUSHBUTTON "Voir les détails…", IDC_MIGRATION_REPORT, 394, 288, 90, 22
     PUSHBUTTON "Analyser", IDC_MIGRATION_ANALYZE, 16, 328, 82, 24
-    PUSHBUTTON "Copier et vérifier", IDC_MIGRATION_COPY, 106, 328, 108, 24
+    PUSHBUTTON "Copier", IDC_MIGRATION_COPY, 106, 328, 108, 24
     PUSHBUTTON "Configurer les dossiers…", IDC_MIGRATION_CUTOVER, 222, 328, 156, 24
     PUSHBUTTON "Fermer", IDCANCEL, 394, 328, 90, 24
 END

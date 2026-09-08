@@ -127,13 +127,13 @@ int wmain() {
     assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"") == L"OneDrive");
 
     for (auto task : {cloudnav::MigrationTask::Analyze, cloudnav::MigrationTask::AuthenticateGoogle,
-                      cloudnav::MigrationTask::AuthenticateOneDrive, cloudnav::MigrationTask::CopyAndVerify}) {
+                      cloudnav::MigrationTask::AuthenticateOneDrive, cloudnav::MigrationTask::Copy}) {
         bool analyzed = true, verified = true;
         cloudnav::InvalidateMigrationValidation(task, analyzed, verified);
         assert(!verified);
-        assert(analyzed == (task == cloudnav::MigrationTask::CopyAndVerify));
+        assert(analyzed == (task == cloudnav::MigrationTask::Copy));
     }
-    assert(std::wstring(cloudnav::MigrationStageTitle(cloudnav::MigrationStage::Copying)).find(L"2 / 3") != std::wstring::npos);
+    assert(std::wstring(cloudnav::MigrationStageTitle(cloudnav::MigrationStage::Copying)).find(L"2 / 2") != std::wstring::npos);
     assert(std::wstring(cloudnav::MigrationStageTitle(cloudnav::MigrationStage::Verifying)).find(L"3 / 3") != std::wstring::npos);
     assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Copying)).find(L"moteur") == std::wstring::npos);
     assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Verifying)).find(L"indépendante") != std::wstring::npos);
@@ -191,8 +191,11 @@ int wmain() {
     for (auto stage : {MigrationStage::Analyzing, MigrationStage::Copying, MigrationStage::Verifying}) {
         const auto args = cloudnav::MigrationArguments(stage, L"C:\\test config\\rclone.conf");
         const auto has = [&](const wchar_t* arg) { return std::find(args.begin(), args.end(), arg) != args.end(); };
-        assert(has(L"--fast-list") && has(L"--onedrive-delta"));
-        assert(has(L"/Personal Vault/**") && has(L"--drive-skip-gdocs"));
+        assert(has(L"--fast-list") == (stage != MigrationStage::Copying));
+        assert(has(L"--no-traverse") == (stage == MigrationStage::Copying));
+        assert(has(L"NOTICE"));
+        assert(has(L"/Personal Vault/**") == (stage != MigrationStage::Copying));
+        assert(has(L"--drive-skip-gdocs"));
         assert(args[1] == L"cloudnav-onedrive:" && args[2] == L"cloudnav-gdrive:");
         assert(has(L"--dry-run") == (stage == MigrationStage::Analyzing));
         assert(has(L"--one-way") == (stage == MigrationStage::Verifying));
@@ -200,6 +203,15 @@ int wmain() {
         assert(!has(L"--size-only") && !has(L"--ignore-existing") && !has(L"--ignore-errors"));
     }
 
+    cloudnav::AnalysisReport plan;
+    std::istringstream planInput("+ new.txt\n* changed.txt\n= same.txt\n- extra.txt\n");
+    plan.Combined(planInput);
+    std::string copyList;
+    assert(!plan.CopyList(copyList));
+    plan.complete = true;
+    assert(plan.CopyList(copyList) && copyList == "changed.txt\nnew.txt\n");
+    plan.files["bad\npath"].category = '+';
+    assert(!plan.CopyList(copyList));
     cloudnav::AnalysisReport report;
     report.Log(R"({"object":"Documents/été, \"copie\".txt","skipped":"copy","size":123})");
     report.Log(R"({"object":"changed.txt","skipped":"copy","size":456})");

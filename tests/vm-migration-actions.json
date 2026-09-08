@@ -38,7 +38,7 @@
   },
   {
     "type": "click_control",
-    "name": "Copier et vérifier",
+    "name": "Copier",
     "timeoutMs": 10000
   },
   {
@@ -54,18 +54,7 @@
   },
   {
     "type": "wait_result_file",
-    "path": "{OUTDIR}\\verify-progress.json",
-    "timeoutMs": 30000
-  },
-  {
-    "type": "screenshot",
-    "name": "migration-verify-progress.png",
-    "timeoutMs": 30000,
-    "attempts": 5
-  },
-  {
-    "type": "wait_result_file",
-    "path": "{OUTDIR}\\verified.json",
+    "path": "{OUTDIR}\\copied.json",
     "timeoutMs": 30000
   },
   {

@@ -1,15 +1,68 @@
 [
-  { "type": "wait_window", "timeoutMs": 30000 },
-  { "type": "click_control", "name": "Analyser", "timeoutMs": 10000 },
-  { "type": "wait_result_file", "path": "{OUTDIR}\\analysis-ready.json", "timeoutMs": 30000 },
-  { "type": "click_control", "name": "Copier et vérifier", "timeoutMs": 10000 },
-  { "type": "wait_result_file", "path": "{OUTDIR}\\copy-progress.json", "timeoutMs": 30000 },
-  { "type": "click_control", "name": "Annuler", "timeoutMs": 10000 },
-  { "type": "wait_result_file", "path": "{OUTDIR}\\cancelled.json", "timeoutMs": 30000 },
-  { "type": "screenshot", "name": "migration-cancelled.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Copier et vérifier", "timeoutMs": 10000 },
-  { "type": "wait_result_file", "path": "{OUTDIR}\\verified.json", "timeoutMs": 30000 },
-  { "type": "screenshot", "name": "migration-resumed-verified.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Configurer les dossiers…", "timeoutMs": 10000 },
-  { "type": "wait_result_file", "path": "{OUTDIR}\\migration-result.json", "timeoutMs": 30000 }
+  {
+    "type": "wait_window",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "click_control",
+    "name": "Analyser",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait_result_file",
+    "path": "{OUTDIR}\\analysis-ready.json",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "click_control",
+    "name": "Copier",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait_result_file",
+    "path": "{OUTDIR}\\copy-progress.json",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "click_control",
+    "name": "Annuler",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait_result_file",
+    "path": "{OUTDIR}\\cancelled.json",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "screenshot",
+    "name": "migration-cancelled.png",
+    "timeoutMs": 30000,
+    "attempts": 5
+  },
+  {
+    "type": "click_control",
+    "name": "Copier",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait_result_file",
+    "path": "{OUTDIR}\\copied.json",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "screenshot",
+    "name": "migration-resumed-verified.png",
+    "timeoutMs": 30000,
+    "attempts": 5
+  },
+  {
+    "type": "click_control",
+    "name": "Configurer les dossiers…",
+    "timeoutMs": 10000
+  },
+  {
+    "type": "wait_result_file",
+    "path": "{OUTDIR}\\migration-result.json",
+    "timeoutMs": 30000
+  }
 ]

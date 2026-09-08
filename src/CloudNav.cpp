@@ -1474,13 +1474,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 providers.oneDriveLabel = g_state.oneDrive.label;
                 providers.oneDriveRoot = g_state.oneDrive.path;
                 providers.googleDriveRoot = g_state.myDrivePath;
-                providers.oneDriveToGoogleVerified = true;
+                providers.oneDriveToGoogleVerified = false;
                 providers.preloadDemoPlan = g_demoMode;
                 cloudnav::ShowFolderManagerDialog(window, g_instance, providers, g_demoMode);
                 if (!g_demoMode) { g_state = DetectState(); UpdateControlsFromState(); }
             }
             ShowStatus(result == cloudnav::MigrationResult::ConfigureFolders
-                ? L"Migration vérifiée ; gestion des dossiers ouverte."
+                ? L"Copie terminée ; gestion des dossiers ouverte."
                 : L"Assistant de migration fermé.");
             return 0;
         }

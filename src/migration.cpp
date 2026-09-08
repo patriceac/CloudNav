@@ -57,7 +57,7 @@ struct DialogContext {
     bool running = false;
     bool closeRequested = false;
     bool analyzed = false;
-    bool verified = false;
+    bool copied = false;
     bool oneDriveReady = false;
     bool googleReady = false;
     bool sawAnalyzeProgress = false;
@@ -68,6 +68,7 @@ struct DialogContext {
     bool cancellationConsistent = true;
     AnalysisReport report;
     ui::DialogTheme theme;
+    unsigned statisticsUpdates = 0;
     ui::ProviderImages images;
     Task task = Task::None;
     std::wstring demoResultPath;
@@ -205,7 +206,10 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     if (context.cancelRequested) TerminateProcess(context.childProcess, ERROR_CANCELLED);
     LeaveCriticalSection(&context.processLock);
 
-    PostProgress(context, -1, stage, L"Progression en attente…");
+    context.statisticsUpdates = 0;
+    PostProgress(context, -1, stage, stage == MigrationStage::Copying
+        ? L"Préparation de la copie — ouverture des fichiers sélectionnés…"
+        : L"Lecture des comptes — attente des premières statistiques…");
     std::string pending;
     char buffer[8192];
     DWORD read = 0;
@@ -224,6 +228,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
             if (report) report->Log(line);
             MigrationStatistics stats;
             if (ParseMigrationStatistics(line, stats)) {
+                ++context.statisticsUpdates;
                 const auto progress = FormatMigrationProgress(stage, stats);
                 PostProgress(context, progress.percent, stage, progress.text);
             }
@@ -268,7 +273,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
         success = false;
     } else if (context.demoMode) {
         const auto stage = context.task == Task::Analyze ? MigrationStage::Analyzing :
-            context.task == Task::CopyAndVerify ? MigrationStage::Copying : MigrationStage::Connecting;
+            context.task == Task::Copy ? MigrationStage::Copying : MigrationStage::Connecting;
         for (int percent = 0; percent <= 100 && !context.cancelRequested; percent += 2) {
             MigrationStatistics stats;
             stats.totalBytes = 8ULL * 1024 * 1024 * 1024;
@@ -281,17 +286,6 @@ DWORD WINAPI WorkerProc(void* parameter) {
             const auto progress = FormatMigrationProgress(stage, stats);
             PostProgress(context, progress.percent, stage, progress.text);
             Sleep(100);
-        }
-        if (!context.cancelRequested && context.task == Task::CopyAndVerify) {
-            for (int percent = 0; percent <= 100 && !context.cancelRequested; percent += 4) {
-                MigrationStatistics stats;
-                stats.listed = 13600;
-                stats.checks = 49 * percent;
-                stats.elapsed = percent * 0.02;
-                const auto progress = FormatMigrationProgress(MigrationStage::Verifying, stats);
-                PostProgress(context, progress.percent, MigrationStage::Verifying, progress.text);
-                Sleep(80);
-            }
         }
         success = !context.cancelRequested;
         if (context.task == Task::Analyze) {
@@ -312,10 +306,22 @@ DWORD WINAPI WorkerProc(void* parameter) {
         success = RunProcess(context, args, MigrationStage::Connecting, error);
     } else if (context.task == Task::Analyze) {
         success = RunProcess(context, MigrationArguments(MigrationStage::Analyzing, context.configPath), MigrationStage::Analyzing, error, nullptr, &report);
-    } else if (context.task == Task::CopyAndVerify) {
-        success = RunProcess(context, MigrationArguments(MigrationStage::Copying, context.configPath), MigrationStage::Copying, error);
-        if (success && !context.cancelRequested) {
-            success = RunProcess(context, MigrationArguments(MigrationStage::Verifying, context.configPath), MigrationStage::Verifying, error);
+    } else if (context.task == Task::Copy) {
+        std::string list;
+        const auto listPath = context.logPath + L".copy-list-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+        if (!context.report.CopyList(list)) error = L"Liste de copie indisponible. Relance l’analyse.";
+        else if (list.empty()) success = true;
+        else {
+            std::ofstream file(listPath, std::ios::binary | std::ios::trunc);
+            file.write(list.data(), static_cast<std::streamsize>(list.size()));
+            file.close();
+            if (!file) error = L"Impossible de préparer la liste de copie.";
+            else {
+                auto args = MigrationArguments(MigrationStage::Copying, context.configPath);
+                args.insert(args.end(), {L"--files-from-raw", listPath});
+                success = RunProcess(context, args, MigrationStage::Copying, error);
+            }
+            DeleteFileW(listPath.c_str());
         }
     }
     auto* completion = new CompletionUpdate{context.task, success, context.cancelRequested.load(), error, std::move(report)};
@@ -330,9 +336,9 @@ void RefreshButtons(DialogContext& context) {
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_GOOGLE_CONNECT), !context.running);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE), !context.running && acknowledged && context.oneDriveReady && context.googleReady);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_COPY), !context.running && acknowledged && context.analyzed);
-    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_CUTOVER), !context.running && context.verified);
+    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_CUTOVER), !context.running && context.copied);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_REPORT), !context.running && context.report.available);
-    const int primary = context.running ? IDCANCEL : context.verified ? IDC_MIGRATION_CUTOVER :
+    const int primary = context.running ? IDCANCEL : context.copied ? IDC_MIGRATION_CUTOVER :
         context.analyzed ? IDC_MIGRATION_COPY :
         IsWindowEnabled(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE)) ? IDC_MIGRATION_ANALYZE : IDCANCEL;
     for (int id : {IDC_MIGRATION_ANALYZE, IDC_MIGRATION_COPY, IDC_MIGRATION_CUTOVER, IDCANCEL}) {
@@ -361,11 +367,13 @@ void SetMigrationProgress(DialogContext& context, int percent) {
 
 void StartTask(DialogContext& context, Task task) {
     if (context.running) return;
-    context.report = {};
-    SetDlgItemTextW(context.dialog, IDC_MIGRATION_SUMMARY, context.report.Summary().c_str());
-    InvalidateMigrationValidation(task, context.analyzed, context.verified);
+    if (task != Task::Copy) context.report = {};
+    const auto summary = (task == Task::Copy && context.report.available
+        ? L"Avant copie — " : std::wstring()) + context.report.Summary();
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_SUMMARY, summary.c_str());
+    InvalidateMigrationValidation(task, context.analyzed, context.copied);
     if (task == Task::Analyze) context.sawAnalyzeProgress = false;
-    if (task == Task::Analyze || task == Task::CopyAndVerify) {
+    if (task == Task::Analyze || task == Task::Copy) {
         context.sawCopyProgress = false;
         context.sawVerifyProgress = false;
         context.progressConsistent = true;
@@ -542,14 +550,14 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 ReportDialogProc, reinterpret_cast<LPARAM>(&report));
             return TRUE;
         }
-        case IDC_MIGRATION_COPY: StartTask(*context, Task::CopyAndVerify); return TRUE;
+        case IDC_MIGRATION_COPY: StartTask(*context, Task::Copy); return TRUE;
         case IDC_MIGRATION_CUTOVER: {
-            if (context->running || !context->verified) return TRUE;
-            const bool passed = context->analyzed && context->verified && context->sawAnalyzeProgress && context->sawCopyProgress &&
-                context->sawVerifyProgress && context->progressConsistent && context->cancellationConsistent &&
+            if (context->running || !context->copied) return TRUE;
+            const bool passed = context->analyzed && context->copied && context->sawAnalyzeProgress && context->sawCopyProgress &&
+                !context->sawVerifyProgress && context->progressConsistent && context->cancellationConsistent &&
                 LOWORD(SendMessageW(dialog, DM_GETDEFID, 0, 0)) == IDC_MIGRATION_CUTOVER;
             if (context->demoMode) WriteEvidence(context->demoResultPath, passed
-                ? "{\"passed\":true,\"verified\":true,\"progressConsistent\":true,\"cutoverPrimary\":true}"
+                ? "{\"passed\":true,\"copied\":true,\"progressConsistent\":true,\"cutoverPrimary\":true}"
                 : "{\"passed\":false}");
             EndDialog(dialog, 2); return TRUE;
         }
@@ -611,7 +619,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         SetMigrationProgress(*context, 0);
         if (update->success) {
             if (update->task == Task::AuthenticateOneDrive || update->task == Task::AuthenticateGoogle) {
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 3 — Analyser avant de copier");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analyser avant de copier");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analyse requise après une reconnexion");
             }
             if (update->task == Task::AuthenticateOneDrive) {
@@ -623,14 +631,14 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
             } else if (update->task == Task::Analyze) {
                 context->analyzed = true;
                 SetMigrationProgress(*context, 100);
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 3 — Analyse terminée : prête pour la copie");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analyse terminée : prête pour la copie");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analyse terminée — aucun fichier transféré");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Tu peux lancer la copie. Les fichiers Google Drive supplémentaires seront conservés.");
-            } else if (update->task == Task::CopyAndVerify) {
-                context->verified = true;
+            } else if (update->task == Task::Copy) {
+                context->copied = true;
                 SetMigrationProgress(*context, 100);
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"3 / 3 — Migration copiée et vérifiée");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"100 % — vérification réussie");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"2 / 2 — Copie terminée");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"100 % — copie terminée sans erreur signalée");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Tu peux maintenant configurer les dossiers Windows, ou fermer l’assistant.");
             }
         } else {
@@ -643,19 +651,19 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         const bool close = context->closeRequested;
         delete update;
         RefreshButtons(*context);
-        if (context->verified || context->analyzed)
+        if (context->copied || context->analyzed)
             SendMessageW(dialog, WM_NEXTDLGCTL, reinterpret_cast<WPARAM>(GetDlgItem(dialog,
-                context->verified ? IDC_MIGRATION_CUTOVER : IDC_MIGRATION_COPY)), TRUE);
-        if (context->analyzed && !context->verified)
+                context->copied ? IDC_MIGRATION_CUTOVER : IDC_MIGRATION_COPY)), TRUE);
+        if (context->analyzed && !context->copied)
             WriteMilestone(*context, L"analysis-ready.json", context->sawAnalyzeProgress && !context->indeterminate &&
                 IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_COPY)) != FALSE);
         if (context->report.complete) WriteMilestone(*context, L"analysis-summary.json",
             ui::ControlText(dialog, IDC_MIGRATION_SUMMARY) == context->report.Summary() &&
             IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_REPORT)) != FALSE);
-        if (context->verified)
-            WriteMilestone(*context, L"verified.json", LOWORD(SendMessageW(dialog, DM_GETDEFID, 0, 0)) == IDC_MIGRATION_CUTOVER);
+        if (context->copied)
+            WriteMilestone(*context, L"copied.json", LOWORD(SendMessageW(dialog, DM_GETDEFID, 0, 0)) == IDC_MIGRATION_CUTOVER);
         if (context->cancelRequested) {
-            context->cancellationConsistent &= !context->verified &&
+            context->cancellationConsistent &= !context->copied &&
                 !IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_CUTOVER)) &&
                 ui::ControlText(dialog, IDC_MIGRATION_STATS) == L"Opération arrêtée — aucun transfert en cours";
             WriteMilestone(*context, L"cancelled.json", context->cancellationConsistent);
@@ -688,7 +696,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     DialogContext context;
     context.instance = instance;
     context.runtimePath = runtime;
-    context.logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\self-test.log";
+    context.logPath = resultPath + L".log";
     EnsureParentDirectory(context.logPath);
     InitializeCriticalSection(&context.processLock);
     bool passed = ExtractRclone(instance, runtime, error) && ResourceMatchesFile(instance, runtime);
@@ -718,7 +726,13 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
         AnalysisReport analysisReport;
         const auto run = [&](MigrationStage stage, DWORD* exitCode = nullptr) {
             error.clear();
-            return RunProcess(context, MigrationArguments(stage, context.configPath, source, destination), stage, error, exitCode,
+            auto args = MigrationArguments(stage, context.configPath, source, destination);
+            if (stage == MigrationStage::Copying) {
+                std::string list;
+                if (!analysisReport.CopyList(list) || !WriteEvidence(root + L"\\copy-list.txt", list)) return false;
+                args.insert(args.end(), {L"--files-from-raw", root + L"\\copy-list.txt"});
+            }
+            return RunProcess(context, args, stage, error, exitCode,
                 stage == MigrationStage::Analyzing ? &analysisReport : nullptr);
         };
         if (passed) {
@@ -745,25 +759,15 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                     analysisReport.CopySize() != L"indisponible" && analysisReport.files.count("Personal Vault/excluded.txt") == 0;
             }
             if (passed) {
-                step = "copyAndVerify";
-                passed = run(MigrationStage::Copying) && run(MigrationStage::Verifying) &&
-                    snapshot(source) == beforeSource && read(destination + L"\\changed.txt") == "replacement contents" &&
+                step = "copyAnalyzedListOnly";
+                passed = WriteEvidence(source + L"\\late-file.txt", "not in the plan") && run(MigrationStage::Copying) &&
+                    !std::filesystem::exists(destination + L"\\late-file.txt") && read(destination + L"\\changed.txt") == "replacement contents" &&
                     read(destination + L"\\extra.txt") == "keep this file" &&
                     read(destination + L"\\nested 31\\été.txt") == "fixture 31" &&
-                    std::filesystem::is_directory(destination + L"\\empty directory") &&
+                    !std::filesystem::exists(destination + L"\\empty directory") &&
                     !std::filesystem::exists(destination + L"\\Personal Vault");
             }
-            if (passed) {
-                step = "verificationDetectsMismatch";
-                // Same length and timestamp: verification must detect changed
-                // contents, rather than accidentally becoming a size-only check.
-                const std::wstring changed = destination + L"\\changed.txt";
-                const auto stamp = std::filesystem::last_write_time(changed);
-                passed = WriteEvidence(changed, "Replacement contents");
-                std::filesystem::last_write_time(changed, stamp);
-                DWORD exitCode = ERROR_GEN_FAILURE;
-                if (passed) passed = !run(MigrationStage::Verifying, &exitCode) && exitCode == 1;
-            }
+
         }
     } catch (const std::exception&) {
         passed = false;
@@ -773,7 +777,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0\",\"readOnlyAnalysis\":true,\"copyAndVerify\":true,\"verificationDetectsMismatch\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true}\n"
         : "{\"passed\":false,\"failedStep\":\"" + step + "\"}\n";
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();

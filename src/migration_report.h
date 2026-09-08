@@ -111,6 +111,18 @@ struct AnalysisReport {
     size_t Count(char category) const {
         return static_cast<size_t>(std::count_if(files.begin(), files.end(), [&](const auto& item) { return item.second.category == category; }));
     }
+    bool CopyList(std::string& list) const {
+        list.clear();
+        if (!available || !complete || malformed || Count('!')) return false;
+        for (const auto& item : files) {
+            if (item.second.category != '+' && item.second.category != '*') continue;
+            const auto& path = item.first;
+            if (path.empty() || path.front() == '/' || path.find_first_of("\r\n") != std::string::npos ||
+                path.find('\0') != std::string::npos) { list.clear(); return false; }
+            list += path + "\n";
+        }
+        return true;
+    }
     std::wstring CopySize() const {
         std::uint64_t bytes = 0;
         for (const auto& item : files) {

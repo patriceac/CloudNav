@@ -12,7 +12,7 @@
 
 namespace cloudnav {
 
-enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, CopyAndVerify };
+enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, Copy };
 enum class MigrationStage { Preparing, Connecting, Analyzing, Copying, Verifying };
 
 inline std::vector<std::wstring> MigrationArguments(MigrationStage stage, const std::wstring& configPath,
@@ -20,10 +20,19 @@ inline std::vector<std::wstring> MigrationArguments(MigrationStage stage, const 
     const bool verify = stage == MigrationStage::Verifying;
     std::vector<std::wstring> args = {verify ? L"check" : L"copy", source, destination,
         L"--config", configPath, L"--fast-list", L"--onedrive-delta", L"--drive-skip-gdocs",
-        L"--exclude", L"/Personal Vault/**", L"--use-json-log", L"--stats", L"1s", L"--stats-log-level", L"INFO"};
+        L"--exclude", L"/Personal Vault/**", L"--use-json-log", L"--stats", L"1s", L"--stats-log-level", L"NOTICE"};
     // Both remotes are scanned from the root: OneDrive's delta listing and Drive's
     // recursive listing avoid a separate network round trip for every directory.
-    if (verify) args.push_back(L"--one-way");
+    if (stage == MigrationStage::Copying) {
+        // The analyzed list already contains the exclusions. rclone rejects
+        // combining files-from with other include/exclude filters.
+        const auto filter = std::find(args.begin(), args.end(), L"--exclude");
+        args.erase(filter, filter + 2);
+        for (const auto* flag : {L"--fast-list", L"--onedrive-delta"})
+            args.erase(std::remove(args.begin(), args.end(), flag), args.end());
+        args.push_back(L"--no-traverse");
+    }
+    else if (verify) args.push_back(L"--one-way");
     else {
         args.push_back(L"--check-first");
         args.push_back(L"--create-empty-src-dirs");
@@ -34,14 +43,14 @@ inline std::vector<std::wstring> MigrationArguments(MigrationStage stage, const 
 
 inline void InvalidateMigrationValidation(MigrationTask task, bool& analyzed, bool& verified) {
     verified = false;
-    if (task != MigrationTask::CopyAndVerify) analyzed = false;
+    if (task != MigrationTask::Copy) analyzed = false;
 }
 
 inline const wchar_t* MigrationStageTitle(MigrationStage stage) {
     switch (stage) {
     case MigrationStage::Connecting: return L"Connexion du compte…";
-    case MigrationStage::Analyzing: return L"1 / 3 — Analyse des écarts";
-    case MigrationStage::Copying: return L"2 / 3 — Copie OneDrive → Google Drive";
+    case MigrationStage::Analyzing: return L"1 / 2 — Analyse des écarts";
+    case MigrationStage::Copying: return L"2 / 2 — Copie OneDrive → Google Drive";
     case MigrationStage::Verifying: return L"3 / 3 — Vérification des fichiers copiés";
     default: return L"Préparation de l’opération…";
     }
@@ -51,7 +60,7 @@ inline const wchar_t* MigrationStageDetails(MigrationStage stage) {
     switch (stage) {
     case MigrationStage::Connecting: return L"Termine la connexion dans le navigateur, puis reviens ici.";
     case MigrationStage::Analyzing: return L"Comparaison des comptes. Aucun fichier n’est copié pendant l’analyse.";
-    case MigrationStage::Copying: return L"Les fichiers identiques sont ignorés. Tu peux annuler et reprendre la copie.";
+    case MigrationStage::Copying: return L"Copie des fichiers de l’analyse. Tu peux annuler et reprendre, ou analyser à nouveau après la copie.";
     case MigrationStage::Verifying: return L"Comparaison indépendante. La configuration des dossiers sera proposée après réussite.";
     default: return L"La progression apparaîtra au démarrage. Tu peux annuler à tout moment.";
     }
@@ -167,7 +176,8 @@ inline MigrationProgress FormatMigrationProgress(MigrationStage stage, const Mig
             std::to_wstring(stats.checks) + (stage == MigrationStage::Analyzing
                 ? L" fichiers comparés — " : L" fichiers vérifiés — ") + elapsed;
     } else if (stage == MigrationStage::Copying && stats.bytes == 0 && stats.transfers == 0) {
-        progress.text = L"Préparation de la copie — " + std::to_wstring(stats.checks) +
+        progress.text = L"Préparation de la copie — " + std::to_wstring(stats.listed) +
+            L" éléments parcourus — " + std::to_wstring(stats.checks) +
             L" fichiers comparés — " + elapsed;
     } else {
         progress.percent = (std::min)(99, MigrationPercent(stats.bytes, stats.totalBytes, stats.checks, stats.totalChecks));
