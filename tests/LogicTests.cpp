@@ -9,6 +9,11 @@
 #include "ClientLogicTests.h"
 
 int wmain() {
+    for (int state = 0; state < 16; ++state)
+        assert(cloudnav::IsCloudNavigationAvailable((state & 1) != 0, (state & 2) != 0, (state & 4) != 0, (state & 8) != 0) == (state == 15));
+    assert(!cloudnav::CanChangeNavigationVisibility(false, false));
+    assert(cloudnav::CanChangeNavigationVisibility(false, true));
+    assert(cloudnav::CanChangeNavigationVisibility(true, false));
     RunSyncLogicTests();
     TestClientManagementLogic();
     using cloudnav::DriveBit;

@@ -7,6 +7,15 @@ namespace cloudnav {
 
 constexpr unsigned long kAllDriveBits = 0x03FFFFFFUL;
 
+inline bool IsCloudNavigationAvailable(bool clientInstalled, bool clientDetectionComplete,
+                                       bool accountRegistered, bool folderAvailable) {
+    return clientInstalled && clientDetectionComplete && accountRegistered && folderAvailable;
+}
+
+inline bool CanChangeNavigationVisibility(bool available, bool currentlyVisible) {
+    return available || currentlyVisible; // An unavailable, stale entry may still be hidden.
+}
+
 inline unsigned long DriveBit(wchar_t letter) {
     const wchar_t upper = static_cast<wchar_t>(std::towupper(letter));
     if (upper < L'A' || upper > L'Z') {

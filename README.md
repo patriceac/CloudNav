@@ -29,6 +29,8 @@ The shared cloud analysis, synchronization modes, English interface, and client 
 
 CloudNav detects the paths and account labels available on the current PC. No user name, account name, or user-specific path is hard-coded in the application.
 
+The navigation section distinguishes installed OneDrive accounts with accessible folders from leftover registrations, missing folders, and unknown availability. Unavailable entries cannot be enabled; an already-visible stale entry can still be hidden. Google Drive's virtual-drive control requires a detected mounted volume, and a remaining My Drive folder is labeled local when the Google client is absent. Refresh reloads these states; visibility checkboxes describe Explorer settings, not cloud synchronization health.
+
 ## Safety
 
 The checkboxes in the main window only control visibility in the File Explorer navigation pane. Hiding the Google Drive letter uses the Windows `NoDrives` policy: the icon disappears, but the drive and its files remain accessible.

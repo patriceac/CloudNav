@@ -81,6 +81,7 @@ struct AppState {
     bool myDriveVisible = false;
     DWORD myDriveSort = 0;
     OneDriveInfo oneDrive;
+    bool oneDriveFolderAvailable = false;
     wchar_t googleDriveLetter = 0;
     bool googleDriveVisible = false;
     bool oneDriveAutoStart = false;
@@ -679,6 +680,7 @@ AppState DetectState() {
         demo.myDriveVisible = true;
         demo.myDriveSort = kCloudSortOrder;
         demo.oneDrive = {kOneDrivePersonalClsid, L"Personal account", L"C:\\Users\\Example\\OneDrive", true, true};
+        demo.oneDriveFolderAvailable = true;
         demo.googleDriveLetter = L'G';
         demo.googleDriveVisible = false;
         demo.oneDriveAutoStart = true;
@@ -693,12 +695,15 @@ AppState DetectState() {
         }
         if (g_demoClientsMissing) {
             demo.oneDriveClient = {}; demo.googleClient = {};
-            demo.oneDrive.detected = false;
+            // Uninstall can leave both the account registration and local folder.
+            demo.oneDrive.visible = false;
+            demo.googleDriveLetter = 0;
             demo.oneDriveAutoStart = false;
             demo.oneDrivePersonalFolders.clear(); demo.googlePersonalFolders.names.clear();
         }
         if (g_demoClientUnknownRoots) {
             demo.oneDrive.path.clear();
+            demo.oneDriveFolderAvailable = false;
             demo.personalFolderScanComplete = false;
             demo.googleRootsKnown = false;
             demo.googlePersonalFolders.complete = false;
@@ -716,6 +721,7 @@ AppState DetectState() {
                                       std::wstring(kMyDriveClsid);
     state.myDriveVisible = pinned != 0 && RegistryKeyExists(HKEY_LOCAL_MACHINE, namespaceKey);
     state.oneDrive = DetectOneDrive();
+    state.oneDriveFolderAvailable = PathIsDirectory(state.oneDrive.path);
     DetectOneDriveClientState(state);
     DetectGoogleClientState(state);
 
@@ -747,7 +753,8 @@ std::wstring GoogleDriveLabel(const AppState& state) {
 
 std::wstring GoogleDriveDetail(const AppState& state) {
     if (!state.googleDriveLetter) {
-        return L"Start Google Drive so CloudNav can detect its drive letter.";
+        return state.googleClient.installed ? L"No mounted Google Drive volume. Start Google Drive or check its settings."
+            : L"Google Drive is not installed; no virtual drive is available.";
     }
     return L"Show the virtual drive in File Explorer; files remain accessible when hidden.";
 }
@@ -780,9 +787,13 @@ void UpdateControlsFromState() {
         ? L"Folder not detected: use Browse."
         : g_state.myDrivePath;
     SetWindowTextW(g_myDriveDetail, myDetail.c_str());
+    SetWindowTextW(g_myDrive, g_state.googleClient.installed ? L"Google Drive — My Drive folder" : L"My Drive — local folder");
+    EnableWindow(g_myDrive, cloudnav::CanChangeNavigationVisibility(!g_state.myDrivePath.empty(), g_state.myDriveVisible));
     Button_SetCheck(g_myDrive, g_state.myDriveVisible ? BST_CHECKED : BST_UNCHECKED);
 
-    if (g_state.oneDrive.detected) {
+    const bool oneDriveAvailable = cloudnav::IsCloudNavigationAvailable(g_state.oneDriveClient.installed,
+        g_state.oneDriveClient.detectionComplete, g_state.oneDrive.detected, g_state.oneDriveFolderAvailable);
+    if (oneDriveAvailable) {
         SetWindowTextW(g_oneDrive, cloudnav::ProviderAccountLabel(L"OneDrive", g_state.oneDrive.label).c_str());
         std::wstring detail = g_state.oneDrive.path.empty()
             ? L"OneDrive account detected."
@@ -795,11 +806,17 @@ void UpdateControlsFromState() {
         EnableWindow(g_oneDrive, TRUE);
         Button_SetCheck(g_oneDrive, g_state.oneDrive.visible ? BST_CHECKED : BST_UNCHECKED);
     } else {
-        SetWindowTextW(g_oneDrive, L"OneDrive (not detected)");
+        const wchar_t* reason = !g_state.oneDriveClient.detectionComplete ? L"OneDrive (availability unknown)" :
+            !g_state.oneDriveClient.installed ? L"OneDrive (not installed)" :
+            !g_state.oneDrive.detected ? L"OneDrive (no account connected)" : L"OneDrive (folder unavailable)";
+        SetWindowTextW(g_oneDrive, reason);
         SetWindowTextW(g_startupDetail, L"Client not detected");
-        SetWindowTextW(g_oneDriveDetail, L"No OneDrive account is registered on this PC.");
-        EnableWindow(g_oneDrive, FALSE);
-        Button_SetCheck(g_oneDrive, BST_UNCHECKED);
+        const std::wstring detail = g_state.oneDrive.visible ? L"Unavailable saved entry. Uncheck to remove it from File Explorer." :
+            g_state.oneDriveFolderAvailable ? L"Local folder remains: " + g_state.oneDrive.path :
+            L"No available OneDrive folder to show in File Explorer.";
+        SetWindowTextW(g_oneDriveDetail, detail.c_str());
+        EnableWindow(g_oneDrive, cloudnav::CanChangeNavigationVisibility(false, g_state.oneDrive.visible));
+        Button_SetCheck(g_oneDrive, g_state.oneDrive.visible ? BST_CHECKED : BST_UNCHECKED);
     }
 
     const bool anyPersonalFolderUsesOneDrive = !g_state.oneDrivePersonalFolders.empty();
@@ -1417,6 +1434,12 @@ void ApplySelections() {
     }
 
     if (!IsWindowEnabled(g_apply)) return;
+    if (showOneDrive && !g_state.oneDrive.visible && !cloudnav::IsCloudNavigationAvailable(
+        g_state.oneDriveClient.installed, g_state.oneDriveClient.detectionComplete,
+        g_state.oneDrive.detected, g_state.oneDriveFolderAvailable)) {
+        ShowStatus(L"OneDrive is unavailable. Refresh after installing the client and connecting an account.", true);
+        return;
+    }
     if (g_demoMode) {
         g_state.myDrivePath = g_chosenMyDrivePath;
         g_state.myDriveVisible = showMyDrive;
@@ -1433,7 +1456,7 @@ void ApplySelections() {
 
     if (!RunElevatedApply(showMyDrive, g_chosenMyDrivePath,
                           showOneDrive,
-                          g_state.oneDrive.detected ? g_state.oneDrive.clsid : L"",
+                          g_state.oneDrive.detected && showOneDrive != g_state.oneDrive.visible ? g_state.oneDrive.clsid : L"",
                           showGoogleDrive, g_state.googleDriveLetter, error)) {
         EnableWindow(GetDlgItem(g_window, IDC_APPLY), TRUE);
         ShowStatus(error, true);
@@ -1692,6 +1715,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (!selected.empty()) {
                 g_chosenMyDrivePath = selected;
                 SetWindowTextW(g_myDriveDetail, selected.c_str());
+                EnableWindow(g_myDrive, TRUE);
                 Button_SetCheck(g_myDrive, BST_CHECKED);
                 UpdateVisibilityPending();
                 ShowStatus(L"Folder selected. Apply visibility to save this entry.");

@@ -242,6 +242,8 @@ void RunClients(const std::wstring& executable) {
     }
     {
         App unknown(executable, L"--demo-clients-unknown-roots");
+        Require(Text(unknown.main, 1003) == L"OneDrive (folder unavailable)" &&
+            IsWindowEnabled(GetDlgItem(unknown.main, 1003)), "visible stale entry cannot be removed");
         Require(!IsWindowEnabled(GetDlgItem(unknown.main, 1009)) && !IsWindowEnabled(GetDlgItem(unknown.main, 1016)),
             "unknown locations allow uninstall");
         Require(!IsWindowVisible(GetDlgItem(unknown.main, 1014)) && !IsWindowVisible(GetDlgItem(unknown.main, 1015)),
@@ -251,6 +253,10 @@ void RunClients(const std::wstring& executable) {
     {
         App missing(executable, L"--demo-clients-missing");
         Require(Text(missing.main, 1017) == L"Not installed" && Text(missing.main, 1018) == L"Not installed", "missing client status wrong");
+        Require(Text(missing.main, 1003) == L"OneDrive (not installed)" && !IsWindowEnabled(GetDlgItem(missing.main, 1003)),
+            "stale OneDrive account is offered as an available Explorer entry");
+        Require(!IsWindowEnabled(GetDlgItem(missing.main, 1004)), "missing Google volume can be shown");
+        Require(Text(missing.main, 1001) == L"My Drive — local folder", "local folder is mislabeled as an installed cloud client");
         CheckBounds(missing.main);
         Capture(missing.main, L"clients-missing.png");
         for (bool google : {false, true}) {
