@@ -345,6 +345,18 @@ void RunMigrationReport(const std::wstring& executable) {
     RunSyncDirectionPersistence(executable);
     App app(executable, L"--demo-migration");
     const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+    RECT compareBounds{}, compareClient{};
+    GetWindowRect(migration, &compareBounds);
+    GetClientRect(migration, &compareClient);
+    Require(MulDiv(compareBounds.bottom - compareBounds.top, 144, GetDpiForWindow(migration)) <= 1020,
+        "compare window exceeds the 1080p height budget at 150 percent scaling");
+    for (int id : {IDC_MIGRATION_ANALYZE, IDC_MIGRATION_COPY, IDC_MIGRATION_CUTOVER, IDCANCEL}) {
+        RECT button{};
+        GetWindowRect(GetDlgItem(migration, id), &button);
+        MapWindowPoints(nullptr, migration, reinterpret_cast<POINT*>(&button), 2);
+        Require(button.top >= 0 && button.bottom <= compareClient.bottom,
+            "compare action is outside the client area");
+    }
     Require(GetDlgItem(migration, 2101) == nullptr, "removed pause checkbox is still present");
     Require(IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ANALYZE)) != FALSE,
         "connected accounts require an acknowledgement before analysis");
