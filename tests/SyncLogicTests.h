@@ -3,6 +3,11 @@
 
 inline void RunSyncLogicTests() {
     using namespace cloudnav;
+    assert(SyncModeFromSetting(0) == SyncMode::ToGoogle);
+    assert(SyncModeFromSetting(1) == SyncMode::ToOneDrive);
+    assert(SyncModeFromSetting(2) == SyncMode::Bidirectional);
+    assert(SyncModeFromSetting(3) == SyncMode::ToGoogle);
+    assert(SyncModeFromSetting(0xffffffffU) == SyncMode::ToGoogle);
     const std::string config = "[cloudnav-onedrive]\ntype = onedrive\ndrive_id = sample-drive\ntoken = {\"refresh_token\":\"one\"}\n"
         "[cloudnav-gdrive]\ntype = drive\ntoken = {\"refresh_token\":\"google\",\"access_token\":\"old\"}\n";
     auto rotated = config;

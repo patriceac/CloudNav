@@ -12,6 +12,7 @@
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 namespace {
 
@@ -226,7 +227,43 @@ void Run(const std::wstring& executable) {
     Require(Wait([&] { return !IsWindow(folders); }), "second folder manager did not close");
 }
 
+void RunSyncDirectionPersistence(const std::wstring& executable) {
+    HKEY key = nullptr;
+    Require(RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\CloudNav\\Demo", 0, nullptr, 0, KEY_SET_VALUE,
+        nullptr, &key, nullptr) == ERROR_SUCCESS, "cannot prepare isolated preference fixture");
+    const DWORD invalid = 99;
+    const auto prepared = RegSetValueExW(key, L"SyncDirection", 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&invalid), sizeof(invalid));
+    RegCloseKey(key);
+    Require(prepared == ERROR_SUCCESS, "cannot write invalid preference fixture");
+    int expected = 0;
+    for (int selection : {1, 2, 0, 0}) {
+        App app(executable, L"--demo-migration");
+        HWND dialog = Window(app.process.dwProcessId, L"CloudNav — synchronisation cloud");
+        Require(SendDlgItemMessageW(dialog, IDC_MIGRATION_MODE, CB_GETCURSEL, 0, 0) == expected,
+            "sync direction was not restored after process restart");
+        Require(!IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_COPY)), "restoring a preference bypassed analysis");
+        if (expected == 2) Capture(dialog, L"sync-direction-restored.png");
+        Select(dialog, IDC_MIGRATION_MODE, selection);
+        Require(Wait([&] {
+            DWORD value = 99, size = sizeof(value);
+            return RegGetValueW(HKEY_CURRENT_USER, L"Software\\CloudNav\\Demo", L"SyncDirection", RRF_RT_REG_DWORD,
+                nullptr, &value, &size) == ERROR_SUCCESS && value == static_cast<DWORD>(selection);
+        }), "sync direction was not saved immediately");
+        Click(dialog, IDCANCEL);
+        Require(Wait([&] { return !IsWindow(dialog); }), "sync dialog did not close");
+        Click(app.main, 1010);
+        dialog = Window(app.process.dwProcessId, L"CloudNav — synchronisation cloud");
+        Require(SendDlgItemMessageW(dialog, IDC_MIGRATION_MODE, CB_GETCURSEL, 0, 0) == selection,
+            "sync direction was not restored when reopening dialog");
+        Click(dialog, IDCANCEL);
+        Require(Wait([&] { return !IsWindow(dialog); }), "reopened sync dialog did not close");
+        expected = selection;
+    }
+}
+
 void RunMigrationReport(const std::wstring& executable) {
+    RunSyncDirectionPersistence(executable);
     App app(executable, L"--demo-migration");
     const HWND migration = Window(app.process.dwProcessId, L"CloudNav — synchronisation cloud");
     Click(migration, IDC_MIGRATION_ANALYZE);

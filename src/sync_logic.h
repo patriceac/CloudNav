@@ -14,7 +14,10 @@
 namespace cloudnav {
 
 using SyncJson = nlohmann::json;
-enum class SyncMode { ToGoogle, ToOneDrive, Bidirectional };
+enum class SyncMode { ToGoogle = 0, ToOneDrive = 1, Bidirectional = 2 };
+inline SyncMode SyncModeFromSetting(std::uint32_t value) {
+    return value <= 2 ? static_cast<SyncMode>(value) : SyncMode::ToGoogle;
+}
 enum class SyncAction { None, ToGoogle, ToOneDrive, DeleteGoogle, DeleteOneDrive, KeepBoth, Blocked };
 
 inline std::string SyncBindingMaterial(const std::string& config) {

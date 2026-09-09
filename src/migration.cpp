@@ -39,6 +39,28 @@ constexpr UINT WM_MIGRATION_COMPLETE = WM_APP + 42;
 
 using Task = MigrationTask;
 
+const wchar_t* SyncSettingsKey(bool demoMode) {
+    return demoMode ? L"Software\\CloudNav\\Demo" : L"Software\\CloudNav";
+}
+
+SyncMode LoadSyncMode(bool demoMode) {
+    DWORD value = 0, size = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER, SyncSettingsKey(demoMode), L"SyncDirection", RRF_RT_REG_DWORD,
+        nullptr, &value, &size) != ERROR_SUCCESS) return SyncMode::ToGoogle;
+    return SyncModeFromSetting(value);
+}
+
+bool SaveSyncMode(bool demoMode, SyncMode mode) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, SyncSettingsKey(demoMode), 0, nullptr, 0, KEY_SET_VALUE,
+        nullptr, &key, nullptr) != ERROR_SUCCESS) return false;
+    const DWORD value = static_cast<DWORD>(mode);
+    const auto status = RegSetValueExW(key, L"SyncDirection", 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&value), sizeof(value));
+    RegCloseKey(key);
+    return status == ERROR_SUCCESS;
+}
+
 struct ProgressUpdate {
     int percent = 0;
     MigrationStage stage = MigrationStage::Preparing;
@@ -753,7 +775,8 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         context->images.Load(context->instance);
         for (auto mode : {SyncMode::ToGoogle, SyncMode::ToOneDrive, SyncMode::Bidirectional})
             ComboBox_AddString(GetDlgItem(dialog, IDC_MIGRATION_MODE), SyncModeLabel(mode));
-        ComboBox_SetCurSel(GetDlgItem(dialog, IDC_MIGRATION_MODE), 0);
+        context->mode = LoadSyncMode(context->demoMode);
+        ComboBox_SetCurSel(GetDlgItem(dialog, IDC_MIGRATION_MODE), static_cast<int>(context->mode));
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETRANGE32, 0, 100);
         context->configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
         context->logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\migration.log";
@@ -776,9 +799,13 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         case IDC_MIGRATION_MODE:
             if (!context->running && HIWORD(wParam) == CBN_SELCHANGE) {
                 const int selection = ComboBox_GetCurSel(GetDlgItem(dialog, IDC_MIGRATION_MODE));
-                if (selection >= 0 && selection <= 2) context->mode = static_cast<SyncMode>(selection);
+                if (selection < 0 || selection > 2) return TRUE;
+                context->mode = static_cast<SyncMode>(selection);
+                const bool saved = SaveSyncMode(context->demoMode, context->mode);
                 context->copied = false;
                 RefreshPlan(*context);
+                if (!saved) SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS,
+                    L"Sens du transfert appliqué pour cette fenêtre, mais impossible de mémoriser ce choix.");
             }
             return TRUE;
         case IDC_MIGRATION_ONEDRIVE_CONNECT: StartTask(*context, Task::AuthenticateOneDrive); return TRUE;
