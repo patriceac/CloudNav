@@ -5,8 +5,10 @@
 #include "../src/logic.h"
 #include "../src/migration_logic.h"
 #include "../src/migration_report.h"
+#include "SyncLogicTests.h"
 
 int wmain() {
+    RunSyncLogicTests();
     using cloudnav::DriveBit;
     using cloudnav::IsDriveVisible;
     using cloudnav::CloudRelativePath;

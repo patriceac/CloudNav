@@ -1326,7 +1326,7 @@ void LayoutMainControls(UINT dpi) {
 void CreateInterface(HWND window) {
     g_title = CreateLabel(window, L"CloudNav", g_titleFont);
     g_subtitle = CreateLabel(window,
-        L"Visibilité dans l’Explorateur, dossiers personnels et migration cloud.", g_bodyFont);
+        L"Visibilité dans l’Explorateur, dossiers personnels et synchronisation cloud.", g_bodyFont);
     g_sectionTitle = CreateLabel(window, L"Volet de l’Explorateur", g_bodyBoldFont);
 
     g_myDrive = CreateCheckbox(window, IDC_MY_DRIVE, L"Google Drive — dossier My Drive");
@@ -1369,14 +1369,14 @@ void CreateInterface(HWND window) {
         window, L"Choisir où Windows range tes six dossiers personnels.", g_smallFont);
 
     g_migrateCloud = CreateWindowExW(
-        0, L"BUTTON", L"Migrer vers Google Drive…",
+        0, L"BUTTON", L"Comparer les comptes…",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MIGRATE_CLOUD)),
         g_instance, nullptr);
     SetControlFont(g_migrateCloud, g_bodyBoldFont);
     g_migrateCloudDetail = CreateLabel(
-        window, L"Copier OneDrive, vérifier, puis configurer les dossiers.", g_smallFont);
+        window, L"Comparer les deux comptes et choisir le sens du transfert.", g_smallFont);
 
     g_explanation = CreateLabel(
         window,
@@ -1395,7 +1395,7 @@ void CreateInterface(HWND window) {
                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_APPLY)), g_instance, nullptr);
     SetControlFont(g_apply, g_bodyBoldFont);
     g_foldersSection = CreateLabel(window, L"Dossiers personnels", g_bodyBoldFont);
-    g_migrationSection = CreateLabel(window, L"Migration cloud", g_bodyBoldFont);
+    g_migrationSection = CreateLabel(window, L"Synchronisation cloud", g_bodyBoldFont);
     g_oneDriveSection = CreateLabel(window, L"Gestion du client OneDrive", g_bodyBoldFont);
     g_startupDetail = CreateLabel(window, L"", g_smallFont);
     g_providerImages.Load(g_instance);

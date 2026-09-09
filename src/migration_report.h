@@ -70,6 +70,7 @@ struct AnalysisReport {
     bool available = false;
     bool complete = false;
     bool malformed = false;
+    std::wstring summaryOverride;
 
     void Log(const std::string& line) {
         std::string action, path, level, message;
@@ -134,6 +135,7 @@ struct AnalysisReport {
         return FormatBytes(bytes);
     }
     std::wstring Summary() const {
+        if (!summaryOverride.empty()) return summaryOverride;
         if (!available) return L"Les résultats apparaîtront après l’analyse.";
         return std::wstring(complete ? L"" : L"Résultats partiels — ") +
             L"Nouveaux : " + std::to_wstring(Count('+')) + L"    Modifiés : " + std::to_wstring(Count('*')) +
@@ -145,10 +147,10 @@ struct AnalysisReport {
 
 inline const wchar_t* AnalysisCategory(char category) {
     switch (category) {
-    case '+': return L"Nouveau";
-    case '*': return L"Modifié";
+    case '+': return L"OneDrive seul";
+    case '*': return L"Différent";
     case '=': return L"Identique";
-    case '-': return L"Conservé sur Google Drive";
+    case '-': return L"Google Drive seul";
     case '!': return L"Erreur";
     default: return L"Non classé";
     }

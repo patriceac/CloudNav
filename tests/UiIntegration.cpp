@@ -228,15 +228,25 @@ void Run(const std::wstring& executable) {
 
 void RunMigrationReport(const std::wstring& executable) {
     App app(executable, L"--demo-migration");
-    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — migration OneDrive vers Google Drive");
+    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — synchronisation cloud");
     Click(migration, IDC_MIGRATION_ANALYZE);
     Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)) != FALSE; }), "analysis did not complete");
     const auto summary = Text(migration, IDC_MIGRATION_SUMMARY);
-    Require(summary.find(L"Nouveaux : 1") != std::wstring::npos && summary.find(L"Modifiés : 1") != std::wstring::npos &&
-        summary.find(L"Identiques : 1") != std::wstring::npos && summary.find(L"Erreurs : 0") != std::wstring::npos &&
-        summary.find(L"À copier : 3.0 Mo") != std::wstring::npos, "analysis KPIs are incorrect");
+    Require(summary.find(L"OneDrive seul : 1") != std::wstring::npos && summary.find(L"Google Drive seul : 1") != std::wstring::npos &&
+        summary.find(L"Identiques : 1") != std::wstring::npos && summary.find(L"Différents : 1") != std::wstring::npos &&
+        summary.find(L"Bloqués : 0") != std::wstring::npos, "analysis KPIs are incorrect");
     CheckBounds(migration);
     Capture(migration, L"report-summary.png");
+    Select(migration, IDC_MIGRATION_MODE, 1);
+    Require(Wait([&] { return Text(migration, IDC_MIGRATION_PLAN).find(L"→ OneDrive : 2") != std::wstring::npos; }), "reverse plan did not reuse analysis");
+    Require(Text(migration, IDC_MIGRATION_SUMMARY) == summary && IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)), "mode switch discarded comparison");
+    Capture(migration, L"report-reverse.png");
+    Select(migration, IDC_MIGRATION_MODE, 2);
+    Require(Wait([&] { return Text(migration, IDC_MIGRATION_SUMMARY).find(L"Conflits : 1") != std::wstring::npos; }), "bidirectional conflict preview missing");
+    Require(Text(migration, IDC_MIGRATION_COPY) == L"Synchroniser", "bidirectional action mislabeled");
+    Capture(migration, L"report-bidirectional.png");
+    Select(migration, IDC_MIGRATION_MODE, 0);
+    Require(Wait([&] { return Text(migration, IDC_MIGRATION_SUMMARY) == summary; }), "forward plan did not restore");
     Click(migration, IDC_MIGRATION_REPORT);
     const HWND report = Window(app.process.dwProcessId, L"CloudNav — résultats de l’analyse");
     const HWND list = GetDlgItem(report, IDC_REPORT_LIST);
@@ -252,7 +262,7 @@ void RunMigrationReport(const std::wstring& executable) {
     Require(Wait([&] { return !IsWindow(report); }), "report did not close");
     Click(migration, IDC_MIGRATION_ANALYZE);
     Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_REPORT)); }), "stale report remains available");
-    Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"Nouveaux") == std::wstring::npos, "stale KPIs remain visible");
+    Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"OneDrive seul") == std::wstring::npos, "stale KPIs remain visible");
     Click(migration, IDCANCEL);
     Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ANALYZE)) != FALSE; }), "analysis did not cancel");
     Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"Résultats partiels") == 0 &&

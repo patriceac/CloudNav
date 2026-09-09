@@ -9,20 +9,20 @@ IDR_ONEDRIVE_LOGO RCDATA "../assets/onedrive-official.png"
 IDR_GOOGLE_DRIVE_LOGO RCDATA "../assets/google-drive-official.png"
 IDR_RCLONE_EXE RCDATA "../.third-party/rclone/v1.75.0/rclone.exe"
 
-IDD_CLOUD_MIGRATION DIALOGEX 0, 0, 500, 366
+IDD_CLOUD_MIGRATION DIALOGEX 0, 0, 500, 440
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "CloudNav — migration OneDrive vers Google Drive"
+CAPTION "CloudNav — synchronisation cloud"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT "Migration OneDrive → Google Drive", IDC_DIALOG_HEADING, 16, 10, 468, 22
-    LTEXT "Copie des fichiers nouveaux ou modifiés de l’analyse. Les fichiers Google Drive supplémentaires sont conservés.", -1, 16, 37, 468, 20
+    LTEXT "Comparer OneDrive et Google Drive", IDC_DIALOG_HEADING, 16, 10, 468, 22
+    LTEXT "Une analyse des deux comptes. Choisis ensuite le sens du transfert sans relancer la comparaison.", -1, 16, 37, 468, 20
     CONTROL "J’ai suspendu toute synchronisation externe entre OneDrive et Google Drive.", IDC_MIGRATION_REMINDER, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 16, 60, 468, 18
     CONTROL "", IDC_MIGRATION_ONEDRIVE_ICON, "STATIC", SS_OWNERDRAW | WS_CHILD | WS_VISIBLE, 16, 91, 14, 14
-    LTEXT "OneDrive — source", -1, 36, 92, 136, 12
+    LTEXT "OneDrive", -1, 36, 92, 136, 12
     LTEXT "Non connecté", IDC_MIGRATION_ONEDRIVE_STATUS, 183, 92, 180, 12
     PUSHBUTTON "Connecter…", IDC_MIGRATION_ONEDRIVE_CONNECT, 384, 86, 100, 22
     CONTROL "", IDC_MIGRATION_GOOGLE_ICON, "STATIC", SS_OWNERDRAW | WS_CHILD | WS_VISIBLE, 16, 122, 14, 14
-    LTEXT "Google Drive — destination", -1, 36, 123, 140, 12
+    LTEXT "Google Drive", -1, 36, 123, 140, 12
     LTEXT "Non connecté", IDC_MIGRATION_GOOGLE_STATUS, 183, 123, 180, 12
     PUSHBUTTON "Connecter…", IDC_MIGRATION_GOOGLE_CONNECT, 384, 117, 100, 22
     CONTROL "", -1, "STATIC", SS_ETCHEDHORZ, 16, 152, 468, 1
@@ -31,12 +31,15 @@ BEGIN
     LTEXT "En attente de l’analyse", IDC_MIGRATION_STATS, 16, 209, 468, 14
     LTEXT "Connecte les deux comptes, puis lance l’analyse.", IDC_MIGRATION_DETAILS, 16, 231, 468, 26
     LTEXT "Les résultats apparaîtront après l’analyse.", IDC_MIGRATION_SUMMARY, 16, 258, 468, 28
-    LTEXT "Exclus du bilan : coffre-fort OneDrive et documents Google natifs (non comptés).", -1, 16, 292, 370, 22
+    LTEXT "Exclus (non comptés) : coffre-fort, documents Google natifs, archives .CloudNav-history.", -1, 16, 292, 370, 22
     PUSHBUTTON "Voir les détails…", IDC_MIGRATION_REPORT, 394, 288, 90, 22
-    PUSHBUTTON "Analyser", IDC_MIGRATION_ANALYZE, 16, 328, 82, 24
-    PUSHBUTTON "Copier", IDC_MIGRATION_COPY, 106, 328, 108, 24
-    PUSHBUTTON "Configurer les dossiers…", IDC_MIGRATION_CUTOVER, 222, 328, 156, 24
-    PUSHBUTTON "Fermer", IDCANCEL, 394, 328, 90, 24
+    LTEXT "Sens du transfert", -1, 16, 330, 96, 12
+    COMBOBOX IDC_MIGRATION_MODE, 116, 326, 368, 90, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "", IDC_MIGRATION_PLAN, 16, 354, 468, 40
+    PUSHBUTTON "Analyser", IDC_MIGRATION_ANALYZE, 16, 402, 82, 24
+    PUSHBUTTON "Copier", IDC_MIGRATION_COPY, 106, 402, 108, 24
+    PUSHBUTTON "Configurer les dossiers…", IDC_MIGRATION_CUTOVER, 222, 402, 156, 24
+    PUSHBUTTON "Fermer", IDCANCEL, 394, 402, 90, 24
 END
 
 IDD_MIGRATION_REPORT DIALOGEX 0, 0, 620, 352

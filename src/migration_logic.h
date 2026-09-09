@@ -50,7 +50,7 @@ inline const wchar_t* MigrationStageTitle(MigrationStage stage) {
     switch (stage) {
     case MigrationStage::Connecting: return L"Connexion du compte…";
     case MigrationStage::Analyzing: return L"1 / 2 — Analyse des écarts";
-    case MigrationStage::Copying: return L"2 / 2 — Copie OneDrive → Google Drive";
+    case MigrationStage::Copying: return L"2 / 2 — Application du plan sélectionné";
     case MigrationStage::Verifying: return L"3 / 3 — Vérification des fichiers copiés";
     default: return L"Préparation de l’opération…";
     }
@@ -60,7 +60,7 @@ inline const wchar_t* MigrationStageDetails(MigrationStage stage) {
     switch (stage) {
     case MigrationStage::Connecting: return L"Termine la connexion dans le navigateur, puis reviens ici.";
     case MigrationStage::Analyzing: return L"Comparaison des comptes. Aucun fichier n’est copié pendant l’analyse.";
-    case MigrationStage::Copying: return L"Copie des fichiers de l’analyse. Tu peux annuler et reprendre, ou analyser à nouveau après la copie.";
+    case MigrationStage::Copying: return L"Application des actions de l’analyse. Tu peux annuler ; analyse à nouveau pour reprendre après un transfert.";
     case MigrationStage::Verifying: return L"Comparaison indépendante. La configuration des dossiers sera proposée après réussite.";
     default: return L"La progression apparaîtra au démarrage. Tu peux annuler à tout moment.";
     }
