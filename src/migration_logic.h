@@ -20,13 +20,7 @@ inline std::vector<std::wstring> AuthenticationArguments(bool oneDrive, bool exi
     std::vector<std::wstring> args{L"config", existing ? L"update" : L"create", remote};
     if (!existing) args.push_back(oneDrive ? L"onedrive" : L"drive");
     args.insert(args.end(), {L"config_is_local=true", L"config_refresh_token=true",
-        L"--auto-confirm", L"--config", configPath});
-    if (oneDrive && existing) {
-        // Re-authorize the saved drive, rather than selecting a different one.
-        args.push_back(L"config_type=driveid");
-    } else if (!oneDrive) {
-        args.insert(args.end(), {L"config_shared_client_id=true", L"config_change_team_drive=false"});
-    }
+        L"--non-interactive", L"--config", configPath});
     return args;
 }
 

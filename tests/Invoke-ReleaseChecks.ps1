@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime')]
-    [string[]]$Scenario = @('Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime'),
+    [ValidateSet('Auth', 'Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime')]
+    [string[]]$Scenario = @('Auth', 'Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime'),
     [switch]$SkipBuild,
     [switch]$Force
 )
@@ -15,6 +15,7 @@ if (-not (Test-Path -LiteralPath $runner)) { throw 'The isolated Hyper-V test ha
 $checkpointRoot = Join-Path $projectRoot 'output\release-checks'
 New-Item -ItemType Directory -Force -Path $checkpointRoot | Out-Null
 $cases = @{
+    Auth = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json" --auth'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('auth-drive-selection.png') }
     Clients = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json" --clients'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('clients-protected.png','clients-unknown.png','clients-missing.png','clients-install-google.png','clients-install-onedrive.png','clients-uninstall-google.png','clients-uninstall-onedrive.png','clients-download-failure.png') }
     ClientRuntime = @{ Exe = 'CloudNavClientTests.exe'; Args = '"{OUTDIR}\client-result.json"'; Actions = 'vm-client-runtime-actions.json'; Result = 'client-result.json'; Images = @() }
     Ui = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json"'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('ui-main.png','ui-unverified.png','ui-folder-preview.png','ui-folder-confirm.png','ui-folder-applied.png') }
@@ -31,6 +32,7 @@ foreach ($name in $Scenario) {
     $case = $cases[$name]
     $actionsPath = Join-Path $PSScriptRoot $case.Actions
     $identityFiles = @((Join-Path $releasePath 'CloudNav.exe'), (Join-Path $releasePath $case.Exe), $actionsPath, $PSCommandPath, $runner)
+    if ($name -eq 'MigrationEngine') { $identityFiles += Join-Path $releasePath 'CloudNavAuthFixture.exe' }
     $identity = ($identityFiles | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }) -join ':'
     $checkpointPath = Join-Path $checkpointRoot ($name + '.json')
     if (-not $Force -and (Test-Path -LiteralPath $checkpointPath)) {

@@ -65,6 +65,10 @@ Comparison prefers a shared checksum when available; otherwise it uses size and 
 
 CloudNav embeds the pinned rclone 1.75.0 engine, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. OAuth credentials and migration state remain per-user in `%LOCALAPPDATA%\CloudNav`; no credentials are embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
 
+Account setup uses rclone's [non-interactive continuation protocol](https://rclone.org/commands/rclone_config_create/): provider questions appear in a native CloudNav dialog, including OneDrive Personal, Business, and SharePoint drive selection. Google Drive connection asks for your own Google OAuth Desktop app client ID and client secret (Drive API enabled, with your account allowed by the consent screen); CloudNav does not accept the shared-client fallback. Reconnecting lets you replace these credentials.
+
+Setup stages changes beside the configuration and replaces the saved file only after all required fields and a read-only root listing succeed. Incomplete OneDrive configurations require reconnecting and selecting a drive. Provider errors stop the attempt; reconnect starts discovery again. Setup is limited to 32 continuation steps and five minutes per subprocess. Authentication and readiness-probe output are excluded from diagnostic logs. Both accounts are checked before comparison. Existing logs from older versions may contain credentials: do not share them unredacted, and revoke any credentials exposed through those logs.
+
 When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudNav can disable OneDrive Known Folder Backup before a redirect-only operation. The preview and final review explicitly list other protected folders that will return to their local locations. No OneDrive file is deleted. Copy/move plans requiring this backup release are blocked: use the migration assistant to copy the original cloud data and check the result yourself before redirecting, so releasing backup cannot change the copy source to an empty local folder.
 
 If a scheduled task named `OneDrive-GDrive-Bidirectional-Sync` is present, CloudNav reports **external synchronization detected**. Completing a transfer makes the ordinary personal-folder manager available without automatically recommending redirect-only.
@@ -127,10 +131,14 @@ With the Codex Hyper-V SYSTEM broker installed, run the repeatable offline relea
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario MigrationReport,MigrationEngine
 # Check client buttons, confirmations, folder guards, and installation detection:
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Clients,ClientRuntime
+# Check account selection/cancellation and atomic setup failure recovery:
+.\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Auth,MigrationEngine
 ```
 
 The runner keys checkpoints to the exact executable, test driver, action file, and runner hashes. It checks declared assertions, screenshot presence, process cleanup, VM shutdown, and disposable payload deletion before saving a pass. Screenshots still require visual review. The engine test exercises the embedded rclone against synthetic local directories with no cloud credentials: read-only analysis, both copy directions, first merge, conflict preservation, archived deletion, reviewed-plan reuse without pre-transfer listings, local-history change rejection, and interrupted recovery. UI tests check switching modes without discarding the comparison. Offline fixtures and demo operations do not qualify real OAuth, provider-specific cloud behavior, cloud performance, or actual OneDrive uninstallation.
 
 Client tests use disposable registry/filesystem fixtures to cover unquoted uninstaller paths, installed clients without connected accounts, missing uninstallers, and rejection of unsigned or unexpected programs. UI client installation/removal is simulated. The optional `CloudNavClientTests.exe <result.json> --downloads` mode downloads both official installers, validates their publisher signatures, and deletes the downloads without executing them. Run it only through the isolated harness with its approved `InternetOnly` profile; it is deliberately excluded from the offline release suite.
+
+The account tests cover the native drive selector and cancellation. The engine test runs the real non-interactive rclone protocol with stdin closed against a local backend, then uses a synthetic subprocess to check provider errors, incomplete metadata, failed root checks, successful atomic replacement, recovery after failed listing, temporary-file cleanup, and exclusion of authentication output from logs. `CloudNavAuthFixture.exe` is test-only and is not part of the portable application distribution.
 
 The JSON parser is vendored from nlohmann/json v3.12.0 under the MIT License; see [`third_party/nlohmann/LICENSE.MIT`](third_party/nlohmann/LICENSE.MIT).

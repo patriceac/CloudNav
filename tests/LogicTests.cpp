@@ -7,6 +7,7 @@
 #include "../src/migration_report.h"
 #include "SyncLogicTests.h"
 #include "ClientLogicTests.h"
+#include "AuthLogicTests.h"
 
 int wmain() {
     for (int state = 0; state < 16; ++state)
@@ -16,6 +17,7 @@ int wmain() {
     assert(cloudnav::CanChangeNavigationVisibility(true, false));
     RunSyncLogicTests();
     TestClientManagementLogic();
+    TestAuthLogic();
     using cloudnav::DriveBit;
     using cloudnav::IsDriveVisible;
     using cloudnav::CloudRelativePath;
@@ -256,10 +258,8 @@ int wmain() {
         const auto args = cloudnav::AuthenticationArguments(oneDrive, existing, L"account", L"test.conf");
         const auto has = [&](const wchar_t* value) { return std::find(args.begin(), args.end(), value) != args.end(); };
         assert(args[1] == (existing ? L"update" : L"create"));
-        assert(has(L"--auto-confirm") && has(L"config_refresh_token=true") && has(L"config_is_local=true"));
-        assert(has(L"config_type=driveid") == (oneDrive && existing));
-        assert(has(L"config_shared_client_id=true") == !oneDrive);
-        assert(has(L"config_change_team_drive=false") == !oneDrive);
+        assert(has(L"--non-interactive") && has(L"config_refresh_token=true") && has(L"config_is_local=true"));
+        assert(!has(L"--auto-confirm") && !has(L"config_type=driveid") && !has(L"config_shared_client_id=true"));
     }
     std::wcout << L"CloudNav logic tests: OK\n";
     return 0;

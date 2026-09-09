@@ -341,6 +341,27 @@ void RunSyncDirectionPersistence(const std::wstring& executable) {
     }
 }
 
+void RunAuth(const std::wstring& executable) {
+    App app(executable, L"--demo-migration");
+    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+    Click(migration, IDC_MIGRATION_ONEDRIVE_CONNECT);
+    HWND question = Window(app.process.dwProcessId, L"CloudNav — connect account");
+    Require(SendDlgItemMessageW(question, IDC_AUTH_CHOICES, CB_GETCOUNT, 0, 0) == 3, "drive choices missing");
+    Require(!IsWindowVisible(GetDlgItem(question, IDC_AUTH_VALUE)), "exclusive drive accepts arbitrary text");
+    CheckBounds(question);
+    Select(question, IDC_AUTH_CHOICES, 2);
+    Capture(question, L"auth-drive-selection.png");
+    Click(question, IDOK);
+    Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ONEDRIVE_CONNECT)) != FALSE; }), "drive confirmation did not finish");
+    Require(Text(migration, IDC_MIGRATION_DETAILS) == L"OneDrive account connected.", "drive confirmation failed");
+    Click(migration, IDC_MIGRATION_ONEDRIVE_CONNECT);
+    question = Window(app.process.dwProcessId, L"CloudNav — connect account");
+    Click(question, IDCANCEL);
+    Require(Wait([&] { return Text(migration, IDC_MIGRATION_PHASE) == L"Operation cancelled."; }), "setup cancellation failed");
+    Require(!IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)), "cancelled setup enabled copy");
+    Click(migration, IDCANCEL);
+}
+
 void RunMigrationReport(const std::wstring& executable) {
     RunSyncDirectionPersistence(executable);
     App app(executable, L"--demo-migration");
@@ -409,6 +430,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc != 2 && argc != 3) return 2;
     const bool migrationReport = argc == 3 && std::wstring(argv[2]) == L"--migration-report";
     const bool clients = argc == 3 && std::wstring(argv[2]) == L"--clients";
+    const bool auth = argc == 3 && std::wstring(argv[2]) == L"--auth";
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     wchar_t module[32768] = {};
     GetModuleFileNameW(nullptr, module, ARRAYSIZE(module));
@@ -418,9 +440,9 @@ int wmain(int argc, wchar_t** argv) {
     ULONG_PTR token = 0;
     Gdiplus::GdiplusStartupInput graphicsInput;
     if (Gdiplus::GdiplusStartup(&token, &graphicsInput, nullptr) != Gdiplus::Ok) return 4;
-    try { if (clients) RunClients(executable); else if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
+    try { if (auth) RunAuth(executable); else if (clients) RunClients(executable); else if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
     Gdiplus::GdiplusShutdown(token);
-    const std::string json = error.empty()
+    const std::string json = error.empty() && auth ? "{\"passed\":true,\"driveSelection\":true,\"cancelSetup\":true,\"simulated\":true}" : error.empty()
         ? (clients ? "{\"passed\":true,\"clientControls\":true,\"cancelPreservesState\":true,\"folderGuards\":true,\"downloadFailure\":true,\"simulated\":true}" : migrationReport ? "{\"passed\":true,\"summary\":true,\"filters\":true,\"partialResults\":true,\"staleReportCleared\":true,\"bounds\":true}" : "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"collateralPreview\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}")
         : "{\"passed\":false,\"error\":\"" + error + "\"}";
     HANDLE file = CreateFileW(argv[1], GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

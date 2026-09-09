@@ -66,6 +66,7 @@ $testOutput = Join-Path $outputRoot 'CloudNavTests.exe'
 $windowPositionTestOutput = Join-Path $outputRoot 'CloudNavWindowPositionTests.exe'
 $uiTestOutput = Join-Path $outputRoot 'CloudNavUiTests.exe'
 $clientTestOutput = Join-Path $outputRoot 'CloudNavClientTests.exe'
+$authFixtureOutput = Join-Path $outputRoot 'CloudNavAuthFixture.exe'
 
 $commands = @(
     "rc.exe /nologo /fo `"$resourceOutput`" `"$(Join-Path $sourceRoot 'CloudNav.rc')`"",
@@ -73,7 +74,8 @@ $commands = @(
     "cl.exe $testCompileOptions /Fe:`"$testOutput`" `"$(Join-Path $testRoot 'LogicTests.cpp')`" /link /SUBSYSTEM:CONSOLE",
     "cl.exe $testCompileOptions /Fe:`"$windowPositionTestOutput`" `"$(Join-Path $testRoot 'WindowPositionIntegration.cpp')`" advapi32.lib user32.lib /link /SUBSYSTEM:CONSOLE",
     "cl.exe $testCompileOptions /Fe:`"$uiTestOutput`" `"$(Join-Path $testRoot 'UiIntegration.cpp')`" user32.lib /link /SUBSYSTEM:CONSOLE",
-    "cl.exe $testCompileOptions /Fe:`"$clientTestOutput`" `"$(Join-Path $testRoot 'ClientRuntimeTests.cpp')`" `"$(Join-Path $sourceRoot 'client_management.cpp')`" /link /SUBSYSTEM:CONSOLE"
+    "cl.exe $testCompileOptions /Fe:`"$clientTestOutput`" `"$(Join-Path $testRoot 'ClientRuntimeTests.cpp')`" `"$(Join-Path $sourceRoot 'client_management.cpp')`" /link /SUBSYSTEM:CONSOLE",
+    "cl.exe $testCompileOptions /Fe:`"$authFixtureOutput`" `"$(Join-Path $testRoot 'AuthRuntimeFixture.cpp')`" /link /SUBSYSTEM:CONSOLE"
 ) -join ' && '
 
 $cmdLine = "`"$developerShell`" -no_logo -arch=x64 -host_arch=x64 && $commands"

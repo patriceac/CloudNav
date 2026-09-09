@@ -26,6 +26,7 @@
 #include "migration_logic.h"
 #include "migration_report.h"
 #include "sync_logic.h"
+#include "auth_logic.h"
 #include "resource.h"
 #include "ui.h"
 
@@ -38,6 +39,7 @@ constexpr wchar_t kOneDriveRemote[] = L"cloudnav-onedrive";
 constexpr wchar_t kGoogleRemote[] = L"cloudnav-gdrive";
 constexpr UINT WM_MIGRATION_PROGRESS = WM_APP + 41;
 constexpr UINT WM_MIGRATION_COMPLETE = WM_APP + 42;
+constexpr UINT WM_AUTH_QUESTION = WM_APP + 43;
 
 using Task = MigrationTask;
 
@@ -203,15 +205,6 @@ void PostProgress(DialogContext& context, int percent, MigrationStage stage,
     if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
 }
 
-bool HasRemote(const std::wstring& configPath, const wchar_t* remote) {
-    std::wifstream stream(configPath);
-    if (!stream) return false;
-    const std::wstring header = L"[" + std::wstring(remote) + L"]";
-    std::wstring line;
-    while (std::getline(stream, line)) if (_wcsicmp(line.c_str(), header.c_str()) == 0) return true;
-    return false;
-}
-
 void PostListingProgress(DialogContext& context, bool oneDrive, MigrationStage stage, const std::wstring& text) {
     if (!context.parallelListing) { PostProgress(context, -1, stage, text); return; }
     EnterCriticalSection(&context.processLock);
@@ -225,8 +218,8 @@ void PostListingProgress(DialogContext& context, bool oneDrive, MigrationStage s
 
 bool RunProcess(DialogContext& context, const std::vector<std::wstring>& arguments,
                 MigrationStage stage, std::wstring& error, DWORD* processExitCode = nullptr, AnalysisReport* report = nullptr,
-                std::string* captured = nullptr) {
-    if (context.cancelRequested || (captured && context.listingFailed)) return false;
+                std::string* captured = nullptr, bool privateOutput = false) {
+    if (context.cancelRequested || (captured && !privateOutput && context.listingFailed)) return false;
     // Serialize only process creation, so concurrent children cannot inherit
     // each other's temporary inheritable pipe handles.
     static std::mutex launchMutex;
@@ -272,14 +265,15 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     EnterCriticalSection(&context.processLock);
     context.childProcesses.push_back(process.hProcess);
     context.peakChildProcesses = (std::max)(context.peakChildProcesses, static_cast<unsigned>(context.childProcesses.size()));
-    if (context.cancelRequested || (captured && context.listingFailed)) TerminateProcess(process.hProcess, ERROR_CANCELLED);
+    if (context.cancelRequested || (captured && !privateOutput && context.listingFailed)) TerminateProcess(process.hProcess, ERROR_CANCELLED);
     LeaveCriticalSection(&context.processLock);
     launchLock.unlock();
 
     context.statisticsUpdates = 0;
     const bool listingOneDrive = arguments.size() > 1 && arguments[1] == context.oneDrivePath;
     const ULONGLONG listingStarted = GetTickCount64();
-    if (captured) PostListingProgress(context, listingOneDrive, stage, SyncListingProgress(listingOneDrive, 0, 0));
+    if (privateOutput) PostProgress(context, -1, stage, L"Connecting account — follow the setup window and browser.");
+    else if (captured) PostListingProgress(context, listingOneDrive, stage, SyncListingProgress(listingOneDrive, 0, 0));
     else PostProgress(context, -1, stage, stage == MigrationStage::Copying
         ? L"Preparing copy — opening selected files…"
         : L"Reading accounts — waiting for initial statistics…");
@@ -288,14 +282,17 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     ULONGLONG lastInventoryUpdate = GetTickCount64();
     char buffer[8192];
     DWORD read = 0;
-    HANDLE log = captured ? INVALID_HANDLE_VALUE : CreateFileW(context.logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+    HANDLE log = (captured || privateOutput) ? INVALID_HANDLE_VALUE : CreateFileW(context.logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     for (;;) {
-        if (context.cancelRequested || (captured && context.listingFailed)) TerminateProcess(process.hProcess, ERROR_CANCELLED);
+        if (context.cancelRequested || (captured && !privateOutput && context.listingFailed)) TerminateProcess(process.hProcess, ERROR_CANCELLED);
         // A blocking pipe read freezes progress during provider enumeration.
         // Poll availability so even a silent listing gets an honest heartbeat.
         const auto now = GetTickCount64();
-        if (captured && now - lastInventoryUpdate >= 1000) {
+        if (privateOutput && now - listingStarted > 300000) {
+            TerminateProcess(process.hProcess, ERROR_TIMEOUT);
+        }
+        if (captured && !privateOutput && now - lastInventoryUpdate >= 1000) {
             PostListingProgress(context, listingOneDrive, stage, SyncListingProgress(listingOneDrive, receivedFiles, (now - listingStarted) / 1000));
             ++context.listingProgressUpdates;
             lastInventoryUpdate = now;
@@ -310,6 +307,10 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
         }
         if (!ReadFile(readPipe, buffer, (std::min)(available, static_cast<DWORD>(sizeof(buffer))), &read, nullptr) || !read) break;
         if (captured) captured->append(buffer, read);
+        if (privateOutput && captured && captured->size() > 4 * 1024 * 1024) {
+            TerminateProcess(process.hProcess, ERROR_BUFFER_OVERFLOW);
+        }
+        if (privateOutput) continue;
         if (log != INVALID_HANDLE_VALUE) {
             DWORD logged = 0;
             WriteFile(log, buffer, read, &logged, nullptr);
@@ -354,7 +355,9 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     }
     if (context.cancelRequested || exitCode == ERROR_CANCELLED) return false;
     if (exitCode != 0) {
-        error = L"rclone reported an error (code " + std::to_wstring(exitCode) + L"). Log: " + context.logPath;
+        error = privateOutput ? L"Account connection or root check failed (code " + std::to_wstring(exitCode) +
+            L"). Check your sign-in and drive permissions, then reconnect. Authentication output is not logged." :
+            L"rclone reported an error (code " + std::to_wstring(exitCode) + L"). Log: " + context.logPath;
         return false;
     }
     if (report && !report->complete) {
@@ -399,11 +402,140 @@ std::string WideToUtf8(const std::wstring& value) {
     return result;
 }
 
+struct AuthQuestion {
+    SyncJson option;
+    std::string answer;
+    std::vector<std::string> values;
+};
+
+INT_PTR CALLBACK AuthQuestionProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* question = reinterpret_cast<AuthQuestion*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (message == WM_INITDIALOG) {
+        question = reinterpret_cast<AuthQuestion*>(lParam);
+        SetWindowLongPtrW(dialog, DWLP_USER, lParam);
+        const auto& option = question->option;
+        SetDlgItemTextW(dialog, IDC_AUTH_HELP, Utf8ToWide(option.value("Help", std::string("Choose an account option."))).c_str());
+        const bool password = option.value("IsPassword", false);
+        if (password) SendDlgItemMessageW(dialog, IDC_AUTH_VALUE, EM_SETPASSWORDCHAR, L'\x25cf', 0);
+        std::string initial;
+        if (option.contains("Default") && !option["Default"].is_null())
+            initial = option["Default"].is_string() ? option["Default"].get<std::string>() : option["Default"].dump();
+        if (option.contains("Examples") && option["Examples"].is_array()) for (const auto& example : option["Examples"]) {
+            const auto value = example.value("Value", std::string());
+            const auto label = Utf8ToWide(example.value("Help", value));
+            SendDlgItemMessageW(dialog, IDC_AUTH_CHOICES, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+            question->values.push_back(value);
+            if (value == initial) SendDlgItemMessageW(dialog, IDC_AUTH_CHOICES, CB_SETCURSEL, question->values.size() - 1, 0);
+        }
+        ShowWindow(GetDlgItem(dialog, IDC_AUTH_CHOICES), question->values.empty() ? SW_HIDE : SW_SHOW);
+        ShowWindow(GetDlgItem(dialog, IDC_AUTH_VALUE), option.value("Exclusive", false) && !question->values.empty() ? SW_HIDE : SW_SHOW);
+        SetDlgItemTextW(dialog, IDC_AUTH_VALUE, Utf8ToWide(initial).c_str());
+        return TRUE;
+    }
+    if (!question) return FALSE;
+    if (message == WM_COMMAND && LOWORD(wParam) == IDC_AUTH_CHOICES && HIWORD(wParam) == CBN_SELCHANGE) {
+        const auto index = SendDlgItemMessageW(dialog, IDC_AUTH_CHOICES, CB_GETCURSEL, 0, 0);
+        if (index >= 0 && static_cast<size_t>(index) < question->values.size())
+            SetDlgItemTextW(dialog, IDC_AUTH_VALUE, Utf8ToWide(question->values[static_cast<size_t>(index)]).c_str());
+        return TRUE;
+    }
+    if (message == WM_COMMAND && LOWORD(wParam) == IDOK) {
+        question->answer = WideToUtf8(ui::ControlText(dialog, IDC_AUTH_VALUE));
+        if (question->option.value("Exclusive", false) && !question->values.empty()) {
+            const auto index = SendDlgItemMessageW(dialog, IDC_AUTH_CHOICES, CB_GETCURSEL, 0, 0);
+            if (index < 0 || static_cast<size_t>(index) >= question->values.size()) return TRUE;
+            question->answer = question->values[static_cast<size_t>(index)];
+        }
+        if (question->option.value("Required", false) && question->answer.empty()) return TRUE;
+        EndDialog(dialog, IDOK); return TRUE;
+    }
+    if (message == WM_CLOSE || (message == WM_COMMAND && LOWORD(wParam) == IDCANCEL)) {
+        EndDialog(dialog, IDCANCEL); return TRUE;
+    }
+    return FALSE;
+}
+
+bool AskAuth(DialogContext& context, const SyncJson& option, std::string& answer) {
+    if (context.cancelRequested) return false;
+    // Only browser sign-in mechanics are automatic; drive/account selection
+    // and provider confirmations remain explicit choices in the GUI.
+    const auto name = option.value("Name", std::string());
+    if (name == "config_is_local" || name == "config_refresh_token") { answer = "true"; return true; }
+    if (name == "config_shared_client_id") return false;
+    AuthQuestion question{option, {}, {}};
+    if (SendMessageW(context.dialog, WM_AUTH_QUESTION, 0, reinterpret_cast<LPARAM>(&question)) != IDOK) {
+        context.cancelRequested = true; return false;
+    }
+    answer = question.answer;
+    return true;
+}
+
+bool ProbeAccount(DialogContext& context, const std::wstring& config, const std::wstring& remote, std::wstring& error) {
+    return RunProcess(context, {L"lsd", remote + L":", L"--config", config, L"--retries", L"1",
+        L"--low-level-retries", L"1", L"--contimeout", L"15s", L"--timeout", L"30s"},
+        MigrationStage::Connecting, error, nullptr, nullptr, nullptr, true);
+}
+
+bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) {
+    const std::wstring remote = oneDrive ? kOneDriveRemote : kGoogleRemote;
+    const auto remoteName = WideToUtf8(remote);
+    const auto original = ReadSyncFile(context.configPath);
+    const auto fields = AuthFields(original, remoteName);
+    const bool existing = !fields.empty();
+    // Same-directory staging permits atomic replacement. No provider failure
+    // can leave a new token-only remote in the live configuration.
+    const auto staged = context.configPath + L".auth-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    struct Cleanup { std::wstring path; ~Cleanup() { DeleteFileW(path.c_str()); } } cleanup{staged};
+    if (!WriteEvidence(staged, original)) { error = L"Unable to stage account configuration."; return false; }
+    auto args = AuthenticationArguments(oneDrive, existing, remote, staged);
+    if (!oneDrive) {
+        for (const auto* key : {"client_id", "client_secret"}) {
+            const auto field = fields.find(key);
+            std::string value;
+            const bool secret = std::string(key) == "client_secret";
+            const SyncJson option = {{"Name", key}, {"Required", true}, {"IsPassword", secret},
+                {"Default", !secret && field != fields.end() ? field->second : ""},
+                {"Help", secret ? "Enter the client secret for your Google OAuth desktop application. It is saved in the account configuration, never in the diagnostic log." :
+                    "Enter your Google OAuth Desktop app client ID. Create it in Google Cloud Console with the Drive API enabled and your account allowed on the consent screen. CloudNav requires your own client instead of rclone's shared client."}};
+            if (!AskAuth(context, option, value)) return false;
+            args.push_back(Utf8ToWide(std::string(key) + "=" + value));
+        }
+        args.push_back(L"--obscure");
+    }
+    const bool complete = CompleteAuth([&](bool continuation, const std::string& state, const std::string& answer, std::string& output) {
+        auto command = continuation ? std::vector<std::wstring>{L"config", L"update", remote, L"--config", staged,
+            L"--non-interactive", L"--continue", L"--state", Utf8ToWide(state), L"--result", Utf8ToWide(answer)} : args;
+        return RunProcess(context, command, MigrationStage::Connecting, error, nullptr, nullptr, &output, true);
+    }, [&](const SyncJson& option, std::string& answer) { return AskAuth(context, option, answer); }, error);
+    if (!complete) {
+        if (error.empty() && !context.cancelRequested)
+            error = L"Google Drive requires your own OAuth desktop client. Reconnect and enter your own client ID and client secret.";
+        return false;
+    }
+    if (!AuthReady(ReadSyncFile(staged), remoteName, oneDrive)) {
+        error = L"Account setup is incomplete. Reconnect and finish selecting a drive before analyzing."; return false;
+    }
+    if (!ProbeAccount(context, staged, remote, error) || context.cancelRequested) return false;
+    if (ReadSyncFile(context.configPath) != original) { error = L"Account configuration changed during setup. Reconnect to try again."; return false; }
+    if (!MoveFileExW(staged.c_str(), context.configPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        error = L"Unable to save the validated account configuration."; return false;
+    }
+    return true;
+}
+
 bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstring& error,
     MigrationStage stage = MigrationStage::Analyzing) {
     analysis.binding = SyncBinding(context);
     analysis.complete = false;
-    const auto originalConfig = ReadSyncFile(context.configPath);
+    auto originalConfig = ReadSyncFile(context.configPath);
+    if (!context.demoMode && (context.oneDrivePath == L"cloudnav-onedrive:" || context.googlePath == L"cloudnav-gdrive:")) {
+        if (!AuthReady(originalConfig, "cloudnav-onedrive", true) || !AuthReady(originalConfig, "cloudnav-gdrive", false)) {
+            error = L"An account configuration is incomplete. Reconnect both accounts before analyzing."; return false;
+        }
+        if (!ProbeAccount(context, context.configPath, kOneDriveRemote, error) ||
+            !ProbeAccount(context, context.configPath, kGoogleRemote, error)) return false;
+        originalConfig = ReadSyncFile(context.configPath);
+    }
     const auto configPrefix = context.configPath + L".parallel-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
     struct ListingConfigs {
         std::wstring paths[2];
@@ -607,6 +739,15 @@ DWORD WINAPI WorkerProc(void* parameter) {
     } else if (context.demoMode) {
         const auto stage = context.task == Task::Analyze ? MigrationStage::Analyzing :
             context.task == Task::Copy ? MigrationStage::Copying : MigrationStage::Connecting;
+        if (stage == MigrationStage::Connecting) {
+            std::string answer;
+            const SyncJson option = {{"Name", "config_driveid"}, {"Help", "Select the drive to connect. These are synthetic test accounts."},
+                {"Required", true}, {"Exclusive", true}, {"Examples", SyncJson::array({
+                    {{"Value", "personal-fixture"}, {"Help", "Personal OneDrive (personal)"}},
+                    {{"Value", "business-fixture"}, {"Help", "Work OneDrive (business)"}},
+                    {{"Value", "library-fixture"}, {"Help", "Team documents (documentLibrary)"}}})}};
+            AskAuth(context, option, answer);
+        }
         context.parallelListing = stage == MigrationStage::Analyzing;
         context.listingStatus[0] = SyncListingProgress(true, 0, 0);
         context.listingStatus[1] = SyncListingProgress(false, 0, 0);
@@ -639,9 +780,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
         }
     } else if (context.task == Task::AuthenticateOneDrive || context.task == Task::AuthenticateGoogle) {
         const bool oneDrive = context.task == Task::AuthenticateOneDrive;
-        const wchar_t* remote = oneDrive ? kOneDriveRemote : kGoogleRemote;
-        const auto args = AuthenticationArguments(oneDrive, HasRemote(context.configPath, remote), remote, context.configPath);
-        success = RunProcess(context, args, MigrationStage::Connecting, error);
+        success = ConnectAccount(context, oneDrive, error);
     } else if (context.task == Task::Analyze) {
         success = ReadCurrentSync(context, sync, error);
         if (success) LoadCurrentBaseline(context, sync);
@@ -890,8 +1029,8 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         context->configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
         context->logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\migration.log";
         EnsureParentDirectory(context->configPath);
-        context->oneDriveReady = context->demoMode || HasRemote(context->configPath, kOneDriveRemote);
-        context->googleReady = context->demoMode || HasRemote(context->configPath, kGoogleRemote);
+        context->oneDriveReady = context->demoMode || AuthReady(ReadSyncFile(context->configPath), "cloudnav-onedrive", true);
+        context->googleReady = context->demoMode || AuthReady(ReadSyncFile(context->configPath), "cloudnav-gdrive", false);
         SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, context->demoMode ? L"Demo account" : context->oneDriveReady ? L"Connection saved" : L"Not connected");
         SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Demo account" : context->googleReady ? L"Connection saved" : L"Not connected");
         if (context->oneDriveReady && context->googleReady)
@@ -993,6 +1132,11 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
             WriteMilestone(*context, L"verify-progress.json", consistent);
         }
         delete update;
+        return TRUE;
+    } else if (message == WM_AUTH_QUESTION) {
+        const auto result = context->cancelRequested ? IDCANCEL :
+            DialogBoxParamW(context->instance, MAKEINTRESOURCEW(IDD_AUTH_QUESTION), dialog, AuthQuestionProc, lParam);
+        SetWindowLongPtrW(dialog, DWLP_MSGRESULT, result);
         return TRUE;
     } else if (message == WM_MIGRATION_COMPLETE) {
         auto* update = reinterpret_cast<CompletionUpdate*>(lParam);
@@ -1102,6 +1246,40 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
         const std::wstring source = root + L"\\source";
         const std::wstring destination = root + L"\\destination";
         context.configPath = root + L"\\isolated-rclone.conf";
+        if (passed) {
+            step = "atomicAccountSetup";
+            wchar_t module[32768] = {};
+            GetModuleFileNameW(nullptr, module, _countof(module));
+            context.runtimePath = std::filesystem::path(module).parent_path().wstring() + L"\\CloudNavAuthFixture.exe";
+            const auto previousLog = ReadSyncFile(context.logPath);
+            for (const auto* scenario : {"provider-failure", "incomplete", "root-failure", "success"}) {
+                const std::string original = std::string("# ") + scenario + "\n[unrelated]\ntype=local\n";
+                passed = passed && WriteEvidence(context.configPath, original);
+                context.listingFailed = true; // A failed listing must not block reconnection.
+                const bool connected = passed && ConnectAccount(context, true, error);
+                context.listingFailed = false;
+                const bool expected = std::string(scenario) == "success";
+                passed = passed && connected == expected &&
+                    (expected ? AuthReady(ReadSyncFile(context.configPath), "cloudnav-onedrive", true) : ReadSyncFile(context.configPath) == original) &&
+                    ReadSyncFile(context.logPath) == previousLog;
+                for (const auto& entry : std::filesystem::directory_iterator(root))
+                    if (entry.path().filename().wstring().find(L".auth-") != std::wstring::npos) passed = false;
+                if (!passed) break;
+            }
+            context.runtimePath = runtime;
+            error.clear();
+        }
+        if (passed) {
+            step = "noninteractiveConfigWithoutStdin";
+            const auto privateConfig = root + L"\\auth-protocol.conf";
+            const auto logBefore = ReadSyncFile(context.logPath);
+            std::string response;
+            passed = RunProcess(context, {L"config", L"create", L"fixture", L"local", L"--non-interactive",
+                L"--config", privateConfig}, MigrationStage::Connecting, error, nullptr, nullptr, &response, true) &&
+                !AuthResponse(response).is_null() && AuthResponse(response)["State"] == "" &&
+                ProbeAccount(context, privateConfig, L"fixture", error) && ReadSyncFile(context.logPath) == logBefore;
+            DeleteFileW(privateConfig.c_str());
+        }
         // Only synthetic local paths and an empty config: no account credentials
         // or cloud requests are used by this integration test.
         if (passed) {
