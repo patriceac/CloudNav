@@ -252,6 +252,15 @@ int wmain() {
     assert(decoded == "é🚀\\file");
     assert(!cloudnav::JsonString("{\"object\":\"\\ud800\"}", "object", decoded));
 
+    for (bool oneDrive : {false, true}) for (bool existing : {false, true}) {
+        const auto args = cloudnav::AuthenticationArguments(oneDrive, existing, L"account", L"test.conf");
+        const auto has = [&](const wchar_t* value) { return std::find(args.begin(), args.end(), value) != args.end(); };
+        assert(args[1] == (existing ? L"update" : L"create"));
+        assert(has(L"--auto-confirm") && has(L"config_refresh_token=true") && has(L"config_is_local=true"));
+        assert(has(L"config_type=driveid") == (oneDrive && existing));
+        assert(has(L"config_shared_client_id=true") == !oneDrive);
+        assert(has(L"config_change_team_drive=false") == !oneDrive);
+    }
     std::wcout << L"CloudNav logic tests: OK\n";
     return 0;
 }

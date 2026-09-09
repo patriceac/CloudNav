@@ -640,9 +640,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
     } else if (context.task == Task::AuthenticateOneDrive || context.task == Task::AuthenticateGoogle) {
         const bool oneDrive = context.task == Task::AuthenticateOneDrive;
         const wchar_t* remote = oneDrive ? kOneDriveRemote : kGoogleRemote;
-        std::vector<std::wstring> args;
-        if (HasRemote(context.configPath, remote)) args = {L"config", L"reconnect", std::wstring(remote) + L":", L"--config", context.configPath};
-        else args = {L"config", L"create", remote, oneDrive ? L"onedrive" : L"drive", L"config_is_local=true", L"--config", context.configPath};
+        const auto args = AuthenticationArguments(oneDrive, HasRemote(context.configPath, remote), remote, context.configPath);
         success = RunProcess(context, args, MigrationStage::Connecting, error);
     } else if (context.task == Task::Analyze) {
         success = ReadCurrentSync(context, sync, error);

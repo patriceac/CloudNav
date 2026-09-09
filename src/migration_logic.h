@@ -15,6 +15,21 @@ namespace cloudnav {
 enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, Copy };
 enum class MigrationStage { Preparing, Connecting, Analyzing, Copying, Verifying };
 
+inline std::vector<std::wstring> AuthenticationArguments(bool oneDrive, bool existing,
+    const std::wstring& remote, const std::wstring& configPath) {
+    std::vector<std::wstring> args{L"config", existing ? L"update" : L"create", remote};
+    if (!existing) args.push_back(oneDrive ? L"onedrive" : L"drive");
+    args.insert(args.end(), {L"config_is_local=true", L"config_refresh_token=true",
+        L"--auto-confirm", L"--config", configPath});
+    if (oneDrive && existing) {
+        // Re-authorize the saved drive, rather than selecting a different one.
+        args.push_back(L"config_type=driveid");
+    } else if (!oneDrive) {
+        args.insert(args.end(), {L"config_shared_client_id=true", L"config_change_team_drive=false"});
+    }
+    return args;
+}
+
 inline std::vector<std::wstring> MigrationArguments(MigrationStage stage, const std::wstring& configPath,
     const std::wstring& source = L"cloudnav-onedrive:", const std::wstring& destination = L"cloudnav-gdrive:") {
     const bool verify = stage == MigrationStage::Verifying;
