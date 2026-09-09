@@ -98,6 +98,7 @@ struct DialogContext {
     SyncMode mode = SyncMode::ToGoogle;
     ui::DialogTheme theme;
     unsigned statisticsUpdates = 0;
+    unsigned inventoryReads = 0;
     ui::ProviderImages images;
     Task task = Task::None;
     std::wstring demoResultPath;
@@ -366,6 +367,7 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
         std::string output, parseError;
         auto& inventory = oneDrive ? analysis.oneDrive : analysis.google;
         const std::wstring remote = oneDrive ? context.oneDrivePath : context.googlePath;
+        ++context.inventoryReads;
         if (!RunProcess(context, SyncInventoryArguments(context.configPath, remote, context.logPath),
             stage, error, nullptr, nullptr, &output)) return false;
         if (!ReadSyncInventory(output, inventory, parseError)) { error = Utf8ToWide(parseError); return false; }
@@ -411,12 +413,14 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     if (!context.sync.complete || std::any_of(rows.begin(), rows.end(), [](const auto& row) { return row.action == SyncAction::Blocked; })) {
         error = L"The plan contains blocked items. Fix them, then analyze again."; return false;
     }
-    SyncAnalysis fresh;
-    if (!ReadCurrentSync(context, fresh, error)) return false;
-    LoadCurrentBaseline(context, fresh);
-    if (fresh.binding != context.sync.binding || fresh.oneDrive != context.sync.oneDrive || fresh.google != context.sync.google ||
-        fresh.baselineDocument != context.sync.baselineDocument || fresh.recovery != context.sync.recovery) {
-        error = L"Files or history changed since analysis. No transfer started: analyze again to review the plan.";
+    // Execute the reviewed inventories without listing either account again.
+    // Only local account identity and recovery history can invalidate this plan.
+    SyncAnalysis currentState;
+    currentState.binding = SyncBinding(context);
+    LoadCurrentBaseline(context, currentState);
+    if (currentState.binding != context.sync.binding || currentState.baselineDocument != context.sync.baselineDocument ||
+        currentState.recovery != context.sync.recovery) {
+        error = L"Accounts or local history changed since analysis. No transfer started: analyze again to review the plan.";
         return false;
     }
     if (context.mode != SyncMode::Bidirectional && std::all_of(rows.begin(), rows.end(),
@@ -1077,23 +1081,33 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
             if (passed) {
                 step = "reverseSyncCopy";
                 context.mode = SyncMode::ToOneDrive;
-                passed = ExecuteSyncPlan(context, error) && read(context.oneDrivePath + L"both.txt") == "Google version" &&
+                const auto reads = context.inventoryReads;
+                passed = WriteEvidence(context.googlePath + L"late-file.txt", "outside reviewed plan") &&
+                    ExecuteSyncPlan(context, error) && context.inventoryReads == reads &&
+                    !std::filesystem::exists(context.oneDrivePath + L"late-file.txt") &&
+                    read(context.oneDrivePath + L"both.txt") == "Google version" &&
                     read(context.oneDrivePath + L"google.txt") == "google only" && read(context.oneDrivePath + L"one.txt") == "one only";
+                passed = DeleteFileW((context.googlePath + L"late-file.txt").c_str()) && passed;
             }
             if (passed) {
                 step = "firstBidirectionalMerge";
                 context.mode = SyncMode::Bidirectional;
-                passed = analyzeSync() && !context.sync.hasBaseline && context.sync.recovery && ExecuteSyncPlan(context, error) &&
+                passed = analyzeSync() && !context.sync.hasBaseline && context.sync.recovery;
+                const auto reads = context.inventoryReads;
+                passed = passed && ExecuteSyncPlan(context, error) && context.inventoryReads == reads + 2 &&
                     read(context.googlePath + L"one.txt") == "one only" && analyzeSync() && context.sync.hasBaseline;
             }
             if (passed) {
-                step = "staleSyncPlanRejected";
-                passed = WriteEvidence(context.oneDrivePath + L"one.txt", "updated during preview") && !ExecuteSyncPlan(context, error) &&
-                    read(context.googlePath + L"one.txt") == "one only";
+                step = "changedLocalHistoryRejected";
+                const auto state = context.sync.baselineDocument;
+                const auto reads = context.inventoryReads;
+                passed = WriteEvidence(SyncStatePath(context), state + " ") && !ExecuteSyncPlan(context, error) &&
+                    context.inventoryReads == reads && WriteEvidence(SyncStatePath(context), state);
             }
             if (passed) {
                 step = "bidirectionalConflicts";
-                passed = WriteEvidence(context.googlePath + L"one.txt", "also edited on Google") && analyzeSync() && ExecuteSyncPlan(context, error) &&
+                passed = WriteEvidence(context.oneDrivePath + L"one.txt", "updated during preview") &&
+                    WriteEvidence(context.googlePath + L"one.txt", "also edited on Google") && analyzeSync() && ExecuteSyncPlan(context, error) &&
                     read(context.googlePath + L"one.txt") == "updated during preview";
                 bool preserved = false;
                 for (const auto& entry : std::filesystem::directory_iterator(context.oneDrivePath)) {
@@ -1132,7 +1146,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"stalePlanRejected\":true,\"interruptedRecovery\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();
