@@ -413,6 +413,13 @@ void RunMigrationReport(const std::wstring& executable) {
     }
     Click(report, IDCANCEL);
     Require(Wait([&] { return !IsWindow(report); }), "report did not close");
+    Click(migration, IDC_MIGRATION_COPY);
+    Require(Wait([&] {
+        return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)) &&
+            Text(migration, IDC_MIGRATION_PHASE) == L"2 / 2 — Applying the selected plan";
+    }), "Copy did not start immediately");
+    Require(Wait([&] { return Text(migration, IDC_MIGRATION_PHASE) == L"2 / 2 — Copy complete"; }),
+        "copy did not complete after starting");
     Click(migration, IDC_MIGRATION_ANALYZE);
     Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_REPORT)); }), "stale report remains available");
     Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"OneDrive only") == std::wstring::npos, "stale KPIs remain visible");

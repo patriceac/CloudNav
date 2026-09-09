@@ -1067,13 +1067,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         }
         case IDC_MIGRATION_COPY: {
             if (context->running || !context->analyzed || context->report.Count('!')) return TRUE;
-            const std::wstring review = std::wstring(SyncModeLabel(context->mode)) + L"\r\n\r\n" + context->report.Summary() +
-                L"\r\n\r\n" + CurrentPlanDetails(*context) +
-                L"\r\n\r\nReplaced and removed files are archived in .CloudNav-history on the affected account." +
-                (context->mode == SyncMode::Bidirectional ? L"\r\nConflicts: the OneDrive version keeps the original name; the Google version gets a suffix on both accounts." : L"") +
-                L"\r\n\r\nApply this plan after checking the accounts again?";
-            if (context->demoMode || MessageBoxW(dialog, review.c_str(), L"CloudNav — review transfer", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
-                StartTask(*context, Task::Copy);
+            StartTask(*context, Task::Copy);
             return TRUE;
         }
         case IDC_MIGRATION_CUTOVER: {
