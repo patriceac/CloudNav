@@ -138,6 +138,12 @@ public:
 void Run(const std::wstring& executable) {
     App app(executable, L"--demo-plan");
     CheckBounds(app.main);
+    Require(GetDlgItem(app.main, 1002) == nullptr, "manual My Drive Browse control remains");
+    RECT folder{}, drive{}, oneDrive{};
+    GetWindowRect(GetDlgItem(app.main, 1001), &folder);
+    GetWindowRect(GetDlgItem(app.main, 1004), &drive);
+    GetWindowRect(GetDlgItem(app.main, 1003), &oneDrive);
+    Require(folder.top < drive.top && drive.top < oneDrive.top, "Google Drive entries are not grouped before OneDrive");
     Require(!IsWindowEnabled(GetDlgItem(app.main, 1006)), "visibility apply should start disabled");
     Require(Text(app.main, 1001) == L"Google Drive — My Drive folder", "folder provider label is ambiguous");
     Require(Text(app.main, 1003).find(L"OneDrive") != std::wstring::npos, "account label omits OneDrive");

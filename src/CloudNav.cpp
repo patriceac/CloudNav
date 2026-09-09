@@ -46,7 +46,6 @@ constexpr wchar_t kFolderInstanceClsid[] = L"{0E5AAE11-A475-4c5b-AB00-C66DE40027
 constexpr DWORD kCloudSortOrder = 0x42;  // Documented cloud-provider order; Windows 11 still groups third parties below Favorites.
 
 constexpr int IDC_MY_DRIVE = 1001;
-constexpr int IDC_BROWSE = 1002;
 constexpr int IDC_ONEDRIVE = 1003;
 constexpr int IDC_GOOGLE_DRIVE = 1004;
 constexpr int IDC_REFRESH = 1005;
@@ -101,7 +100,6 @@ HWND g_subtitle = nullptr;
 HWND g_sectionTitle = nullptr;
 HWND g_myDrive = nullptr;
 HWND g_myDriveDetail = nullptr;
-HWND g_browse = nullptr;
 HWND g_oneDrive = nullptr;
 HWND g_oneDriveDetail = nullptr;
 HWND g_oneDriveSafety = nullptr;
@@ -454,31 +452,6 @@ std::wstring DetectGoogleDriveRoot(wchar_t& letter) {
 }
 
 std::wstring DetectMyDrivePath() {
-    std::wstring candidate;
-    if (ReadRegistryString(HKEY_CURRENT_USER, L"Software\\CloudNav", L"MyDrivePath", candidate) &&
-        PathIsDirectory(candidate)) {
-        return candidate;
-    }
-
-    const std::wstring classKey = L"Software\\Classes\\CLSID\\" + std::wstring(kMyDriveClsid) +
-                                  L"\\Instance\\InitPropertyBag";
-    if (ReadRegistryString(HKEY_LOCAL_MACHINE, classKey, L"TargetFolderPath", candidate) &&
-        PathIsDirectory(candidate)) {
-        return candidate;
-    }
-
-    const std::wstring profile = GetUserProfilePath();
-    const std::vector<std::wstring> localCandidates = {
-        profile + L"\\My Drive",
-        profile + L"\\Google Drive\\My Drive",
-        profile + L"\\Google Drive"
-    };
-    for (const auto& path : localCandidates) {
-        if (PathIsDirectory(path)) {
-            return path;
-        }
-    }
-
     wchar_t driveLetter = 0;
     const std::wstring driveRoot = DetectGoogleDriveRoot(driveLetter);
     if (!driveRoot.empty()) {
@@ -491,6 +464,18 @@ std::wstring DetectMyDrivePath() {
             return resolved;
         }
     }
+    const std::wstring profile = GetUserProfilePath();
+    const std::vector<std::wstring> localCandidates = {
+        profile + L"\\My Drive",
+        profile + L"\\Google Drive\\My Drive",
+        profile + L"\\Google Drive"
+    };
+    for (const auto& path : localCandidates) {
+        if (PathIsDirectory(path)) {
+            return path;
+        }
+    }
+
     return {};
 }
 
@@ -784,7 +769,7 @@ std::wstring JoinFolderNames(const std::vector<std::wstring>& names) {
 void UpdateControlsFromState() {
     g_chosenMyDrivePath = g_state.myDrivePath;
     const std::wstring myDetail = g_state.myDrivePath.empty()
-        ? L"Folder not detected: use Browse."
+        ? L"My Drive folder not detected. Start Google Drive, then Refresh."
         : g_state.myDrivePath;
     SetWindowTextW(g_myDriveDetail, myDetail.c_str());
     SetWindowTextW(g_myDrive, g_state.googleClient.installed ? L"Google Drive — My Drive folder" : L"My Drive — local folder");
@@ -879,7 +864,7 @@ void UpdateControlsFromState() {
     EnableWindow(g_googleDrive, g_state.googleDriveLetter != 0);
     Button_SetCheck(g_googleDrive, g_state.googleDriveVisible ? BST_CHECKED : BST_UNCHECKED);
     UpdateVisibilityPending();
-    for (HWND control : {g_browse, g_personalFolders, g_migrateCloud, g_refresh}) EnableWindow(control, !ClientBusy());
+    for (HWND control : {g_personalFolders, g_migrateCloud, g_refresh}) EnableWindow(control, !ClientBusy());
     if (ClientBusy()) EnableWindow(g_apply, FALSE);
 }
 
@@ -1073,33 +1058,6 @@ void UninstallOneDrive() {
     if (!VerifyOneDriveActionGuard()) return;
     LaunchClientProgram(cloudnav::CloudClient::OneDrive, g_state.oneDriveClient.uninstallExecutable,
                         g_state.oneDriveClient.uninstallArguments, true);
-}
-
-std::wstring PickFolder(HWND owner) {
-    IFileOpenDialog* dialog = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&dialog)))) {
-        return {};
-    }
-    DWORD options = 0;
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    dialog->SetTitle(L"Choose the My Drive folder");
-    dialog->SetOkButtonLabel(L"Use this folder");
-    std::wstring path;
-    if (SUCCEEDED(dialog->Show(owner))) {
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&item))) {
-            PWSTR selected = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &selected)) && selected) {
-                path = selected;
-                CoTaskMemFree(selected);
-            }
-            item->Release();
-        }
-    }
-    dialog->Release();
-    return path;
 }
 
 bool WriteMyDriveClass(const std::wstring& classRoot, bool show, const std::wstring& path,
@@ -1425,12 +1383,8 @@ void ApplySelections() {
     const bool showGoogleDrive = Button_GetCheck(g_googleDrive) == BST_CHECKED;
 
     if (showMyDrive && g_chosenMyDrivePath.empty()) {
-        g_chosenMyDrivePath = PickFolder(g_window);
-        if (g_chosenMyDrivePath.empty()) {
-            ShowStatus(L"Choose the My Drive folder first.", true);
-            return;
-        }
-        SetWindowTextW(g_myDriveDetail, g_chosenMyDrivePath.c_str());
+        ShowStatus(L"My Drive folder is unavailable. Start Google Drive, then Refresh.", true);
+        return;
     }
 
     if (!IsWindowEnabled(g_apply)) return;
@@ -1532,12 +1486,11 @@ void LayoutMainControls(UINT dpi) {
     MoveControl(g_sectionTitle, 28, 86, 684, 22, dpi);
     MoveControl(g_myDrive, 56, 112, 540, 25, dpi);
     MoveControl(g_myDriveDetail, 78, 138, 520, 20, dpi);
-    MoveControl(g_browse, 614, 112, 98, 32, dpi);
-    MoveControl(g_oneDrive, 56, 160, 656, 25, dpi);
-    MoveControl(g_oneDriveDetail, 78, 186, 634, 20, dpi);
-    MoveControl(g_googleDrive, 56, 208, 656, 25, dpi);
-    MoveControl(g_googleDriveDetail, 78, 234, 634, 20, dpi);
-    for (int i = 0; i < 3; ++i) MoveControl(g_providerIcons[i], 28, 114 + i * 48, 22, 22, dpi);
+    MoveControl(g_oneDrive, 56, 208, 656, 25, dpi);
+    MoveControl(g_oneDriveDetail, 78, 234, 634, 20, dpi);
+    MoveControl(g_googleDrive, 56, 160, 656, 25, dpi);
+    MoveControl(g_googleDriveDetail, 78, 186, 634, 20, dpi);
+    for (int i = 0; i < 3; ++i) MoveControl(g_providerIcons[i], 28, 114 + (i == 1 ? 2 : i == 2 ? 1 : 0) * 48, 22, 22, dpi);
     MoveControl(g_explanation, 28, 268, 476, 34, dpi);
     MoveControl(g_apply, 520, 264, 192, 34, dpi);
     MoveControl(g_foldersSection, 28, 314, 350, 22, dpi);
@@ -1569,11 +1522,8 @@ void CreateInterface(HWND window) {
 
     g_myDrive = CreateCheckbox(window, IDC_MY_DRIVE, L"Google Drive — My Drive folder");
     g_myDriveDetail = CreateLabel(window, L"", g_smallFont);
-    g_browse = CreateWindowExW(0, L"BUTTON", L"Browse…",
-                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                               0, 0, 0, 0, window,
-                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_BROWSE)), g_instance, nullptr);
-    SetControlFont(g_browse, g_bodyFont);
+    g_googleDrive = CreateCheckbox(window, IDC_GOOGLE_DRIVE, L"Google Drive");
+    g_googleDriveDetail = CreateLabel(window, L"", g_smallFont);
 
     g_oneDrive = CreateCheckbox(window, IDC_ONEDRIVE, L"OneDrive");
     g_oneDriveDetail = CreateLabel(window, L"", g_smallFont);
@@ -1593,8 +1543,6 @@ void CreateInterface(HWND window) {
         g_instance, nullptr);
     SetControlFont(g_uninstallOneDrive, g_bodyFont);
 
-    g_googleDrive = CreateCheckbox(window, IDC_GOOGLE_DRIVE, L"Google Drive");
-    g_googleDriveDetail = CreateLabel(window, L"", g_smallFont);
 
     g_personalFolders = CreateWindowExW(
         0, L"BUTTON", L"Personal folders…",
@@ -1710,18 +1658,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case IDC_INSTALL_ONEDRIVE: InstallClient(cloudnav::CloudClient::OneDrive); return 0;
         case IDC_INSTALL_GOOGLE: InstallClient(cloudnav::CloudClient::GoogleDrive); return 0;
         case IDC_UNINSTALL_GOOGLE: UninstallGoogleDrive(); return 0;
-        case IDC_BROWSE: {
-            const std::wstring selected = PickFolder(window);
-            if (!selected.empty()) {
-                g_chosenMyDrivePath = selected;
-                SetWindowTextW(g_myDriveDetail, selected.c_str());
-                EnableWindow(g_myDrive, TRUE);
-                Button_SetCheck(g_myDrive, BST_CHECKED);
-                UpdateVisibilityPending();
-                ShowStatus(L"Folder selected. Apply visibility to save this entry.");
-            }
-            return 0;
-        }
         case IDC_MY_DRIVE:
         case IDC_ONEDRIVE:
         case IDC_GOOGLE_DRIVE:
@@ -1892,7 +1828,6 @@ void RecreateUiFonts(UINT dpi) {
     SetControlFont(g_migrateCloudDetail, g_smallFont);
     SetControlFont(g_myDrive, g_bodyBoldFont);
     SetControlFont(g_myDriveDetail, g_smallFont);
-    SetControlFont(g_browse, g_bodyFont);
     SetControlFont(g_oneDrive, g_bodyBoldFont);
     SetControlFont(g_oneDriveDetail, g_smallFont);
     SetControlFont(g_oneDriveSafety, g_smallFont);
