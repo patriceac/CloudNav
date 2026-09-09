@@ -333,6 +333,9 @@ void RunMigrationReport(const std::wstring& executable) {
     RunSyncDirectionPersistence(executable);
     App app(executable, L"--demo-migration");
     const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+    Require(GetDlgItem(migration, 2101) == nullptr, "removed pause checkbox is still present");
+    Require(IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ANALYZE)) != FALSE,
+        "connected accounts require an acknowledgement before analysis");
     Click(migration, IDC_MIGRATION_ANALYZE);
     Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)) != FALSE; }), "analysis did not complete");
     const auto summary = Text(migration, IDC_MIGRATION_SUMMARY);

@@ -565,12 +565,10 @@ DWORD WINAPI WorkerProc(void* parameter) {
 }
 
 void RefreshButtons(DialogContext& context) {
-    const bool acknowledged = Button_GetCheck(GetDlgItem(context.dialog, IDC_MIGRATION_REMINDER)) == BST_CHECKED;
-    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_REMINDER), !context.running);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_ONEDRIVE_CONNECT), !context.running);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_GOOGLE_CONNECT), !context.running);
-    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE), !context.running && acknowledged && context.oneDriveReady && context.googleReady);
-    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_COPY), !context.running && acknowledged && context.analyzed && !context.report.Count('!'));
+    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE), !context.running && context.oneDriveReady && context.googleReady);
+    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_COPY), !context.running && context.analyzed && !context.report.Count('!'));
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_MODE), !context.running);
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_COPY, context.mode == SyncMode::Bidirectional ? L"Sync" : L"Copy");
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_CUTOVER), !context.running && context.copied);
@@ -803,7 +801,6 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         context->googleReady = context->demoMode || HasRemote(context->configPath, kGoogleRemote);
         SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, context->demoMode ? L"Demo account" : context->oneDriveReady ? L"Connection saved" : L"Not connected");
         SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Demo account" : context->googleReady ? L"Connection saved" : L"Not connected");
-        if (context->demoMode) Button_SetCheck(GetDlgItem(dialog, IDC_MIGRATION_REMINDER), BST_CHECKED);
         if (context->oneDriveReady && context->googleReady)
             SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Analysis checks account access and estimates the copy. No files are transferred.");
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PHASE, WM_SETFONT, reinterpret_cast<WPARAM>(context->theme.bold), TRUE);
@@ -813,7 +810,6 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
     if (!context) return FALSE;
     if (message == WM_COMMAND) {
         switch (LOWORD(wParam)) {
-        case IDC_MIGRATION_REMINDER: RefreshButtons(*context); return TRUE;
         case IDC_MIGRATION_MODE:
             if (!context->running && HIWORD(wParam) == CBN_SELCHANGE) {
                 const int selection = ComboBox_GetCurSel(GetDlgItem(dialog, IDC_MIGRATION_MODE));
