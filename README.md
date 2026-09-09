@@ -36,11 +36,11 @@ Personal-folder changes are shown in a separate review before anything is applie
 
 OneDrive client actions stay disabled while Desktop, Documents, Pictures, Downloads, Music, or Videos points anywhere inside the detected OneDrive root. CloudNav names the folders that must be moved and checks their locations again immediately before disabling automatic startup or launching the uninstaller. This check covers those six managed personal folders only, not every other folder that OneDrive may synchronize. Before uninstalling, CloudNav asks the user to verify that OneDrive is up to date and warns that online-only files will remain accessible through OneDrive.com.
 
-**Analyser** reads an inventory from each account and compares their union. The same comparison supports **OneDrive → Google Drive**, **Google Drive → OneDrive**, and **OneDrive ↔ Google Drive**. Changing the direction only rebuilds the action plan in memory. The report distinguishes OneDrive-only, Google-Drive-only, different, identical, and blocked files, with a proposed action for each path.
+**Analyze** reads an inventory from each account and compares their union. The same comparison supports **OneDrive → Google Drive**, **Google Drive → OneDrive**, and **OneDrive ↔ Google Drive**. Changing the direction only rebuilds the action plan in memory. The report distinguishes OneDrive-only, Google-Drive-only, different, identical, and blocked files, with a proposed action for each path.
 
 The selected direction is saved immediately for the current Windows user and restored when the assistant or application is reopened. A missing or invalid preference defaults to OneDrive → Google Drive. Restoring a direction does not start a transfer or bypass analysis and review.
 
-One-way modes copy the selected source's new and different files with `rclone copy`, preserving destination-only files. Bidirectional mode compares both inventories against the last successful two-way baseline. Without a baseline it merges files without propagating deletions. If both versions changed, both accounts retain the OneDrive version under the original name and the Google version under a unique `.conflit-Google-…` sibling name. When an edit conflicts with a deletion, the edited version is restored to the other account.
+One-way modes copy the selected source's new and different files with `rclone copy`, preserving destination-only files. Bidirectional mode compares both inventories against the last successful two-way baseline. Without a baseline it merges files without propagating deletions. If both versions changed, both accounts retain the OneDrive version under the original name and the Google version under a unique `.conflict-Google-…` sibling name. When an edit conflicts with a deletion, the edited version is restored to the other account.
 
 Every real transfer has a final review. CloudNav rereads both accounts before applying the plan and refuses to start if the inventories, account identity, or baseline changed since analysis. This is not an atomic cloud snapshot: files should remain idle during transfer. Copies use literal file lists and direct destination lookups. Overwritten files and propagated deletions are retained under `.CloudNav-history/<run>/` on the affected account, outside the compared set. These archives consume cloud storage and are not automatically purged; restore files from them using the provider's ordinary file tools.
 
@@ -58,15 +58,15 @@ Analysis shows files received from each provider with an animated activity bar. 
 
 Inventories use rclone's `lsjson --recursive --hash`, with `--fast-list` and `--onedrive-delta` to reduce directory-listing requests. Directory entries are checked for ambiguity; transfer plans contain files only. Transfers use `--files-from-raw` and `--no-traverse` to restrict work to the plan. Empty directories, OneDrive Personal Vault, native Google documents, and `.CloudNav-history` are outside the compared file set and are not counted. Native Google document export is not supported by this sync flow.
 
-**Voir les détails…** opens the comparison table with category filters, proposed actions, and selectable full paths. Interrupted results are marked partial, and a new analysis or account connection clears the previous report. Two-way baseline metadata is stored per user beside the rclone configuration; it contains file paths, sizes, times, available hashes, and a digest binding it to the configured account pair. OAuth tokens are not copied into this baseline.
+**View details…** opens the comparison table with category filters, proposed actions, and selectable full paths. Interrupted results are marked partial, and a new analysis or account connection clears the previous report. Two-way baseline metadata is stored per user beside the rclone configuration; it contains file paths, sizes, times, available hashes, and a digest binding it to the configured account pair. OAuth tokens are not copied into this baseline.
 
 ## Usage
 
 1. Download `CloudNav.exe` from the latest GitHub Release.
 2. Make sure Google Drive for desktop and/or OneDrive is installed and running, depending on the features you need.
 3. Run the executable directly; no installation is required.
-4. Use **Appliquer la visibilité** for Explorer entries, **Dossiers personnels…** for folder locations, or **Comparer les comptes…** in **Synchronisation cloud** for cloud analysis and transfer.
-5. In the folder manager, select **Vérifier…**, review all affected folders, then choose the explicit copy, move, or redirect action.
+4. Use **Apply visibility** for Explorer entries, **Personal folders…** for folder locations, or **Compare accounts…** in **Cloud sync** for cloud analysis and transfer.
+5. In the folder manager, select **Review…**, review all affected folders, then choose the explicit copy, move, or redirect action.
 
 File Explorer may restart once to reload its configuration. Any open folder windows will close when that happens.
 
@@ -76,7 +76,7 @@ File Explorer may restart once to reload its configuration. Any open folder wind
 - Google Drive for desktop and/or OneDrive, depending on the selected features;
 - no additional library or application runtime.
 
-The CloudNav user interface is currently available in French.
+The CloudNav user interface is in English, including reports, confirmations, progress messages, and application errors. User file paths and account names are displayed as stored.
 
 Official OneDrive and Google Drive artwork is used only to identify the corresponding storage provider. Source and trademark details are documented in [`assets/BRAND_ASSETS.md`](assets/BRAND_ASSETS.md).
 

@@ -132,8 +132,8 @@ std::wstring FormatWindowsError(DWORD code) {
     wchar_t* buffer = nullptr;
     const DWORD length = FormatMessageW(
         FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        nullptr, code, 0, reinterpret_cast<wchar_t*>(&buffer), 0, nullptr);
-    std::wstring message = length && buffer ? std::wstring(buffer, length) : L"Erreur Windows " + std::to_wstring(code);
+        nullptr, code, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), reinterpret_cast<wchar_t*>(&buffer), 0, nullptr);
+    std::wstring message = length && buffer ? std::wstring(buffer, length) : L"Windows error " + std::to_wstring(code);
     if (buffer) {
         LocalFree(buffer);
     }
@@ -549,12 +549,12 @@ PersonalFolderUsage DetectPersonalFoldersInOneDrive(const std::wstring& oneDrive
         const wchar_t* label;
     };
     const std::array<PersonalFolderSpec, 6> folders = {{
-        {&FOLDERID_Desktop, L"Bureau"},
+        {&FOLDERID_Desktop, L"Desktop"},
         {&FOLDERID_Documents, L"Documents"},
-        {&FOLDERID_Pictures, L"Images"},
-        {&FOLDERID_Downloads, L"Téléchargements"},
-        {&FOLDERID_Music, L"Musique"},
-        {&FOLDERID_Videos, L"Vidéos"}
+        {&FOLDERID_Pictures, L"Pictures"},
+        {&FOLDERID_Downloads, L"Downloads"},
+        {&FOLDERID_Music, L"Music"},
+        {&FOLDERID_Videos, L"Videos"}
     }};
     PersonalFolderUsage result;
     if (oneDriveRoot.empty()) {
@@ -614,14 +614,14 @@ AppState DetectState() {
         demo.myDrivePath = L"C:\\Users\\Example\\My Drive";
         demo.myDriveVisible = true;
         demo.myDriveSort = kCloudSortOrder;
-        demo.oneDrive = {kOneDrivePersonalClsid, L"Compte personnel", L"C:\\Users\\Example\\OneDrive", true, true};
+        demo.oneDrive = {kOneDrivePersonalClsid, L"Personal account", L"C:\\Users\\Example\\OneDrive", true, true};
         demo.googleDriveLetter = L'G';
         demo.googleDriveVisible = false;
         demo.oneDriveAutoStart = true;
         demo.oneDriveUninstaller = L"C:\\Windows\\System32\\OneDriveSetup.exe";
         demo.personalFolderScanComplete = true;
         if (!g_demoSafeOneDriveActions) {
-            demo.oneDrivePersonalFolders = {L"Documents", L"Images"};
+            demo.oneDrivePersonalFolders = {L"Documents", L"Pictures"};
         }
         return demo;
     }
@@ -656,9 +656,9 @@ AppState DetectState() {
 
 std::wstring GoogleDriveLabel(const AppState& state) {
     if (!state.googleDriveLetter) {
-        return L"Google Drive (non détecté)";
+        return L"Google Drive (not detected)";
     }
-    std::wstring label = L"Google Drive — lecteur ";
+    std::wstring label = L"Google Drive — drive ";
     label.push_back(state.googleDriveLetter);
     label += L":";
     return label;
@@ -666,9 +666,9 @@ std::wstring GoogleDriveLabel(const AppState& state) {
 
 std::wstring GoogleDriveDetail(const AppState& state) {
     if (!state.googleDriveLetter) {
-        return L"Lance Google Drive pour que CloudNav retrouve sa lettre.";
+        return L"Start Google Drive so CloudNav can detect its drive letter.";
     }
-    return L"Afficher le lecteur virtuel dans l’Explorateur ; les fichiers restent accessibles même masqués.";
+    return L"Show the virtual drive in File Explorer; files remain accessible when hidden.";
 }
 
 void SetControlFont(HWND control, HFONT font) {
@@ -686,7 +686,7 @@ std::wstring JoinFolderNames(const std::vector<std::wstring>& names) {
     std::wstring result;
     for (size_t index = 0; index < names.size(); ++index) {
         if (index > 0) {
-            result += index + 1 == names.size() ? L" et " : L", ";
+            result += index + 1 == names.size() ? L" and " : L", ";
         }
         result += names[index];
     }
@@ -696,7 +696,7 @@ std::wstring JoinFolderNames(const std::vector<std::wstring>& names) {
 void UpdateControlsFromState() {
     g_chosenMyDrivePath = g_state.myDrivePath;
     const std::wstring myDetail = g_state.myDrivePath.empty()
-        ? L"Dossier non détecté : utilise « Choisir… »."
+        ? L"Folder not detected: use Browse."
         : g_state.myDrivePath;
     SetWindowTextW(g_myDriveDetail, myDetail.c_str());
     Button_SetCheck(g_myDrive, g_state.myDriveVisible ? BST_CHECKED : BST_UNCHECKED);
@@ -704,19 +704,19 @@ void UpdateControlsFromState() {
     if (g_state.oneDrive.detected) {
         SetWindowTextW(g_oneDrive, cloudnav::ProviderAccountLabel(L"OneDrive", g_state.oneDrive.label).c_str());
         std::wstring detail = g_state.oneDrive.path.empty()
-            ? L"Compte OneDrive détecté."
+            ? L"OneDrive account detected."
             : g_state.oneDrive.path;
         const std::wstring startup = g_state.oneDriveAutoStart
-            ? L"Démarrage automatique activé"
-            : L"Démarrage automatique désactivé";
+            ? L"Automatic startup enabled"
+            : L"Automatic startup disabled";
         SetWindowTextW(g_startupDetail, startup.c_str());
         SetWindowTextW(g_oneDriveDetail, detail.c_str());
         EnableWindow(g_oneDrive, TRUE);
         Button_SetCheck(g_oneDrive, g_state.oneDrive.visible ? BST_CHECKED : BST_UNCHECKED);
     } else {
-        SetWindowTextW(g_oneDrive, L"OneDrive (non détecté)");
-        SetWindowTextW(g_startupDetail, L"Client non détecté");
-        SetWindowTextW(g_oneDriveDetail, L"Aucun compte OneDrive n’est enregistré sur ce PC.");
+        SetWindowTextW(g_oneDrive, L"OneDrive (not detected)");
+        SetWindowTextW(g_startupDetail, L"Client not detected");
+        SetWindowTextW(g_oneDriveDetail, L"No OneDrive account is registered on this PC.");
         EnableWindow(g_oneDrive, FALSE);
         Button_SetCheck(g_oneDrive, BST_UNCHECKED);
     }
@@ -729,16 +729,16 @@ void UpdateControlsFromState() {
         (anyPersonalFolderUsesOneDrive || !g_state.personalFolderScanComplete ||
          g_state.oneDrive.path.empty());
     if (!g_state.oneDrivePersonalFolders.empty()) {
-        const std::wstring warning = L"⚠ OneDrive est encore utilisé par : " +
+        const std::wstring warning = L"⚠ OneDrive is still used by: " +
             JoinFolderNames(g_state.oneDrivePersonalFolders) +
-            L". Déplace ces dossiers avant de désactiver ou désinstaller OneDrive.";
+            L". Move these folders before disabling or uninstalling OneDrive.";
         SetWindowTextW(g_oneDriveSafety, warning.c_str());
     } else if (g_oneDriveBlocked) {
         SetWindowTextW(g_oneDriveSafety,
-            L"⚠ Impossible de vérifier tous les dossiers personnels ; actions OneDrive bloquées.");
+            L"⚠ Unable to check all personal folders; OneDrive actions are blocked.");
     } else if (g_state.oneDrive.detected) {
         SetWindowTextW(g_oneDriveSafety,
-            L"Aucun des six dossiers personnels gérés ne dépend de OneDrive. Les autres dossiers ne sont pas vérifiés.");
+            L"None of the six managed personal folders uses OneDrive. Other folders have not been checked.");
     } else {
         SetWindowTextW(g_oneDriveSafety, L"");
     }
@@ -767,14 +767,14 @@ bool VerifyOneDriveActionGuard() {
             g_state.personalFolderScanComplete,
             !g_state.oneDrivePersonalFolders.empty())) {
         const std::wstring message = !g_state.oneDrivePersonalFolders.empty()
-            ? L"Action bloquée : " + JoinFolderNames(g_state.oneDrivePersonalFolders) +
-              L" pointe encore vers OneDrive. Déplace d’abord ce dossier dans « Dossiers personnels… »."
+            ? L"Action blocked: " + JoinFolderNames(g_state.oneDrivePersonalFolders) +
+              L" still points to OneDrive. Move it first using Personal folders."
             : (g_state.oneDrive.detected
-                ? L"CloudNav ne peut pas vérifier avec certitude tous les dossiers personnels. Action bloquée."
-                : L"OneDrive n’est pas détecté sur ce PC.");
+                ? L"CloudNav cannot reliably check all personal folders. Action blocked."
+                : L"OneDrive is not detected on this PC.");
         MessageBoxW(g_window, message.c_str(), L"CloudNav — OneDrive",
                     MB_OK | MB_ICONWARNING);
-        ShowStatus(L"Action OneDrive bloquée pour protéger les dossiers personnels.", true);
+        ShowStatus(L"OneDrive action blocked to protect personal folders.", true);
         return false;
     }
     return true;
@@ -787,22 +787,22 @@ void DisableOneDriveStartup() {
     if (g_demoMode) {
         g_state.oneDriveAutoStart = false;
         UpdateControlsFromState();
-        ShowStatus(L"Mode test : démarrage désactivé ; OneDrive resterait actif.");
+        ShowStatus(L"Test mode: startup disabled; OneDrive would remain active.");
         return;
     }
     const LSTATUS status = DeleteRegistryValue(
         HKEY_CURRENT_USER,
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", L"OneDrive");
     if (status != ERROR_SUCCESS) {
-        ShowStatus(L"Impossible de désactiver le démarrage OneDrive : " +
+        ShowStatus(L"Unable to disable OneDrive startup: " +
                    FormatWindowsError(status), true);
         return;
     }
     g_state.oneDriveAutoStart = DetectOneDriveAutoStart();
     UpdateControlsFromState();
     ShowStatus(g_state.oneDriveAutoStart
-        ? L"OneDrive est toujours configuré pour démarrer automatiquement."
-        : L"Démarrage désactivé ; OneDrive reste actif pour cette session.",
+        ? L"OneDrive is still configured to start automatically."
+        : L"Startup disabled; OneDrive remains active for this session.",
         g_state.oneDriveAutoStart);
 }
 
@@ -811,24 +811,24 @@ void UninstallOneDrive() {
         return;
     }
     if (g_state.oneDriveUninstaller.empty()) {
-        ShowStatus(L"Programme de désinstallation OneDrive introuvable.", true);
+        ShowStatus(L"OneDrive uninstaller not found.", true);
         return;
     }
     const bool confirmation = cloudnav::ui::Confirm(
-        g_window, L"CloudNav — désinstaller OneDrive", L"Désinstaller le client OneDrive de ce PC ?",
+        g_window, L"CloudNav — uninstall OneDrive", L"Uninstall the OneDrive client from this PC?",
         L""
-        L"CloudNav a vérifié que Bureau, Documents, Images, Téléchargements, Musique et Vidéos "
-        L"ne pointent pas vers OneDrive. Les autres dossiers synchronisés ne sont pas vérifiés.\n\n"
-        L"Avant de continuer, assure-toi que OneDrive indique « À jour ». Les fichiers stockés "
-        L"dans le cloud ne seront pas supprimés ; ceux disponibles uniquement en ligne resteront "
-        L"accessibles sur OneDrive.com.",
-        L"Désinstaller OneDrive", true);
+        L"CloudNav has checked that Desktop, Documents, Pictures, Downloads, Music, and Videos "
+        L"do not point to OneDrive. Other synchronized folders have not been checked.\n\n"
+        L"Before continuing, make sure OneDrive says Up to date. Files stored "
+        L"in the cloud will not be deleted; online-only files will remain "
+        L"accessible on OneDrive.com.",
+        L"Uninstall OneDrive", true);
     if (!confirmation) {
-        ShowStatus(L"Désinstallation OneDrive annulée.");
+        ShowStatus(L"OneDrive uninstall cancelled.");
         return;
     }
     if (g_demoMode) {
-        ShowStatus(L"Mode test : désinstallation OneDrive simulée.");
+        ShowStatus(L"Test mode: OneDrive uninstall simulated.");
         return;
     }
     SHELLEXECUTEINFOW execute = {sizeof(execute)};
@@ -839,14 +839,14 @@ void UninstallOneDrive() {
     execute.lpParameters = L"/uninstall";
     execute.nShow = SW_SHOWNORMAL;
     if (!ShellExecuteExW(&execute)) {
-        ShowStatus(L"Impossible de lancer la désinstallation OneDrive : " +
+        ShowStatus(L"Unable to start OneDrive uninstall: " +
                    FormatWindowsError(GetLastError()), true);
         return;
     }
     if (execute.hProcess) {
         CloseHandle(execute.hProcess);
     }
-    ShowStatus(L"Désinstallation OneDrive lancée. Actualise ensuite l’état.");
+    ShowStatus(L"OneDrive uninstall started. Refresh the status afterward.");
 }
 
 std::wstring PickFolder(HWND owner) {
@@ -858,8 +858,8 @@ std::wstring PickFolder(HWND owner) {
     DWORD options = 0;
     dialog->GetOptions(&options);
     dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    dialog->SetTitle(L"Choisir le dossier My Drive");
-    dialog->SetOkButtonLabel(L"Utiliser ce dossier");
+    dialog->SetTitle(L"Choose the My Drive folder");
+    dialog->SetOkButtonLabel(L"Use this folder");
     std::wstring path;
     if (SUCCEEDED(dialog->Show(owner))) {
         IShellItem* item = nullptr;
@@ -931,7 +931,7 @@ bool WriteMyDriveClass(const std::wstring& classRoot, bool show, const std::wstr
 
 bool ConfigureMyDriveMachine(bool show, const std::wstring& path, std::wstring& error) {
     if (show && !PathIsDirectory(path)) {
-        error = L"Le dossier My Drive choisi n’existe pas.";
+        error = L"The selected My Drive folder does not exist.";
         return false;
     }
     if (!WriteMyDriveClass(L"Software\\Classes\\CLSID", show, path, error) ||
@@ -1002,7 +1002,7 @@ bool SetOneDriveVisibleForUser(const std::wstring& userSid, const std::wstring& 
     const std::wstring userSoftwareRoot = userSid + L"\\Software\\";
     const std::wstring classKey = userSoftwareRoot + L"Classes\\CLSID\\" + clsid;
     if (!RegistryKeyExists(HKEY_USERS, classKey)) {
-        error = L"L’entrée OneDrive de ce PC n’est pas modifiable pour l’utilisateur courant.";
+        error = L"The current user cannot change this PC's OneDrive entry.";
         return false;
     }
     const LSTATUS status = WriteRegistryDword(HKEY_USERS, classKey,
@@ -1102,7 +1102,7 @@ bool RunElevatedApply(bool showMyDrive, const std::wstring& myDrivePath,
                       std::wstring& error) {
     const std::wstring userSid = GetCurrentUserSid();
     if (userSid.empty()) {
-        error = L"Impossible d’identifier l’utilisateur Windows courant.";
+        error = L"Unable to identify the current Windows user.";
         return false;
     }
     if (IsAdministrator()) {
@@ -1130,7 +1130,7 @@ bool RunElevatedApply(bool showMyDrive, const std::wstring& myDrivePath,
     if (!ShellExecuteExW(&execute)) {
         const DWORD code = GetLastError();
         error = code == ERROR_CANCELLED
-            ? L"Autorisation administrateur annulée. Rien n’a été modifié."
+            ? L"Administrator approval cancelled. Nothing was changed."
             : FormatWindowsError(code);
         return false;
     }
@@ -1139,7 +1139,7 @@ bool RunElevatedApply(bool showMyDrive, const std::wstring& myDrivePath,
     GetExitCodeProcess(execute.hProcess, &exitCode);
     CloseHandle(execute.hProcess);
     if (exitCode != ERROR_SUCCESS) {
-        error = L"La configuration a échoué (code " + std::to_wstring(exitCode) + L").";
+        error = L"Configuration failed (code " + std::to_wstring(exitCode) + L").";
         return false;
     }
     return true;
@@ -1201,7 +1201,7 @@ void ApplySelections() {
     if (showMyDrive && g_chosenMyDrivePath.empty()) {
         g_chosenMyDrivePath = PickFolder(g_window);
         if (g_chosenMyDrivePath.empty()) {
-            ShowStatus(L"Choisis d’abord le dossier My Drive.", true);
+            ShowStatus(L"Choose the My Drive folder first.", true);
             return;
         }
         SetWindowTextW(g_myDriveDetail, g_chosenMyDrivePath.c_str());
@@ -1214,12 +1214,12 @@ void ApplySelections() {
         g_state.oneDrive.visible = showOneDrive;
         g_state.googleDriveVisible = showGoogleDrive;
         UpdateVisibilityPending();
-        ShowStatus(L"Mode test : visibilité simulée avec succès.");
+        ShowStatus(L"Test mode: visibility changes simulated successfully.");
         return;
     }
 
     EnableWindow(GetDlgItem(g_window, IDC_APPLY), FALSE);
-    ShowStatus(L"Application en cours…");
+    ShowStatus(L"Applying changes…");
     std::wstring error;
 
     if (!RunElevatedApply(showMyDrive, g_chosenMyDrivePath,
@@ -1237,8 +1237,8 @@ void ApplySelections() {
     UpdateControlsFromState();
     UpdateVisibilityPending();
     ShowStatus(restarted
-        ? L"Appliqué. L’Explorateur a été relancé."
-        : L"Appliqué. Rouvre l’Explorateur pour voir le résultat.", !restarted);
+        ? L"Applied. File Explorer was restarted."
+        : L"Applied. Reopen File Explorer to see the result.", !restarted);
 }
 
 void RefreshState() {
@@ -1246,7 +1246,7 @@ void RefreshState() {
         g_state = DetectState();
     }
     UpdateControlsFromState();
-    ShowStatus(L"État relu depuis ce PC.");
+    ShowStatus(L"Status refreshed from this PC.");
 }
 
 int ScaleDip(int value, UINT dpi) {
@@ -1289,8 +1289,8 @@ void UpdateVisibilityPending() {
     if ((Button_GetCheck(g_googleDrive) == BST_CHECKED) != g_state.googleDriveVisible) ++changes;
     EnableWindow(g_apply, changes > 0);
     const std::wstring summary = changes
-        ? std::to_wstring(changes) + L" modification(s) de visibilité. L’Explorateur sera relancé."
-        : L"Visibilité à jour. Coche une entrée pour l’afficher.";
+        ? std::to_wstring(changes) + L" visibility change(s). File Explorer will restart."
+        : L"Visibility is up to date. Select an entry to show it.";
     SetWindowTextW(g_explanation, summary.c_str());
 }
 
@@ -1326,12 +1326,12 @@ void LayoutMainControls(UINT dpi) {
 void CreateInterface(HWND window) {
     g_title = CreateLabel(window, L"CloudNav", g_titleFont);
     g_subtitle = CreateLabel(window,
-        L"Visibilité dans l’Explorateur, dossiers personnels et synchronisation cloud.", g_bodyFont);
-    g_sectionTitle = CreateLabel(window, L"Volet de l’Explorateur", g_bodyBoldFont);
+        L"File Explorer visibility, personal folders, and cloud synchronization.", g_bodyFont);
+    g_sectionTitle = CreateLabel(window, L"File Explorer navigation pane", g_bodyBoldFont);
 
-    g_myDrive = CreateCheckbox(window, IDC_MY_DRIVE, L"Google Drive — dossier My Drive");
+    g_myDrive = CreateCheckbox(window, IDC_MY_DRIVE, L"Google Drive — My Drive folder");
     g_myDriveDetail = CreateLabel(window, L"", g_smallFont);
-    g_browse = CreateWindowExW(0, L"BUTTON", L"Choisir…",
+    g_browse = CreateWindowExW(0, L"BUTTON", L"Browse…",
                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                0, 0, 0, 0, window,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_BROWSE)), g_instance, nullptr);
@@ -1341,14 +1341,14 @@ void CreateInterface(HWND window) {
     g_oneDriveDetail = CreateLabel(window, L"", g_smallFont);
     g_oneDriveSafety = CreateLabel(window, L"", g_smallFont);
     g_disableOneDriveStartup = CreateWindowExW(
-        0, L"BUTTON", L"Ne plus lancer à la connexion",
+        0, L"BUTTON", L"Disable startup at sign-in",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DISABLE_ONEDRIVE_STARTUP)),
         g_instance, nullptr);
     SetControlFont(g_disableOneDriveStartup, g_bodyFont);
     g_uninstallOneDrive = CreateWindowExW(
-        0, L"BUTTON", L"Désinstaller OneDrive",
+        0, L"BUTTON", L"Uninstall OneDrive",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UNINSTALL_ONEDRIVE)),
@@ -1359,44 +1359,44 @@ void CreateInterface(HWND window) {
     g_googleDriveDetail = CreateLabel(window, L"", g_smallFont);
 
     g_personalFolders = CreateWindowExW(
-        0, L"BUTTON", L"Dossiers personnels…",
+        0, L"BUTTON", L"Personal folders…",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PERSONAL_FOLDERS)),
         g_instance, nullptr);
     SetControlFont(g_personalFolders, g_bodyBoldFont);
     g_personalFoldersDetail = CreateLabel(
-        window, L"Choisir où Windows range tes six dossiers personnels.", g_smallFont);
+        window, L"Choose where Windows stores your six personal folders.", g_smallFont);
 
     g_migrateCloud = CreateWindowExW(
-        0, L"BUTTON", L"Comparer les comptes…",
+        0, L"BUTTON", L"Compare accounts…",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MIGRATE_CLOUD)),
         g_instance, nullptr);
     SetControlFont(g_migrateCloud, g_bodyBoldFont);
     g_migrateCloudDetail = CreateLabel(
-        window, L"Comparer les deux comptes et choisir le sens du transfert.", g_smallFont);
+        window, L"Compare both accounts and choose a transfer direction.", g_smallFont);
 
     g_explanation = CreateLabel(
         window,
-        L"Visibilité à jour.",
+        L"Visibility is up to date.",
         g_smallFont);
-    g_status = CreateLabel(window, L"Prêt.", g_bodyFont);
+    g_status = CreateLabel(window, L"Ready.", g_bodyFont);
 
-    g_refresh = CreateWindowExW(0, L"BUTTON", L"Actualiser",
+    g_refresh = CreateWindowExW(0, L"BUTTON", L"Refresh",
                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                 0, 0, 0, 0, window,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_REFRESH)), g_instance, nullptr);
     SetControlFont(g_refresh, g_bodyFont);
-    g_apply = CreateWindowExW(0, L"BUTTON", L"Appliquer la visibilité",
+    g_apply = CreateWindowExW(0, L"BUTTON", L"Apply visibility",
                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                               0, 0, 0, 0, window,
                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_APPLY)), g_instance, nullptr);
     SetControlFont(g_apply, g_bodyBoldFont);
-    g_foldersSection = CreateLabel(window, L"Dossiers personnels", g_bodyBoldFont);
-    g_migrationSection = CreateLabel(window, L"Synchronisation cloud", g_bodyBoldFont);
-    g_oneDriveSection = CreateLabel(window, L"Gestion du client OneDrive", g_bodyBoldFont);
+    g_foldersSection = CreateLabel(window, L"Personal folders", g_bodyBoldFont);
+    g_migrationSection = CreateLabel(window, L"Cloud sync", g_bodyBoldFont);
+    g_oneDriveSection = CreateLabel(window, L"OneDrive client settings", g_bodyBoldFont);
     g_startupDetail = CreateLabel(window, L"", g_smallFont);
     g_providerImages.Load(g_instance);
     for (int i = 0; i < 3; ++i) {
@@ -1414,7 +1414,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         RecreateUiFonts(g_uiDpi);
         CreateInterface(window);
         UpdateControlsFromState();
-        ShowStatus(g_demoMode ? L"Mode test : aucune modification du système." : L"Prêt.");
+        ShowStatus(g_demoMode ? L"Test mode: no system changes." : L"Ready.");
         if (g_demoMigration) {
             PostMessageW(window, WM_COMMAND, MAKEWPARAM(IDC_MIGRATE_CLOUD, BN_CLICKED), 0);
         }
@@ -1428,7 +1428,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 SetWindowTextW(g_myDriveDetail, selected.c_str());
                 Button_SetCheck(g_myDrive, BST_CHECKED);
                 UpdateVisibilityPending();
-                ShowStatus(L"Dossier choisi. Applique la visibilité pour enregistrer cette entrée.");
+                ShowStatus(L"Folder selected. Apply visibility to save this entry.");
             }
             return 0;
         }
@@ -1462,8 +1462,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 UpdateControlsFromState();
             }
             ShowStatus(changed
-                ? L"Emplacements des dossiers personnels mis à jour."
-                : L"Gestionnaire de dossiers fermé.");
+                ? L"Personal folder locations updated."
+                : L"Folder manager closed.");
             return 0;
         }
         case IDC_MIGRATE_CLOUD: {
@@ -1480,8 +1480,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 if (!g_demoMode) { g_state = DetectState(); UpdateControlsFromState(); }
             }
             ShowStatus(result == cloudnav::MigrationResult::ConfigureFolders
-                ? L"Copie terminée ; gestion des dossiers ouverte."
-                : L"Assistant de migration fermé.");
+                ? L"Copy complete; folder manager opened."
+                : L"Cloud sync window closed.");
             return 0;
         }
         case IDC_APPLY:
@@ -1660,6 +1660,7 @@ int RunElevatedHelper(int argumentCount, wchar_t** arguments) {
 }  // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
+    SetThreadUILanguage(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US));
     g_instance = instance;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -1742,7 +1743,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
                        FALSE, 0);
     g_window = CreateWindowExW(
         0, windowClass.lpszClassName,
-        g_demoMode ? L"CloudNav — test visuel" : L"CloudNav",
+        g_demoMode ? L"CloudNav — visual test" : L"CloudNav",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, dimensions.right - dimensions.left, dimensions.bottom - dimensions.top,
         nullptr, nullptr, instance, nullptr);

@@ -48,21 +48,21 @@ inline void InvalidateMigrationValidation(MigrationTask task, bool& analyzed, bo
 
 inline const wchar_t* MigrationStageTitle(MigrationStage stage) {
     switch (stage) {
-    case MigrationStage::Connecting: return L"Connexion du compte…";
-    case MigrationStage::Analyzing: return L"1 / 2 — Analyse des écarts";
-    case MigrationStage::Copying: return L"2 / 2 — Application du plan sélectionné";
-    case MigrationStage::Verifying: return L"3 / 3 — Vérification des fichiers copiés";
-    default: return L"Préparation de l’opération…";
+    case MigrationStage::Connecting: return L"Connecting account…";
+    case MigrationStage::Analyzing: return L"1 / 2 — Analyzing differences";
+    case MigrationStage::Copying: return L"2 / 2 — Applying the selected plan";
+    case MigrationStage::Verifying: return L"3 / 3 — Checking copied files";
+    default: return L"Preparing operation…";
     }
 }
 
 inline const wchar_t* MigrationStageDetails(MigrationStage stage) {
     switch (stage) {
-    case MigrationStage::Connecting: return L"Termine la connexion dans le navigateur, puis reviens ici.";
-    case MigrationStage::Analyzing: return L"Comparaison des comptes. Aucun fichier n’est copié pendant l’analyse.";
-    case MigrationStage::Copying: return L"Application des actions de l’analyse. Tu peux annuler ; analyse à nouveau pour reprendre après un transfert.";
-    case MigrationStage::Verifying: return L"Comparaison indépendante. La configuration des dossiers sera proposée après réussite.";
-    default: return L"La progression apparaîtra au démarrage. Tu peux annuler à tout moment.";
+    case MigrationStage::Connecting: return L"Finish signing in in your browser, then return here.";
+    case MigrationStage::Analyzing: return L"Comparing accounts. No files are copied during analysis.";
+    case MigrationStage::Copying: return L"Applying the analyzed actions. You can cancel; analyze again to resume after a transfer.";
+    case MigrationStage::Verifying: return L"Independent comparison. Folder setup will be offered after success.";
+    default: return L"Progress will appear when the operation starts. You can cancel at any time.";
     }
 }
 
@@ -137,7 +137,7 @@ inline int MigrationPercent(std::uint64_t completedBytes, std::uint64_t totalByt
 }
 
 inline std::wstring FormatBytes(std::uint64_t bytes) {
-    static constexpr const wchar_t* units[] = {L"o", L"Ko", L"Mo", L"Go", L"To"};
+    static constexpr const wchar_t* units[] = {L"B", L"KB", L"MB", L"GB", L"TB"};
     double amount = static_cast<double>(bytes);
     size_t unit = 0;
     while (amount >= 1024.0 && unit + 1 < _countof(units)) { amount /= 1024.0; ++unit; }
@@ -170,15 +170,15 @@ struct MigrationProgress {
 
 inline MigrationProgress FormatMigrationProgress(MigrationStage stage, const MigrationStatistics& stats) {
     MigrationProgress progress;
-    const std::wstring elapsed = L"durée " + FormatEta((std::max)(0.0, stats.elapsed)).substr(4);
+    const std::wstring elapsed = L"elapsed " + FormatEta((std::max)(0.0, stats.elapsed)).substr(4);
     if (stage == MigrationStage::Analyzing || stage == MigrationStage::Verifying) {
-        progress.text = std::to_wstring(stats.listed) + L" éléments parcourus — " +
+        progress.text = std::to_wstring(stats.listed) + L" items scanned — " +
             std::to_wstring(stats.checks) + (stage == MigrationStage::Analyzing
-                ? L" fichiers comparés — " : L" fichiers vérifiés — ") + elapsed;
+                ? L" files compared — " : L" files checked — ") + elapsed;
     } else if (stage == MigrationStage::Copying && stats.bytes == 0 && stats.transfers == 0) {
-        progress.text = L"Préparation de la copie — " + std::to_wstring(stats.listed) +
-            L" éléments parcourus — " + std::to_wstring(stats.checks) +
-            L" fichiers comparés — " + elapsed;
+        progress.text = L"Preparing copy — " + std::to_wstring(stats.listed) +
+            L" items scanned — " + std::to_wstring(stats.checks) +
+            L" files compared — " + elapsed;
     } else {
         progress.percent = (std::min)(99, MigrationPercent(stats.bytes, stats.totalBytes, stats.checks, stats.totalChecks));
         progress.text = std::to_wstring(progress.percent) + L" % — " + FormatBytes(stats.bytes) +

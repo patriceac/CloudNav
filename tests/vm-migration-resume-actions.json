@@ -5,7 +5,7 @@
   },
   {
     "type": "click_control",
-    "name": "Analyser",
+    "name": "Analyze",
     "timeoutMs": 10000
   },
   {
@@ -15,7 +15,7 @@
   },
   {
     "type": "click_control",
-    "name": "Copier",
+    "name": "Copy",
     "timeoutMs": 10000
   },
   {
@@ -25,7 +25,7 @@
   },
   {
     "type": "click_control",
-    "name": "Annuler",
+    "name": "Cancel",
     "timeoutMs": 10000
   },
   {
@@ -41,7 +41,7 @@
   },
   {
     "type": "click_control",
-    "name": "Copier",
+    "name": "Copy",
     "timeoutMs": 10000
   },
   {
@@ -57,7 +57,7 @@
   },
   {
     "type": "click_control",
-    "name": "Configurer les dossiers…",
+    "name": "Set up folders…",
     "timeoutMs": 10000
   },
   {

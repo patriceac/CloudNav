@@ -126,7 +126,7 @@ public:
         Require(CreateProcessW(executable.c_str(), buffer.data(), nullptr, nullptr, FALSE, 0,
                                nullptr, nullptr, &startup, &process) != FALSE, "application launch failed");
         CloseHandle(process.hThread);
-        main = Window(process.dwProcessId, L"CloudNav — test visuel");
+        main = Window(process.dwProcessId, L"CloudNav — visual test");
     }
     ~App() {
         if (main) PostMessageW(main, WM_CLOSE, 0, 0);
@@ -139,9 +139,9 @@ void Run(const std::wstring& executable) {
     App app(executable, L"--demo-plan");
     CheckBounds(app.main);
     Require(!IsWindowEnabled(GetDlgItem(app.main, 1006)), "visibility apply should start disabled");
-    Require(Text(app.main, 1001) == L"Google Drive — dossier My Drive", "folder provider label is ambiguous");
+    Require(Text(app.main, 1001) == L"Google Drive — My Drive folder", "folder provider label is ambiguous");
     Require(Text(app.main, 1003).find(L"OneDrive") != std::wstring::npos, "account label omits OneDrive");
-    Require(Text(app.main, 1004) == L"Google Drive — lecteur G:", "drive provider label is ambiguous");
+    Require(Text(app.main, 1004) == L"Google Drive — drive G:", "drive provider label is ambiguous");
     Capture(app.main, L"ui-main.png");
     SendDlgItemMessageW(app.main, 1001, BM_SETCHECK, BST_UNCHECKED, 0);
     Click(app.main, 1001);
@@ -150,7 +150,7 @@ void Run(const std::wstring& executable) {
     Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(app.main, 1006)); }), "applied visibility stays dirty");
 
     Click(app.main, 1007);
-    HWND folders = Window(app.process.dwProcessId, L"CloudNav — dossiers personnels");
+    HWND folders = Window(app.process.dwProcessId, L"CloudNav — personal folders");
     CheckBounds(folders);
     Require(SendDlgItemMessageW(folders, IDC_FOLDER_TRANSFER_MODE, CB_GETCURSEL, 0, 0) == 0,
             "sync task detection incorrectly recommends redirect-only");
@@ -164,7 +164,7 @@ void Run(const std::wstring& executable) {
             "an unchanged target would introduce an unreviewed operation after backup release");
     // Copy must not release backup and accidentally switch its source to an empty local folder.
     Click(folders, IDOK);
-    HWND blocked = Window(app.process.dwProcessId, L"CloudNav — migrer avant de repointer");
+    HWND blocked = Window(app.process.dwProcessId, L"CloudNav — copy before redirecting");
     HWND safeButton = GetDlgItem(blocked, IDOK);
     Click(blocked, safeButton ? IDOK : IDCANCEL);
     Require(Wait([&] { return !IsWindow(blocked); }), "backup guard could not be dismissed");
@@ -173,26 +173,26 @@ void Run(const std::wstring& executable) {
     Select(folders, IDC_FOLDER_TRANSFER_MODE, 2);
     Require(Wait([&] { return Text(folders, IDC_FOLDER_PICTURES_PATH + 2) == L"C:\\Users\\Example\\Pictures"; }),
             "implicit return to local is missing from preview");
-    Require(Text(folders, IDC_FOLDER_SUMMARY).find(L"+ 1 retour") != std::wstring::npos, "side-effect count is missing");
-    Require(Text(folders, IDC_FOLDER_STATUS).find(L"Mode de transfert mis à jour") != std::wstring::npos,
+    Require(Text(folders, IDC_FOLDER_SUMMARY).find(L"+ 1 return") != std::wstring::npos, "side-effect count is missing");
+    Require(Text(folders, IDC_FOLDER_STATUS).find(L"Transfer mode updated") != std::wstring::npos,
             "changing transfer mode leaves a stale error");
     Capture(folders, L"ui-folder-preview.png");
     Click(folders, IDOK);
-    HWND review = Window(app.process.dwProcessId, L"CloudNav — vérifier les changements");
+    HWND review = Window(app.process.dwProcessId, L"CloudNav — review changes");
     CheckBounds(review);
     Require(Text(review, IDC_REVIEW_PLAN).find(originalDocuments) != std::wstring::npos, "review omits full source path");
     Require(Text(review, IDC_REVIEW_EFFECTS).find(originalPictures) != std::wstring::npos, "review omits affected Pictures path");
     Require(Text(review, IDC_REVIEW_EFFECTS).find(L"C:\\Users\\Example\\Pictures") != std::wstring::npos,
             "review omits Pictures final destination");
     Require(LOWORD(SendMessageW(review, DM_GETDEFID, 0, 0)) == IDCANCEL, "confirmation default is not safe");
-    Require(Text(review, IDOK) == L"Confirmer le repointage", "confirmation action is ambiguous");
+    Require(Text(review, IDOK) == L"Confirm redirection", "confirmation action is ambiguous");
     Capture(review, L"ui-folder-confirm.png");
     Click(review, IDCANCEL);
     Require(Wait([&] { return !IsWindow(review); }), "review cancellation did not close");
     Require(Text(folders, IDC_FOLDER_DOCUMENTS_PATH) == originalDocuments &&
             Text(folders, IDC_FOLDER_PICTURES_PATH) == originalPictures, "cancelling the review changed a folder");
     Click(folders, IDOK);
-    review = Window(app.process.dwProcessId, L"CloudNav — vérifier les changements");
+    review = Window(app.process.dwProcessId, L"CloudNav — review changes");
     Click(review, IDOK);
     Require(Wait([&] { return !IsWindow(review) && !IsWindowEnabled(GetDlgItem(folders, IDOK)); }),
             "completed plan was not reset");
@@ -206,16 +206,16 @@ void Run(const std::wstring& executable) {
     // A localized OneDrive leaf (Images) must keep its approved destination after
     // backup release changes the Windows source to the local leaf (Pictures).
     Click(app.main, 1007);
-    folders = Window(app.process.dwProcessId, L"CloudNav — dossiers personnels");
+    folders = Window(app.process.dwProcessId, L"CloudNav — personal folders");
     Select(folders, IDC_FOLDER_PICTURES_TARGET, 3);
     const std::wstring approvedPictures = L"C:\\Users\\Example\\My Drive\\Images";
     Require(Wait([&] { return Text(folders, IDC_FOLDER_PICTURES_PATH + 2) == approvedPictures; }),
             "localized picture destination was not previewed");
     Select(folders, IDC_FOLDER_TRANSFER_MODE, 2);
-    Require(Wait([&] { return Text(folders, IDC_FOLDER_STATUS).find(L"Mode de transfert mis à jour") != std::wstring::npos; }),
+    Require(Wait([&] { return Text(folders, IDC_FOLDER_STATUS).find(L"Transfer mode updated") != std::wstring::npos; }),
             "redirect-only selection was not processed");
     Click(folders, IDOK);
-    review = Window(app.process.dwProcessId, L"CloudNav — vérifier les changements");
+    review = Window(app.process.dwProcessId, L"CloudNav — review changes");
     Require(Text(review, IDC_REVIEW_PLAN).find(approvedPictures) != std::wstring::npos,
             "approved picture destination is missing");
     Click(review, IDOK);
@@ -239,7 +239,7 @@ void RunSyncDirectionPersistence(const std::wstring& executable) {
     int expected = 0;
     for (int selection : {1, 2, 0, 0}) {
         App app(executable, L"--demo-migration");
-        HWND dialog = Window(app.process.dwProcessId, L"CloudNav — synchronisation cloud");
+        HWND dialog = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
         Require(SendDlgItemMessageW(dialog, IDC_MIGRATION_MODE, CB_GETCURSEL, 0, 0) == expected,
             "sync direction was not restored after process restart");
         Require(!IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_COPY)), "restoring a preference bypassed analysis");
@@ -253,7 +253,7 @@ void RunSyncDirectionPersistence(const std::wstring& executable) {
         Click(dialog, IDCANCEL);
         Require(Wait([&] { return !IsWindow(dialog); }), "sync dialog did not close");
         Click(app.main, 1010);
-        dialog = Window(app.process.dwProcessId, L"CloudNav — synchronisation cloud");
+        dialog = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
         Require(SendDlgItemMessageW(dialog, IDC_MIGRATION_MODE, CB_GETCURSEL, 0, 0) == selection,
             "sync direction was not restored when reopening dialog");
         Click(dialog, IDCANCEL);
@@ -265,13 +265,13 @@ void RunSyncDirectionPersistence(const std::wstring& executable) {
 void RunMigrationReport(const std::wstring& executable) {
     RunSyncDirectionPersistence(executable);
     App app(executable, L"--demo-migration");
-    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — synchronisation cloud");
+    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
     Click(migration, IDC_MIGRATION_ANALYZE);
     Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)) != FALSE; }), "analysis did not complete");
     const auto summary = Text(migration, IDC_MIGRATION_SUMMARY);
-    Require(summary.find(L"OneDrive seul : 1") != std::wstring::npos && summary.find(L"Google Drive seul : 1") != std::wstring::npos &&
-        summary.find(L"Identiques : 1") != std::wstring::npos && summary.find(L"Différents : 1") != std::wstring::npos &&
-        summary.find(L"Bloqués : 0") != std::wstring::npos, "analysis KPIs are incorrect");
+    Require(summary.find(L"OneDrive only: 1") != std::wstring::npos && summary.find(L"Google Drive only: 1") != std::wstring::npos &&
+        summary.find(L"Identical: 1") != std::wstring::npos && summary.find(L"Different: 1") != std::wstring::npos &&
+        summary.find(L"Blocked: 0") != std::wstring::npos, "analysis KPIs are incorrect");
     CheckBounds(migration);
     Capture(migration, L"report-summary.png");
     Select(migration, IDC_MIGRATION_MODE, 1);
@@ -279,13 +279,13 @@ void RunMigrationReport(const std::wstring& executable) {
     Require(Text(migration, IDC_MIGRATION_SUMMARY) == summary && IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)), "mode switch discarded comparison");
     Capture(migration, L"report-reverse.png");
     Select(migration, IDC_MIGRATION_MODE, 2);
-    Require(Wait([&] { return Text(migration, IDC_MIGRATION_SUMMARY).find(L"Conflits : 1") != std::wstring::npos; }), "bidirectional conflict preview missing");
-    Require(Text(migration, IDC_MIGRATION_COPY) == L"Synchroniser", "bidirectional action mislabeled");
+    Require(Wait([&] { return Text(migration, IDC_MIGRATION_SUMMARY).find(L"Conflicts: 1") != std::wstring::npos; }), "bidirectional conflict preview missing");
+    Require(Text(migration, IDC_MIGRATION_COPY) == L"Sync", "bidirectional action mislabeled");
     Capture(migration, L"report-bidirectional.png");
     Select(migration, IDC_MIGRATION_MODE, 0);
     Require(Wait([&] { return Text(migration, IDC_MIGRATION_SUMMARY) == summary; }), "forward plan did not restore");
     Click(migration, IDC_MIGRATION_REPORT);
-    const HWND report = Window(app.process.dwProcessId, L"CloudNav — résultats de l’analyse");
+    const HWND report = Window(app.process.dwProcessId, L"CloudNav — analysis results");
     const HWND list = GetDlgItem(report, IDC_REPORT_LIST);
     Require(ListView_GetItemCount(list) == 4, "report omits files");
     CheckBounds(report);
@@ -299,10 +299,10 @@ void RunMigrationReport(const std::wstring& executable) {
     Require(Wait([&] { return !IsWindow(report); }), "report did not close");
     Click(migration, IDC_MIGRATION_ANALYZE);
     Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_REPORT)); }), "stale report remains available");
-    Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"OneDrive seul") == std::wstring::npos, "stale KPIs remain visible");
+    Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"OneDrive only") == std::wstring::npos, "stale KPIs remain visible");
     Click(migration, IDCANCEL);
     Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ANALYZE)) != FALSE; }), "analysis did not cancel");
-    Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"Résultats partiels") == 0 &&
+    Require(Text(migration, IDC_MIGRATION_SUMMARY).find(L"Partial results") == 0 &&
         !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)), "cancelled analysis looks complete");
     Capture(migration, L"report-partial.png");
     Click(migration, IDCANCEL);

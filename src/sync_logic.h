@@ -40,7 +40,7 @@ inline std::string SyncBindingMaterial(const std::string& config) {
     for (auto& entry : remotes) {
         auto& values = entry.second;
         if (values["type"] == "onedrive" && values["drive_id"].empty())
-            throw std::runtime_error("Reconnecte OneDrive pour identifier le lecteur.");
+            throw std::runtime_error("Reconnect OneDrive to identify the drive.");
         const auto token = values.find("token");
         if (token != values.end()) {
             // Microsoft rotates refresh tokens. The configured drive_id is the
@@ -49,13 +49,13 @@ inline std::string SyncBindingMaterial(const std::string& config) {
             if (entry.first == "cloudnav-gdrive") {
                 const auto json = SyncJson::parse(token->second, nullptr, false);
                 if (json.is_discarded() || !json.contains("refresh_token") || !json["refresh_token"].is_string())
-                    throw std::runtime_error("Reconnecte Google Drive pour identifier le compte.");
+                    throw std::runtime_error("Reconnect Google Drive to identify the account.");
                 values["refresh_identity"] = json["refresh_token"].get<std::string>();
             }
             values.erase(token);
         }
     }
-    if (remotes.size() != 2) throw std::runtime_error("Configuration des deux comptes requise");
+    if (remotes.size() != 2) throw std::runtime_error("Both accounts must be configured");
     return SyncJson(remotes).dump();
 }
 
@@ -68,13 +68,13 @@ inline const wchar_t* SyncModeLabel(SyncMode mode) {
 }
 inline const wchar_t* SyncActionLabel(SyncAction action) {
     switch (action) {
-    case SyncAction::ToGoogle: return L"Copier → Google Drive";
-    case SyncAction::ToOneDrive: return L"Copier → OneDrive";
-    case SyncAction::DeleteGoogle: return L"Retirer de Google Drive (archivé)";
-    case SyncAction::DeleteOneDrive: return L"Retirer de OneDrive (archivé)";
-    case SyncAction::KeepBoth: return L"Conflit — garder les deux";
-    case SyncAction::Blocked: return L"Bloqué";
-    default: return L"Conserver";
+    case SyncAction::ToGoogle: return L"Copy → Google Drive";
+    case SyncAction::ToOneDrive: return L"Copy → OneDrive";
+    case SyncAction::DeleteGoogle: return L"Remove from Google Drive (archived)";
+    case SyncAction::DeleteOneDrive: return L"Remove from OneDrive (archived)";
+    case SyncAction::KeepBoth: return L"Conflict — keep both";
+    case SyncAction::Blocked: return L"Blocked";
+    default: return L"Keep";
     }
 }
 
@@ -118,25 +118,25 @@ using SyncInventory = std::map<std::string, SyncFile>;
 inline std::string CanonicalSyncTime(const std::string& value) {
     static const std::regex pattern(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$)");
     std::smatch match;
-    if (!std::regex_match(value, match, pattern)) throw std::runtime_error("Date de fichier invalide");
+    if (!std::regex_match(value, match, pattern)) throw std::runtime_error("Invalid file date");
     SYSTEMTIME time = {};
     time.wYear = static_cast<WORD>(std::stoi(match[1])); time.wMonth = static_cast<WORD>(std::stoi(match[2]));
     time.wDay = static_cast<WORD>(std::stoi(match[3])); time.wHour = static_cast<WORD>(std::stoi(match[4]));
     time.wMinute = static_cast<WORD>(std::stoi(match[5])); time.wSecond = static_cast<WORD>(std::stoi(match[6]));
     FILETIME fileTime;
-    if (!SystemTimeToFileTime(&time, &fileTime)) throw std::runtime_error("Date de fichier non prise en charge");
+    if (!SystemTimeToFileTime(&time, &fileTime)) throw std::runtime_error("Unsupported file date");
     ULARGE_INTEGER ticks;
     ticks.LowPart = fileTime.dwLowDateTime; ticks.HighPart = fileTime.dwHighDateTime;
     const std::string offset = match[8];
     if (offset != "Z") {
         const int hours = std::stoi(offset.substr(1, 2)), minutes = std::stoi(offset.substr(4, 2));
-        if (hours > 23 || minutes > 59) throw std::runtime_error("Fuseau horaire invalide");
+        if (hours > 23 || minutes > 59) throw std::runtime_error("Invalid time zone");
         const auto delta = static_cast<std::uint64_t>(hours * 60 + minutes) * 600000000ULL;
-        if (ticks.QuadPart < delta) throw std::runtime_error("Date de fichier non prise en charge");
+        if (ticks.QuadPart < delta) throw std::runtime_error("Unsupported file date");
         ticks.QuadPart = offset[0] == '+' ? ticks.QuadPart - delta : ticks.QuadPart + delta;
     }
     fileTime.dwLowDateTime = ticks.LowPart; fileTime.dwHighDateTime = ticks.HighPart;
-    if (!FileTimeToSystemTime(&fileTime, &time)) throw std::runtime_error("Date de fichier non prise en charge");
+    if (!FileTimeToSystemTime(&fileTime, &time)) throw std::runtime_error("Unsupported file date");
     std::string fraction = match[7]; fraction.append(9 - fraction.size(), '0');
     char output[64];
     sprintf_s(output, "%04u-%02u-%02uT%02u:%02u:%02u.%sZ", time.wYear, time.wMonth, time.wDay,
@@ -159,24 +159,24 @@ inline bool ReadSyncInventory(const std::string& text, SyncInventory& inventory,
     inventory.clear();
     try {
         const auto json = SyncJson::parse(text);
-        if (!json.is_array()) throw std::runtime_error("Inventaire invalide");
+        if (!json.is_array()) throw std::runtime_error("Invalid inventory");
         std::set<std::string> directories;
         for (const auto& row : json) {
             const auto path = row.at("Path").get<std::string>();
-            if (!SafeSyncPath(path) || SyncPathKey(path).empty()) throw std::runtime_error("Chemin non pris en charge : " + path);
+            if (!SafeSyncPath(path) || SyncPathKey(path).empty()) throw std::runtime_error("Unsupported path: " + path);
             if (row.at("IsDir").get<bool>()) {
-                if (!directories.insert(path).second || inventory.count(path)) throw std::runtime_error("Dossier ambigu : " + path);
+                if (!directories.insert(path).second || inventory.count(path)) throw std::runtime_error("Ambiguous folder: " + path);
                 continue;
             }
-            if (directories.count(path)) throw std::runtime_error("Collision fichier/dossier : " + path);
+            if (directories.count(path)) throw std::runtime_error("File/folder collision: " + path);
             const auto size = row.at("Size").get<std::int64_t>();
             SyncFile file;
             file.time = CanonicalSyncTime(row.at("ModTime").get<std::string>());
             if (!SafeSyncPath(path) || SyncPathKey(path).empty() || size < 0)
-                throw std::runtime_error("Chemin, taille ou date non pris en charge : " + path);
+                throw std::runtime_error("Unsupported path, size, or date: " + path);
             file.size = static_cast<std::uint64_t>(size);
             if (row.contains("Hashes") && !row["Hashes"].is_null()) file.hashes = row["Hashes"].get<std::map<std::string, std::string>>();
-            if (!inventory.emplace(path, std::move(file)).second) throw std::runtime_error("Nom dupliqué : " + path);
+            if (!inventory.emplace(path, std::move(file)).second) throw std::runtime_error("Duplicate name: " + path);
         }
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
@@ -281,7 +281,7 @@ inline std::vector<std::wstring> SyncInventoryArguments(const std::wstring& conf
 inline std::string SyncFileList(const std::vector<SyncRow>& rows, SyncAction action) {
     std::string list;
     for (const auto& row : rows) if (row.action == action) {
-        if (!SafeSyncPath(row.path)) throw std::runtime_error("Chemin de transfert invalide");
+        if (!SafeSyncPath(row.path)) throw std::runtime_error("Invalid transfer path");
         list += row.path + "\n";
     }
     return list;
@@ -313,10 +313,10 @@ inline std::wstring SyncPlanSummary(const SyncAnalysis& analysis, SyncMode mode)
         deletions += row.action == SyncAction::DeleteGoogle || row.action == SyncAction::DeleteOneDrive;
         conflicts += row.action == SyncAction::KeepBoth || row.editDeleteConflict; blocked += row.action == SyncAction::Blocked;
     }
-    return std::wstring(analysis.complete ? L"" : L"Résultats partiels — ") + L"OneDrive seul : " + std::to_wstring(a) +
-        L"    Google Drive seul : " + std::to_wstring(b) + L"    Différents : " + std::to_wstring(changes) +
-        L"\r\nIdentiques : " + std::to_wstring(same) + L"    Retraits : " + std::to_wstring(deletions) + L"    Conflits : " + std::to_wstring(conflicts) +
-        L"    Bloqués : " + std::to_wstring(blocked);
+    return std::wstring(analysis.complete ? L"" : L"Partial results — ") + L"OneDrive only: " + std::to_wstring(a) +
+        L"    Google Drive only: " + std::to_wstring(b) + L"    Different: " + std::to_wstring(changes) +
+        L"\r\nIdentical: " + std::to_wstring(same) + L"    Removals: " + std::to_wstring(deletions) + L"    Conflicts: " + std::to_wstring(conflicts) +
+        L"    Blocked: " + std::to_wstring(blocked);
 }
 
 } // namespace cloudnav

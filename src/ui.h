@@ -51,7 +51,7 @@ struct DialogTheme {
 // Native task dialogs provide explicit action labels and a safe default.
 inline bool Confirm(HWND owner, const wchar_t* title, const wchar_t* instruction,
                     const std::wstring& content, const wchar_t* action, bool warning = false) {
-    const TASKDIALOG_BUTTON buttons[] = {{IDYES, action}, {IDCANCEL, L"Annuler"}};
+    const TASKDIALOG_BUTTON buttons[] = {{IDYES, action}, {IDCANCEL, L"Cancel"}};
     TASKDIALOGCONFIG config = {sizeof(config)};
     config.hwndParent = owner;
     config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | TDF_SIZE_TO_CONTENT;

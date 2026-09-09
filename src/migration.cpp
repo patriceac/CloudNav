@@ -167,24 +167,24 @@ bool ExtractRclone(HINSTANCE instance, std::wstring& path, std::wstring& error) 
     path = root + L"\\rclone-v1.75.0.exe";
     if (ResourceMatchesFile(instance, path)) return true;
     HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(IDR_RCLONE_EXE), RT_RCDATA);
-    if (!resource) { error = L"La ressource rclone intégrée est introuvable."; return false; }
+    if (!resource) { error = L"The embedded rclone resource was not found."; return false; }
     HGLOBAL loaded = LoadResource(instance, resource);
     const void* bytes = loaded ? LockResource(loaded) : nullptr;
     const DWORD size = SizeofResource(instance, resource);
-    if (!bytes || !size || !EnsureParentDirectory(path)) { error = L"Impossible de préparer le moteur de migration."; return false; }
+    if (!bytes || !size || !EnsureParentDirectory(path)) { error = L"Unable to prepare the transfer engine."; return false; }
     const std::wstring temporary = path + L".tmp";
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) { error = L"Impossible d’extraire le moteur de migration."; return false; }
+    if (file == INVALID_HANDLE_VALUE) { error = L"Unable to extract the transfer engine."; return false; }
     DWORD written = 0;
     const bool writtenOk = WriteFile(file, bytes, size, &written, nullptr) && written == size;
     CloseHandle(file);
     if (!writtenOk || !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(temporary.c_str());
-        error = L"Impossible de mettre à jour le moteur de migration.";
+        error = L"Unable to update the transfer engine.";
         return false;
     }
-    if (!ResourceMatchesFile(instance, path)) { error = L"La vérification du moteur de migration a échoué."; return false; }
+    if (!ResourceMatchesFile(instance, path)) { error = L"Transfer engine verification failed."; return false; }
     return true;
 }
 
@@ -211,7 +211,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     SECURITY_ATTRIBUTES security = {sizeof(security), nullptr, TRUE};
     HANDLE readPipe = nullptr;
     HANDLE writePipe = nullptr;
-    if (!CreatePipe(&readPipe, &writePipe, &security, 0)) { error = L"Impossible de lire la progression."; return false; }
+    if (!CreatePipe(&readPipe, &writePipe, &security, 0)) { error = L"Unable to read progress."; return false; }
     SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
     std::wstring command = QuoteArgument(context.runtimePath);
     for (const auto& argument : arguments) command += L" " + QuoteArgument(argument);
@@ -244,7 +244,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
                                         TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment.data(), nullptr, &startup, &process);
     if (nullInput != INVALID_HANDLE_VALUE) CloseHandle(nullInput);
     CloseHandle(writePipe);
-    if (!created) { CloseHandle(readPipe); error = L"Impossible de démarrer le moteur de migration."; return false; }
+    if (!created) { CloseHandle(readPipe); error = L"Unable to start the transfer engine."; return false; }
     CloseHandle(process.hThread);
     EnterCriticalSection(&context.processLock);
     context.childProcess = process.hProcess;
@@ -253,8 +253,8 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
 
     context.statisticsUpdates = 0;
     PostProgress(context, -1, stage, stage == MigrationStage::Copying
-        ? L"Préparation de la copie — ouverture des fichiers sélectionnés…"
-        : L"Lecture des comptes — attente des premières statistiques…");
+        ? L"Preparing copy — opening selected files…"
+        : L"Reading accounts — waiting for initial statistics…");
     std::string pending;
     size_t receivedFiles = 0;
     ULONGLONG lastInventoryUpdate = GetTickCount64();
@@ -281,7 +281,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
                 const auto now = GetTickCount64();
                 if (now - lastInventoryUpdate >= 1000) {
                     PostProgress(context, -1, stage, std::wstring(arguments.size() > 1 && arguments[1] == context.oneDrivePath
-                        ? L"OneDrive : " : L"Google Drive : ") + std::to_wstring(receivedFiles) + L" fichiers lus — analyse en cours…");
+                        ? L"OneDrive : " : L"Google Drive : ") + std::to_wstring(receivedFiles) + L" files read — analyzing…");
                     lastInventoryUpdate = now;
                 }
             }
@@ -314,11 +314,11 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     }
     if (context.cancelRequested || exitCode == ERROR_CANCELLED) return false;
     if (exitCode != 0) {
-        error = L"rclone a signalé une erreur (code " + std::to_wstring(exitCode) + L"). Journal : " + context.logPath;
+        error = L"rclone reported an error (code " + std::to_wstring(exitCode) + L"). Log: " + context.logPath;
         return false;
     }
     if (report && !report->complete) {
-        error = L"Le bilan de l’analyse est incomplet. Relance l’analyse avant de copier.";
+        error = L"The analysis report is incomplete. Analyze again before copying.";
         return false;
     }
     return true;
@@ -339,12 +339,12 @@ std::string SyncBinding(const DialogContext& context) {
     auto identity = SyncBindingMaterial(ReadSyncFile(context.configPath));
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
-        throw std::runtime_error("Empreinte des comptes indisponible");
+        throw std::runtime_error("Account fingerprint unavailable");
     unsigned char digest[32] = {};
     const auto status = BCryptHash(algorithm, nullptr, 0, reinterpret_cast<PUCHAR>(identity.data()),
         static_cast<ULONG>(identity.size()), digest, sizeof(digest));
     BCryptCloseAlgorithmProvider(algorithm, 0);
-    if (status < 0) throw std::runtime_error("Empreinte des comptes indisponible");
+    if (status < 0) throw std::runtime_error("Account fingerprint unavailable");
     std::string result;
     for (auto byte : digest) { result += "0123456789abcdef"[byte >> 4]; result += "0123456789abcdef"[byte & 15]; }
     return result;
@@ -370,9 +370,9 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
             stage, error, nullptr, nullptr, &output)) return false;
         if (!ReadSyncInventory(output, inventory, parseError)) { error = Utf8ToWide(parseError); return false; }
         PostProgress(context, -1, stage, std::wstring(oneDrive ? L"OneDrive : " : L"Google Drive : ") +
-            std::to_wstring(inventory.size()) + L" fichiers lus — " + (oneDrive ? L"lecture de Google Drive…" : L"comparaison des deux comptes…"));
+            std::to_wstring(inventory.size()) + L" files read — " + (oneDrive ? L"reading Google Drive…" : L"comparing both accounts…"));
     }
-    if (analysis.binding != SyncBinding(context)) { error = L"Les comptes ont changé pendant l’analyse. Relance l’analyse."; return false; }
+    if (analysis.binding != SyncBinding(context)) { error = L"The accounts changed during analysis. Analyze again."; return false; }
     analysis.complete = !context.cancelRequested;
     return analysis.complete;
 }
@@ -397,10 +397,10 @@ AnalysisReport SyncReport(const SyncAnalysis& analysis, SyncMode mode) {
         file.category = row.category;
         file.bytes = row.bytes;
         file.sizeKnown = true;
-        if (row.action == SyncAction::Blocked) file.error = "Nom ambigu, collision de chemins ou analyse incomplète.";
+        if (row.action == SyncAction::Blocked) file.error = "Ambiguous name, path collision, or incomplete analysis.";
     }
     if (!analysis.error.empty()) {
-        auto& file = report.files["[analyse]"];
+        auto& file = report.files["[analysis]"];
         file.category = '!'; file.error = analysis.error;
     }
     return report;
@@ -409,14 +409,14 @@ AnalysisReport SyncReport(const SyncAnalysis& analysis, SyncMode mode) {
 bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     const auto rows = context.sync.Plan(context.mode);
     if (!context.sync.complete || std::any_of(rows.begin(), rows.end(), [](const auto& row) { return row.action == SyncAction::Blocked; })) {
-        error = L"Le plan contient des éléments bloqués. Relance l’analyse après correction."; return false;
+        error = L"The plan contains blocked items. Fix them, then analyze again."; return false;
     }
     SyncAnalysis fresh;
     if (!ReadCurrentSync(context, fresh, error)) return false;
     LoadCurrentBaseline(context, fresh);
     if (fresh.binding != context.sync.binding || fresh.oneDrive != context.sync.oneDrive || fresh.google != context.sync.google ||
         fresh.baselineDocument != context.sync.baselineDocument || fresh.recovery != context.sync.recovery) {
-        error = L"Les fichiers ou l’historique ont changé depuis l’analyse. Aucun transfert lancé : analyse à nouveau pour revoir le plan.";
+        error = L"Files or history changed since analysis. No transfer started: analyze again to review the plan.";
         return false;
     }
     if (context.mode != SyncMode::Bidirectional && std::all_of(rows.begin(), rows.end(),
@@ -430,7 +430,7 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     // merge. Never interpret a destination missing after a failed overwrite as
     // a user's deletion on the next run.
     if (!WriteEvidence(state + L".pending", "{\"pending\":true}")) {
-        error = L"Impossible de sauvegarder le journal de reprise."; return false;
+        error = L"Unable to save the recovery journal."; return false;
     }
     const auto baseArgs = [&](const wchar_t* command, const std::wstring& source, const std::wstring& destination) {
         return std::vector<std::wstring>{command, source, destination, L"--config", context.configPath,
@@ -440,7 +440,7 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         const auto list = SyncFileList(rows, action);
         if (list.empty()) return true;
         const auto path = context.logPath + L".sync-list-" + stamp;
-        if (!WriteEvidence(path, list)) { error = L"Impossible de préparer la liste des fichiers."; return false; }
+        if (!WriteEvidence(path, list)) { error = L"Unable to prepare the file list."; return false; }
         auto args = baseArgs(remove ? L"move" : L"copy", source, remove ? backup(source) : destination);
         args.insert(args.end(), {L"--files-from-raw", path, L"--no-traverse"});
         if (!remove) args.insert(args.end(), {L"--ignore-times", L"--backup-dir", backup(destination)});
@@ -453,7 +453,7 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     // retains the original name. All replacements also have a history copy.
     for (const auto& row : rows) if (row.action == SyncAction::KeepBoth) {
         const auto path = Utf8ToWide(row.path);
-        const auto suffix = L".conflit-Google-" + stamp;
+        const auto suffix = L".conflict-Google-" + stamp;
         const auto alternate = path + suffix;
         for (const auto& destination : {od + alternate, gd + alternate}) {
             auto args = baseArgs(L"copyto", gd + path, destination);
@@ -469,15 +469,15 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     if (context.mode == SyncMode::Bidirectional) {
         SyncAnalysis after;
         if (!ReadCurrentSync(context, after, error, MigrationStage::Verifying)) return false;
-        if (after.binding != context.sync.binding) { error = L"Les comptes ont changé. Historique non validé."; return false; }
+        if (after.binding != context.sync.binding) { error = L"The accounts changed. History was not committed."; return false; }
         const auto remaining = after.Plan(SyncMode::Bidirectional);
         if (std::any_of(remaining.begin(), remaining.end(), [](const auto& row) { return row.action != SyncAction::None; })) {
-            error = L"Des écarts subsistent après le transfert. Relance l’analyse ; l’historique précédent est conservé."; return false;
+            error = L"Differences remain after transfer. Analyze again; the previous history has been kept."; return false;
         }
         const SyncJson document = {{"version", 1}, {"binding", after.binding}, {"oneDrive", SaveSyncInventory(after.oneDrive)},
             {"google", SaveSyncInventory(after.google)}};
-        if (!WriteEvidence(state, document.dump())) { error = L"Historique non sauvegardé. Une analyse de reprise sera nécessaire."; return false; }
-        if (!DeleteFileW((state + L".pending").c_str())) { error = L"Journal de reprise non clôturé. Relance l’analyse."; return false; }
+        if (!WriteEvidence(state, document.dump())) { error = L"History was not saved. A recovery analysis will be needed."; return false; }
+        if (!DeleteFileW((state + L".pending").c_str())) { error = L"The recovery journal could not be finalized. Analyze again."; return false; }
     }
     // One-way copies intentionally leave the pair in merge/recovery mode:
     // they do not establish a successful bidirectional baseline.
@@ -495,7 +495,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
     const bool locked = lock == WAIT_OBJECT_0 || lock == WAIT_ABANDONED;
     try {
     if (!locked) {
-        error = L"Une autre opération CloudNav utilise déjà les comptes. Réessaie après sa fin.";
+        error = L"Another CloudNav operation is using these accounts. Try again when it finishes.";
     } else if (!ExtractRclone(context.instance, context.runtimePath, error)) {
         success = false;
     } else if (context.demoMode) {
@@ -554,7 +554,7 @@ void RefreshButtons(DialogContext& context) {
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE), !context.running && acknowledged && context.oneDriveReady && context.googleReady);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_COPY), !context.running && acknowledged && context.analyzed && !context.report.Count('!'));
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_MODE), !context.running);
-    SetDlgItemTextW(context.dialog, IDC_MIGRATION_COPY, context.mode == SyncMode::Bidirectional ? L"Synchroniser" : L"Copier");
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_COPY, context.mode == SyncMode::Bidirectional ? L"Sync" : L"Copy");
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_CUTOVER), !context.running && context.copied);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_REPORT), !context.running && context.report.available);
     const int primary = context.running ? IDCANCEL : context.copied ? IDC_MIGRATION_CUTOVER :
@@ -566,13 +566,13 @@ void RefreshButtons(DialogContext& context) {
             ? reinterpret_cast<WPARAM>(context.theme.bold) : SendMessageW(context.dialog, WM_GETFONT, 0, 0), TRUE);
     }
     SendMessageW(context.dialog, DM_SETDEFID, primary, 0);
-    SetDlgItemTextW(context.dialog, IDC_MIGRATION_ONEDRIVE_CONNECT, context.oneDriveReady ? L"Reconnecter…" : L"Connecter…");
-    SetDlgItemTextW(context.dialog, IDC_MIGRATION_GOOGLE_CONNECT, context.googleReady ? L"Reconnecter…" : L"Connecter…");
-    SetDlgItemTextW(context.dialog, IDCANCEL, context.running ? L"Annuler" : L"Fermer");
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_ONEDRIVE_CONNECT, context.oneDriveReady ? L"Reconnect…" : L"Connect…");
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_GOOGLE_CONNECT, context.googleReady ? L"Reconnect…" : L"Connect…");
+    SetDlgItemTextW(context.dialog, IDCANCEL, context.running ? L"Cancel" : L"Close");
 }
 
 std::wstring CurrentPlanDetails(const DialogContext& context) {
-    if (!context.report.available) return L"Analyse les deux comptes pour afficher les actions proposées.";
+    if (!context.report.available) return L"Analyze both accounts to see the proposed actions.";
     const auto rows = context.sync.Plan(context.mode);
     size_t toGoogle = 0, toOneDrive = 0;
     std::uint64_t bytes = 0;
@@ -581,13 +581,13 @@ std::wstring CurrentPlanDetails(const DialogContext& context) {
         toOneDrive += row.action == SyncAction::ToOneDrive || row.action == SyncAction::KeepBoth;
         if (bytes <= (std::numeric_limits<std::uint64_t>::max)() - row.bytes) bytes += row.bytes;
     }
-    return std::wstring(!context.analyzed && context.sync.complete && !context.running ? L"Plan précédent — nouvelle analyse requise.\r\n" : L"") +
+    return std::wstring(!context.analyzed && context.sync.complete && !context.running ? L"Previous plan — new analysis required.\r\n" : L"") +
         L"→ Google Drive : " + std::to_wstring(toGoogle) + L"    → OneDrive : " + std::to_wstring(toOneDrive) +
-        L"    Volume estimé : " + FormatBytes(bytes) + L"\r\n" +
-        (context.mode != SyncMode::Bidirectional ? L"Copie à sens unique : les fichiers supplémentaires sont conservés." :
-        context.sync.recovery ? L"Reprise : fusion sans retraits. Un nouvel historique sera créé après réussite." :
-        context.sync.hasBaseline ? L"Historique disponible : les suppressions sont propagées avec archivage." :
-        L"Première fusion : aucun retrait. Les deux versions des conflits seront conservées.");
+        L"    Estimated size: " + FormatBytes(bytes) + L"\r\n" +
+        (context.mode != SyncMode::Bidirectional ? L"One-way copy: extra files are kept." :
+        context.sync.recovery ? L"Recovery: merge without removals. New history will be created after success." :
+        context.sync.hasBaseline ? L"History available: deletions are propagated with archiving." :
+        L"First merge: no removals. Both versions of conflicts will be kept.");
 }
 
 void RefreshPlan(DialogContext& context) {
@@ -616,7 +616,7 @@ void StartTask(DialogContext& context, Task task) {
     if (context.running) return;
     if (task != Task::Copy) { context.report = {}; context.sync = {}; }
     const auto summary = (task == Task::Copy && context.report.available
-        ? L"Avant copie — " : std::wstring()) + context.report.Summary();
+        ? L"Before copy — " : std::wstring()) + context.report.Summary();
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_SUMMARY, summary.c_str());
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_PLAN, CurrentPlanDetails(context).c_str());
     InvalidateMigrationValidation(task, context.analyzed, context.copied);
@@ -632,14 +632,14 @@ void StartTask(DialogContext& context, Task task) {
     SendDlgItemMessageW(context.dialog, IDC_MIGRATION_PROGRESS, PBM_SETSTATE, PBST_NORMAL, 0);
     SetMigrationProgress(context, -1);
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_PHASE, MigrationStageTitle(MigrationStage::Preparing));
-    SetDlgItemTextW(context.dialog, IDC_MIGRATION_STATS, L"Progression en attente…");
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_STATS, L"Waiting for progress…");
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, MigrationStageDetails(MigrationStage::Preparing));
     RefreshButtons(context);
     context.worker = CreateThread(nullptr, 0, WorkerProc, &context, 0, nullptr);
     if (!context.worker) {
         context.running = false;
         SetMigrationProgress(context, 0);
-        SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, L"Impossible de démarrer l’opération.");
+        SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, L"Unable to start the operation.");
         RefreshButtons(context);
     }
 }
@@ -650,7 +650,7 @@ void CancelTask(DialogContext& context) {
     if (context.childProcess) TerminateProcess(context.childProcess, ERROR_CANCELLED);
     LeaveCriticalSection(&context.processLock);
     SetMigrationProgress(context, 0);
-    SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, L"Annulation… Les fichiers déjà copiés seront réutilisés à la reprise.");
+    SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, L"Cancelling… Files already copied will be reused when resuming.");
 }
 
 bool WriteEvidence(const std::wstring& path, const std::string& json) {
@@ -693,7 +693,7 @@ void FilterReport(HWND dialog, ReportDialog& context) {
     const HWND list = GetDlgItem(dialog, IDC_REPORT_LIST);
     ListView_SetItemCountEx(list, static_cast<int>(context.visible.size()), 0);
     InvalidateRect(list, nullptr, TRUE);
-    SetDlgItemTextW(dialog, IDC_REPORT_SELECTED, L"Sélectionne un fichier pour lire et copier son chemin complet.");
+    SetDlgItemTextW(dialog, IDC_REPORT_SELECTED, L"Select a file to read and copy its full path.");
     if (selection == 1) WriteMilestone(*context.owner, L"report-filtered.json",
         context.visible.size() == context.owner->report.Count('+'));
 }
@@ -707,13 +707,13 @@ INT_PTR CALLBACK ReportDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
         SetDlgItemTextW(dialog, IDC_MIGRATION_SUMMARY, context->owner->report.Summary().c_str());
         std::map<std::string, std::wstring> actions;
         for (const auto& row : context->owner->sync.Plan(context->owner->mode)) actions[row.path] = std::wstring(SyncActionLabel(row.action)) +
-            (row.editDeleteConflict ? L" — restaurer la version modifiée" : L"");
+            (row.editDeleteConflict ? L" — restore the edited version" : L"");
         for (const auto& item : context->owner->report.files) {
             const auto& file = item.second;
             context->rows.push_back({file.category, AnalysisCategory(file.category), Utf8ToWide(item.first),
                 file.sizeKnown ? FormatBytes(file.bytes) : L"—", Utf8ToWide(file.error), actions[item.first]});
         }
-        for (const wchar_t* label : {L"Tous les fichiers", L"OneDrive seul", L"Différents", L"Identiques", L"Google Drive seul", L"Erreurs"})
+        for (const wchar_t* label : {L"All files", L"OneDrive only", L"Different", L"Identical", L"Google Drive only", L"Errors"})
             ComboBox_AddString(GetDlgItem(dialog, IDC_REPORT_FILTER), label);
         ComboBox_SetCurSel(GetDlgItem(dialog, IDC_REPORT_FILTER), 0);
         const HWND list = GetDlgItem(dialog, IDC_REPORT_LIST);
@@ -722,7 +722,7 @@ INT_PTR CALLBACK ReportDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
         GetClientRect(list, &bounds);
         const int width = bounds.right;
         int index = 0;
-        for (const wchar_t* title : {L"Résultat", L"Chemin du fichier", L"Action proposée", L"Volume"}) {
+        for (const wchar_t* title : {L"Result", L"File path", L"Proposed action", L"Size"}) {
             LVCOLUMNW column = {};
             column.mask = LVCF_TEXT | LVCF_WIDTH;
             column.pszText = const_cast<wchar_t*>(title);
@@ -783,11 +783,11 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         EnsureParentDirectory(context->configPath);
         context->oneDriveReady = context->demoMode || HasRemote(context->configPath, kOneDriveRemote);
         context->googleReady = context->demoMode || HasRemote(context->configPath, kGoogleRemote);
-        SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, context->demoMode ? L"Compte de démonstration" : context->oneDriveReady ? L"Connexion enregistrée" : L"Non connecté");
-        SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Compte de démonstration" : context->googleReady ? L"Connexion enregistrée" : L"Non connecté");
+        SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, context->demoMode ? L"Demo account" : context->oneDriveReady ? L"Connection saved" : L"Not connected");
+        SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Demo account" : context->googleReady ? L"Connection saved" : L"Not connected");
         if (context->demoMode) Button_SetCheck(GetDlgItem(dialog, IDC_MIGRATION_REMINDER), BST_CHECKED);
         if (context->oneDriveReady && context->googleReady)
-            SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"L’analyse vérifie l’accès aux comptes et estime la copie. Aucun fichier n’est transféré.");
+            SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Analysis checks account access and estimates the copy. No files are transferred.");
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PHASE, WM_SETFONT, reinterpret_cast<WPARAM>(context->theme.bold), TRUE);
         RefreshPlan(*context);
         return TRUE;
@@ -805,7 +805,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 context->copied = false;
                 RefreshPlan(*context);
                 if (!saved) SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS,
-                    L"Sens du transfert appliqué pour cette fenêtre, mais impossible de mémoriser ce choix.");
+                    L"Transfer direction applied to this window, but the preference could not be saved.");
             }
             return TRUE;
         case IDC_MIGRATION_ONEDRIVE_CONNECT: StartTask(*context, Task::AuthenticateOneDrive); return TRUE;
@@ -823,10 +823,10 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
             if (context->running || !context->analyzed || context->report.Count('!')) return TRUE;
             const std::wstring review = std::wstring(SyncModeLabel(context->mode)) + L"\r\n\r\n" + context->report.Summary() +
                 L"\r\n\r\n" + CurrentPlanDetails(*context) +
-                L"\r\n\r\nLes remplacements et retraits sont archivés dans .CloudNav-history sur le compte concerné." +
-                (context->mode == SyncMode::Bidirectional ? L"\r\nConflits : la version OneDrive garde le nom original ; la version Google reçoit un suffixe sur les deux comptes." : L"") +
-                L"\r\n\r\nAppliquer ce plan après une nouvelle vérification des comptes ?";
-            if (context->demoMode || MessageBoxW(dialog, review.c_str(), L"CloudNav — vérifier le transfert", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
+                L"\r\n\r\nReplaced and removed files are archived in .CloudNav-history on the affected account." +
+                (context->mode == SyncMode::Bidirectional ? L"\r\nConflicts: the OneDrive version keeps the original name; the Google version gets a suffix on both accounts." : L"") +
+                L"\r\n\r\nApply this plan after checking the accounts again?";
+            if (context->demoMode || MessageBoxW(dialog, review.c_str(), L"CloudNav — review transfer", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
                 StartTask(*context, Task::Copy);
             return TRUE;
         }
@@ -870,7 +870,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
             ui::ControlText(dialog, IDC_MIGRATION_DETAILS) == MigrationStageDetails(update->stage);
         context->progressConsistent &= consistent;
         if (update->stage == MigrationStage::Analyzing && !context->sawAnalyzeProgress &&
-            update->statistics.find(L"fichiers comparés") != std::wstring::npos) {
+            update->statistics.find(L"files compared") != std::wstring::npos) {
             context->sawAnalyzeProgress = consistent && context->indeterminate &&
                 (GetWindowLongPtrW(GetDlgItem(dialog, IDC_MIGRATION_PROGRESS), GWL_STYLE) & PBS_MARQUEE) != 0 &&
                 ui::ControlText(dialog, IDC_MIGRATION_STATS) == update->statistics &&
@@ -900,40 +900,40 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         SetMigrationProgress(*context, 0);
         if (update->success) {
             if (update->task == Task::AuthenticateOneDrive || update->task == Task::AuthenticateGoogle) {
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analyser avant de copier");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analyse requise après une reconnexion");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analyze before copying");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analysis required after reconnecting");
             }
             if (update->task == Task::AuthenticateOneDrive) {
-                context->oneDriveReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, L"Connexion enregistrée");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Compte OneDrive connecté.");
+                context->oneDriveReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, L"Connection saved");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"OneDrive account connected.");
             } else if (update->task == Task::AuthenticateGoogle) {
-                context->googleReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, L"Connexion enregistrée");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Compte Google Drive connecté.");
+                context->googleReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, L"Connection saved");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Google Drive account connected.");
             } else if (update->task == Task::Analyze) {
                 context->analyzed = true;
                 SetDlgItemTextW(dialog, IDC_MIGRATION_PLAN, CurrentPlanDetails(*context).c_str());
                 SetMigrationProgress(*context, 100);
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analyse terminée : prête pour la copie");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analyse terminée — aucun fichier transféré");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Les deux comptes sont comparés. Choisis le sens du transfert et consulte les actions dans les détails.");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analysis complete: ready to copy");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analysis complete — no files transferred");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Both accounts have been compared. Choose a transfer direction and review the actions in View details.");
             } else if (update->task == Task::Copy) {
                 context->copied = true;
                 SetMigrationProgress(*context, 100);
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, context->mode == SyncMode::Bidirectional ? L"Synchronisation terminée" : L"2 / 2 — Copie terminée");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, context->mode == SyncMode::Bidirectional ? L"Synchronization complete" : L"2 / 2 — Copy complete");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, context->mode == SyncMode::Bidirectional ?
-                    L"100 % — comptes comparés après transfert, historique sauvegardé" : L"100 % — copie terminée sans erreur signalée");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Tu peux maintenant configurer les dossiers Windows, ou fermer l’assistant.");
+                    L"100 % — accounts compared after transfer, history saved" : L"100 % — copy complete with no errors reported");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"You can now set up Windows folders or close this window.");
             }
         } else {
-            SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, update->cancelled ? L"Opération annulée." : L"Opération interrompue.");
-            SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Opération arrêtée — aucun transfert en cours");
+            SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, update->cancelled ? L"Operation cancelled." : L"Operation interrupted.");
+            SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Operation stopped — no transfer running");
             SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETSTATE, update->cancelled ? PBST_PAUSED : PBST_ERROR, 0);
             SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS,
-                            update->cancelled ? L"Analyse à nouveau pour reprendre. Les fichiers déjà copiés et les archives sont conservés." : update->message.c_str());
+                            update->cancelled ? L"Analyze again to resume. Files already copied and archives are kept." : update->message.c_str());
         }
         if (update->task == Task::Copy && !context->demoMode) {
             context->analyzed = false;
-            SetDlgItemTextW(dialog, IDC_MIGRATION_PLAN, L"Plan précédent conservé pour consultation. Analyse à nouveau avant un autre transfert.");
+            SetDlgItemTextW(dialog, IDC_MIGRATION_PLAN, L"Previous plan kept for reference. Analyze again before another transfer.");
         }
         const bool close = context->closeRequested;
         delete update;
@@ -952,7 +952,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         if (context->cancelRequested) {
             context->cancellationConsistent &= !context->copied &&
                 !IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_CUTOVER)) &&
-                ui::ControlText(dialog, IDC_MIGRATION_STATS) == L"Opération arrêtée — aucun transfert en cours";
+                ui::ControlText(dialog, IDC_MIGRATION_STATS) == L"Operation stopped — no transfer running";
             WriteMilestone(*context, L"cancelled.json", context->cancellationConsistent);
         }
         if (close) EndDialog(dialog, 1);
@@ -1043,7 +1043,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 step = "analysisReportCounts";
                 passed = analysisReport.complete && analysisReport.Count('+') == 32 && analysisReport.Count('*') == 1 &&
                     analysisReport.Count('=') == 1 && analysisReport.Count('-') == 1 && analysisReport.Count('!') == 0 &&
-                    analysisReport.CopySize() != L"indisponible" && analysisReport.files.count("Personal Vault/excluded.txt") == 0;
+                    analysisReport.CopySize() != L"unavailable" && analysisReport.files.count("Personal Vault/excluded.txt") == 0;
             }
             if (passed) {
                 step = "copyAnalyzedListOnly";
@@ -1097,7 +1097,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                     read(context.googlePath + L"one.txt") == "updated during preview";
                 bool preserved = false;
                 for (const auto& entry : std::filesystem::directory_iterator(context.oneDrivePath)) {
-                    if (entry.path().filename().wstring().find(L"one.txt.conflit-Google-") == 0) {
+                    if (entry.path().filename().wstring().find(L"one.txt.conflict-Google-") == 0) {
                         preserved = read(entry.path()) == "also edited on Google" &&
                             read(std::filesystem::path(context.googlePath) / entry.path().filename()) == "also edited on Google";
                     }

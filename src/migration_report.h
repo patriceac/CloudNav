@@ -85,7 +85,7 @@ struct AnalysisReport {
             }
         }
         if (JsonString(line, "level", level) && level == "error" && JsonString(line, "msg", message)) {
-            auto& file = files[path.empty() ? "[opération] " + message : path];
+            auto& file = files[path.empty() ? "[operation] " + message : path];
             file.category = '!';
             file.error = message;
         }
@@ -129,30 +129,30 @@ struct AnalysisReport {
         for (const auto& item : files) {
             const auto& file = item.second;
             if (file.category != '+' && file.category != '*') continue;
-            if (!file.sizeKnown || bytes > (std::numeric_limits<std::uint64_t>::max)() - file.bytes) return L"indisponible";
+            if (!file.sizeKnown || bytes > (std::numeric_limits<std::uint64_t>::max)() - file.bytes) return L"unavailable";
             bytes += file.bytes;
         }
         return FormatBytes(bytes);
     }
     std::wstring Summary() const {
         if (!summaryOverride.empty()) return summaryOverride;
-        if (!available) return L"Les résultats apparaîtront après l’analyse.";
-        return std::wstring(complete ? L"" : L"Résultats partiels — ") +
-            L"Nouveaux : " + std::to_wstring(Count('+')) + L"    Modifiés : " + std::to_wstring(Count('*')) +
-            L"    Identiques : " + std::to_wstring(Count('=')) + L"\r\n" +
-            L"Conservés sur Google Drive : " + std::to_wstring(Count('-')) + L"    Erreurs : " + std::to_wstring(Count('!')) +
-            L"    À copier : " + CopySize();
+        if (!available) return L"Results will appear after analysis.";
+        return std::wstring(complete ? L"" : L"Partial results — ") +
+            L"New: " + std::to_wstring(Count('+')) + L"    Modified: " + std::to_wstring(Count('*')) +
+            L"    Identical: " + std::to_wstring(Count('=')) + L"\r\n" +
+            L"Kept on Google Drive: " + std::to_wstring(Count('-')) + L"    Errors: " + std::to_wstring(Count('!')) +
+            L"    To copy: " + CopySize();
     }
 };
 
 inline const wchar_t* AnalysisCategory(char category) {
     switch (category) {
-    case '+': return L"OneDrive seul";
-    case '*': return L"Différent";
-    case '=': return L"Identique";
-    case '-': return L"Google Drive seul";
-    case '!': return L"Erreur";
-    default: return L"Non classé";
+    case '+': return L"OneDrive only";
+    case '*': return L"Different";
+    case '=': return L"Identical";
+    case '-': return L"Google Drive only";
+    case '!': return L"Error";
+    default: return L"Unclassified";
     }
 }
 

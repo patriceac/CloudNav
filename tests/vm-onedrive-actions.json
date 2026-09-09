@@ -11,7 +11,7 @@
   },
   {
     "type": "click_control",
-    "name": "Ne plus lancer à la connexion",
+    "name": "Disable startup at sign-in",
     "timeoutMs": 10000
   },
   {
@@ -26,7 +26,7 @@
   },
   {
     "type": "click_control",
-    "name": "Désinstaller OneDrive",
+    "name": "Uninstall OneDrive",
     "timeoutMs": 10000
   },
   {
@@ -41,7 +41,7 @@
   },
   {
     "type": "click_control",
-    "name": "Désinstaller OneDrive",
+    "name": "Uninstall OneDrive",
     "timeoutMs": 10000
   },
   {

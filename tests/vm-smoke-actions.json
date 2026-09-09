@@ -1,10 +1,10 @@
 [
   { "type": "wait_window", "timeoutMs": 30000 },
   { "type": "screenshot", "name": "cloudnav-111-main.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Dossiers personnels…", "timeoutMs": 10000 },
+  { "type": "click_control", "name": "Personal folders…", "timeoutMs": 10000 },
   { "type": "wait", "ms": 750 },
   { "type": "screenshot", "name": "cloudnav-111-folders.png", "timeoutMs": 30000, "attempts": 5 },
-  { "type": "click_control", "name": "Fermer", "timeoutMs": 10000 },
+  { "type": "click_control", "name": "Close", "timeoutMs": 10000 },
   { "type": "wait", "ms": 500 },
   { "type": "focus_window" },
   { "type": "send_keys", "keys": "ALT+F4", "holdMs": 75 },

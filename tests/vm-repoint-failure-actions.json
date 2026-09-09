@@ -5,7 +5,7 @@
   },
   {
     "type": "click_control",
-    "name": "Dossiers personnels…",
+    "name": "Personal folders…",
     "timeoutMs": 10000
   },
   {
@@ -14,7 +14,7 @@
   },
   {
     "type": "click_control",
-    "name": "Vérifier…",
+    "name": "Review…",
     "timeoutMs": 10000
   },
   {
@@ -23,7 +23,7 @@
   },
   {
     "type": "click_control",
-    "name": "Copier et appliquer",
+    "name": "Copy and apply",
     "timeoutMs": 10000
   },
   {
@@ -53,7 +53,7 @@
   },
   {
     "type": "click_control",
-    "name": "Fermer",
+    "name": "Close",
     "timeoutMs": 10000
   },
   {

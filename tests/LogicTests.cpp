@@ -124,7 +124,7 @@ int wmain() {
     assert(!cloudnav::FolderReturnsLocalAfterBackupRelease(true, false, true, documentsSource, oneDriveRoot));
     assert(!cloudnav::FolderReturnsLocalAfterBackupRelease(true, true, false, documentsSource, oneDriveRoot));
     assert(!cloudnav::FolderReturnsLocalAfterBackupRelease(true, true, true, documentsTarget, oneDriveRoot));
-    assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"Compte personnel") == L"OneDrive — Compte personnel");
+    assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"Personal account") == L"OneDrive — Personal account");
     assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"OneDrive - Work") == L"OneDrive - Work");
     assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"") == L"OneDrive");
 
@@ -137,8 +137,8 @@ int wmain() {
     }
     assert(std::wstring(cloudnav::MigrationStageTitle(cloudnav::MigrationStage::Copying)).find(L"2 / 2") != std::wstring::npos);
     assert(std::wstring(cloudnav::MigrationStageTitle(cloudnav::MigrationStage::Verifying)).find(L"3 / 3") != std::wstring::npos);
-    assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Copying)).find(L"moteur") == std::wstring::npos);
-    assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Verifying)).find(L"indépendante") != std::wstring::npos);
+    assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Copying)).find(L"engine") == std::wstring::npos);
+    assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Verifying)).find(L"Independent") != std::wstring::npos);
 
     double value = 0;
     assert(cloudnav::JsonNumber("{\"bytes\":524288,\"totalBytes\":1048576}", "bytes", value));
@@ -147,7 +147,10 @@ int wmain() {
     assert(cloudnav::MigrationPercent(50, 100, 0, 0) == 50);
     assert(cloudnav::MigrationPercent(0, 0, 3, 4) == 75);
     assert(cloudnav::MigrationPercent(200, 100, 0, 0) == 100);
-    assert(cloudnav::FormatBytes(1048576) == L"1.0 Mo");
+    assert(cloudnav::FormatBytes(1048576) == L"1.0 MB");
+    assert(cloudnav::FormatBytes(1024) == L"1.0 KB");
+    assert(cloudnav::FormatBytes(0) == L"0 B");
+    assert(std::wstring(cloudnav::AnalysisCategory('!')) == L"Error");
     assert(cloudnav::FormatEta(125) == L"ETA 2m 05s");
 
     // A null ETA from a real scan must remain unknown, not become zero seconds.
@@ -168,19 +171,19 @@ int wmain() {
     assert(stats.eta == -1 && stats.checks == 4933 && stats.listed == 13567);
     const auto analysis = cloudnav::FormatMigrationProgress(MigrationStage::Analyzing, stats);
     assert(analysis.percent == -1);
-    assert(analysis.text == L"13567 éléments parcourus — 4933 fichiers comparés — durée 7m 18s");
+    assert(analysis.text == L"13567 items scanned — 4933 files compared — elapsed 7m 18s");
     const auto verification = cloudnav::FormatMigrationProgress(MigrationStage::Verifying, stats);
     assert(verification.percent == -1);
-    assert(verification.text.find(L"4933 fichiers vérifiés") != std::wstring::npos);
+    assert(verification.text.find(L"4933 files checked") != std::wstring::npos);
     assert(verification.text.find(L"ETA") == std::wstring::npos);
     const auto preparingCopy = cloudnav::FormatMigrationProgress(MigrationStage::Copying, stats);
     assert(preparingCopy.percent == -1);
-    assert(preparingCopy.text.find(L"Préparation de la copie") == 0);
+    assert(preparingCopy.text.find(L"Preparing copy") == 0);
 
     assert(cloudnav::ParseMigrationStatistics(R"({"stats":{"bytes":524288,"totalBytes":1048576,"eta":2,"speed":262144,"transferring":[{"name":"folder/{file}","bytes":1,"speed":1}]}})", stats));
     const auto copying = cloudnav::FormatMigrationProgress(MigrationStage::Copying, stats);
     assert(copying.percent == 50);
-    assert(copying.text == L"50 % — 512.0 Ko / 1.0 Mo — 256.0 Ko/s — ETA 2s");
+    assert(copying.text == L"50 % — 512.0 KB / 1.0 MB — 256.0 KB/s — ETA 2s");
     stats.bytes = stats.totalBytes;
     assert(cloudnav::FormatMigrationProgress(MigrationStage::Copying, stats).percent == 99);
     assert(!cloudnav::ParseMigrationStatistics(R"({"msg":"not a statistics event"})", stats));
@@ -220,20 +223,20 @@ int wmain() {
     std::istringstream combined("+ Documents/été, \"copie\".txt\n* changed.txt\n= same.txt\n- extra.txt\n+ Documents/été, \"copie\".txt\n");
     report.Combined(combined);
     assert(!report.malformed && report.Count('+') == 1 && report.Count('*') == 1 && report.Count('=') == 1 && report.Count('-') == 1);
-    assert(report.CopySize() == L"579 o");
-    assert(report.Summary().find(L"Résultats partiels") == 0);
+    assert(report.CopySize() == L"579 B");
+    assert(report.Summary().find(L"Partial results") == 0);
     report.complete = true;
-    assert(report.Summary().find(L"Nouveaux : 1") == 0);
+    assert(report.Summary().find(L"New: 1") == 0);
     report.Log(R"({"level":"error","object":"changed.txt","msg":"access denied"})");
     report.Log(R"({"level":"error","object":"changed.txt","msg":"access denied"})");
     assert(report.Count('!') == 1 && report.Count('*') == 0);
     cloudnav::AnalysisReport emptyReport;
     std::istringstream emptyCombined("");
     emptyReport.Combined(emptyCombined);
-    assert(emptyReport.available && emptyReport.CopySize() == L"0 o" && emptyReport.files.empty());
+    assert(emptyReport.available && emptyReport.CopySize() == L"0 B" && emptyReport.files.empty());
     std::istringstream unknownSize("+ new.txt\n");
     emptyReport.Combined(unknownSize);
-    assert(emptyReport.CopySize() == L"indisponible");
+    assert(emptyReport.CopySize() == L"unavailable");
     std::istringstream malformed("unexpected filename continuation\n");
     emptyReport.Combined(malformed);
     assert(emptyReport.malformed);
