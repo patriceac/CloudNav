@@ -227,6 +227,73 @@ void Run(const std::wstring& executable) {
     Require(Wait([&] { return !IsWindow(folders); }), "second folder manager did not close");
 }
 
+void RunClients(const std::wstring& executable) {
+    {
+        App blocked(executable, L"--demo-plan");
+        Require(!IsWindowEnabled(GetDlgItem(blocked.main, 1009)), "OneDrive dependency guard missing");
+        Require(!IsWindowEnabled(GetDlgItem(blocked.main, 1016)), "Google Drive dependency guard missing");
+        CheckBounds(blocked.main);
+        Capture(blocked.main, L"clients-protected.png");
+        // Bypassing the disabled button must still hit the action-time guard.
+        PostMessageW(blocked.main, WM_COMMAND, MAKEWPARAM(1016, BN_CLICKED), 0);
+        HWND warning = Window(blocked.process.dwProcessId, L"CloudNav — Google Drive");
+        Click(warning, GetDlgItem(warning, IDOK) ? IDOK : IDCANCEL);
+        Require(Wait([&] { return !IsWindow(warning); }), "guard warning did not close");
+    }
+    {
+        App unknown(executable, L"--demo-clients-unknown-roots");
+        Require(!IsWindowEnabled(GetDlgItem(unknown.main, 1009)) && !IsWindowEnabled(GetDlgItem(unknown.main, 1016)),
+            "unknown locations allow uninstall");
+        Require(!IsWindowVisible(GetDlgItem(unknown.main, 1014)) && !IsWindowVisible(GetDlgItem(unknown.main, 1015)),
+            "installed clients are mistaken for missing clients");
+        Capture(unknown.main, L"clients-unknown.png");
+    }
+    {
+        App missing(executable, L"--demo-clients-missing");
+        Require(Text(missing.main, 1017) == L"Not installed" && Text(missing.main, 1018) == L"Not installed", "missing client status wrong");
+        CheckBounds(missing.main);
+        Capture(missing.main, L"clients-missing.png");
+        for (bool google : {false, true}) {
+            const int install = google ? 1015 : 1014, uninstall = google ? 1016 : 1009;
+            const wchar_t* installTitle = google ? L"CloudNav — install Google Drive" : L"CloudNav — install OneDrive";
+            const wchar_t* uninstallTitle = google ? L"CloudNav — uninstall Google Drive" : L"CloudNav — uninstall OneDrive";
+            Click(missing.main, install);
+            HWND dialog = Window(missing.process.dwProcessId, installTitle);
+            CheckBounds(dialog);
+            Capture(dialog, google ? L"clients-install-google.png" : L"clients-install-onedrive.png");
+            PostMessageW(dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
+            Require(Wait([&] { return !IsWindow(dialog); }), "install cancel did not close");
+            Require(IsWindowVisible(GetDlgItem(missing.main, install)), "cancelled installation changed status");
+            Click(missing.main, install);
+            dialog = Window(missing.process.dwProcessId, installTitle);
+            PostMessageW(dialog, TDM_CLICK_BUTTON, IDYES, 0);
+            Require(Wait([&] { return IsWindowVisible(GetDlgItem(missing.main, uninstall)) && IsWindowEnabled(GetDlgItem(missing.main, uninstall)); }),
+                "installed client actions did not refresh");
+            Require(!IsWindowVisible(GetDlgItem(missing.main, install)), "install action remains after installation");
+            Click(missing.main, uninstall);
+            dialog = Window(missing.process.dwProcessId, uninstallTitle);
+            Capture(dialog, google ? L"clients-uninstall-google.png" : L"clients-uninstall-onedrive.png");
+            PostMessageW(dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
+            Require(Wait([&] { return !IsWindow(dialog); }), "uninstall cancel did not close");
+            Require(IsWindowVisible(GetDlgItem(missing.main, uninstall)), "cancelled uninstall changed status");
+            Click(missing.main, uninstall);
+            dialog = Window(missing.process.dwProcessId, uninstallTitle);
+            PostMessageW(dialog, TDM_CLICK_BUTTON, IDYES, 0);
+            Require(Wait([&] { return IsWindowVisible(GetDlgItem(missing.main, install)) && IsWindowEnabled(GetDlgItem(missing.main, install)); }),
+                "uninstalled client actions did not refresh");
+        }
+    }
+    {
+        App failure(executable, L"--demo-client-failure");
+        Click(failure.main, 1015);
+        HWND dialog = Window(failure.process.dwProcessId, L"CloudNav — install Google Drive");
+        PostMessageW(dialog, TDM_CLICK_BUTTON, IDYES, 0);
+        Require(Wait([&] { return Text(failure.main, 1020).find(L"failed") != std::wstring::npos; }), "download failure not shown");
+        Require(Text(failure.main, 1018) == L"Not installed" && IsWindowEnabled(GetDlgItem(failure.main, 1015)), "failed download marked installed or blocked retry");
+        Capture(failure.main, L"clients-download-failure.png");
+    }
+}
+
 void RunSyncDirectionPersistence(const std::wstring& executable) {
     HKEY key = nullptr;
     Require(RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\CloudNav\\Demo", 0, nullptr, 0, KEY_SET_VALUE,
@@ -313,6 +380,7 @@ void RunMigrationReport(const std::wstring& executable) {
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2 && argc != 3) return 2;
     const bool migrationReport = argc == 3 && std::wstring(argv[2]) == L"--migration-report";
+    const bool clients = argc == 3 && std::wstring(argv[2]) == L"--clients";
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     wchar_t module[32768] = {};
     GetModuleFileNameW(nullptr, module, ARRAYSIZE(module));
@@ -322,10 +390,10 @@ int wmain(int argc, wchar_t** argv) {
     ULONG_PTR token = 0;
     Gdiplus::GdiplusStartupInput graphicsInput;
     if (Gdiplus::GdiplusStartup(&token, &graphicsInput, nullptr) != Gdiplus::Ok) return 4;
-    try { if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
+    try { if (clients) RunClients(executable); else if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
     Gdiplus::GdiplusShutdown(token);
     const std::string json = error.empty()
-        ? (migrationReport ? "{\"passed\":true,\"summary\":true,\"filters\":true,\"partialResults\":true,\"staleReportCleared\":true,\"bounds\":true}" : "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"collateralPreview\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}")
+        ? (clients ? "{\"passed\":true,\"clientControls\":true,\"cancelPreservesState\":true,\"folderGuards\":true,\"downloadFailure\":true,\"simulated\":true}" : migrationReport ? "{\"passed\":true,\"summary\":true,\"filters\":true,\"partialResults\":true,\"staleReportCleared\":true,\"bounds\":true}" : "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"collateralPreview\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}")
         : "{\"passed\":false,\"error\":\"" + error + "\"}";
     HANDLE file = CreateFileW(argv[1], GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 3;

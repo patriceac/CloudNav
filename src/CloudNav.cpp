@@ -17,12 +17,15 @@
 #include <cwctype>
 #include <string>
 #include <vector>
+#include <thread>
+#include <memory>
 
 #include "logic.h"
 #include "folder_manager.h"
 #include "migration.h"
 #include "resource.h"
 #include "ui.h"
+#include "client_management.h"
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -52,8 +55,13 @@ constexpr int IDC_PERSONAL_FOLDERS = 1007;
 constexpr int IDC_DISABLE_ONEDRIVE_STARTUP = 1008;
 constexpr int IDC_UNINSTALL_ONEDRIVE = 1009;
 constexpr int IDC_MIGRATE_CLOUD = 1010;
+constexpr int IDC_INSTALL_ONEDRIVE = 1014;
+constexpr int IDC_INSTALL_GOOGLE = 1015;
+constexpr int IDC_UNINSTALL_GOOGLE = 1016;
+constexpr UINT WM_CLIENT_DOWNLOAD = WM_APP + 40;
+constexpr UINT_PTR kClientProcessTimer = 40;
 constexpr int kMainClientWidthDip = 740;
-constexpr int kMainClientHeightDip = 650;
+constexpr int kMainClientHeightDip = 692;
 
 struct OneDriveInfo {
     std::wstring clsid;
@@ -79,6 +87,10 @@ struct AppState {
     std::wstring oneDriveUninstaller;
     std::vector<std::wstring> oneDrivePersonalFolders;
     bool personalFolderScanComplete = true;
+    cloudnav::ClientInstallation oneDriveClient;
+    cloudnav::ClientInstallation googleClient;
+    PersonalFolderUsage googlePersonalFolders;
+    bool googleRootsKnown = false;
 };
 
 HINSTANCE g_instance = nullptr;
@@ -108,6 +120,12 @@ HWND g_foldersSection = nullptr;
 HWND g_migrationSection = nullptr;
 HWND g_oneDriveSection = nullptr;
 HWND g_startupDetail = nullptr;
+HWND g_installOneDrive = nullptr;
+HWND g_installGoogle = nullptr;
+HWND g_uninstallGoogle = nullptr;
+HWND g_googleSection = nullptr;
+HWND g_googleClientDetail = nullptr;
+HWND g_googleSafety = nullptr;
 HWND g_providerIcons[3] = {};
 cloudnav::ui::ProviderImages g_providerImages;
 std::wstring g_chosenMyDrivePath;
@@ -127,6 +145,18 @@ bool g_demoMigration = false;
 std::wstring g_demoMigrationResult;
 bool g_statusIsError = false;
 bool g_oneDriveBlocked = false;
+bool g_demoClientsMissing = false;
+bool g_demoClientFailure = false;
+bool g_demoClientUnknownRoots = false;
+bool g_clientDownloading = false;
+bool g_closeAfterDownload = false;
+std::atomic_bool g_cancelClientDownload{false};
+std::thread g_clientDownloadThread;
+HANDLE g_clientProcess = nullptr;
+cloudnav::CloudClient g_activeClient = cloudnav::CloudClient::OneDrive;
+std::wstring g_downloadedInstaller;
+struct ClientDownloadResult { std::wstring path; std::wstring error; };
+bool ClientBusy() { return g_clientDownloading || g_clientProcess != nullptr; }
 
 std::wstring FormatWindowsError(DWORD code) {
     wchar_t* buffer = nullptr;
@@ -543,7 +573,7 @@ OneDriveInfo DetectOneDrive() {
     return result;
 }
 
-PersonalFolderUsage DetectPersonalFoldersInOneDrive(const std::wstring& oneDriveRoot) {
+PersonalFolderUsage DetectPersonalFoldersInRoots(const std::vector<std::wstring>& roots) {
     struct PersonalFolderSpec {
         const KNOWNFOLDERID* id;
         const wchar_t* label;
@@ -557,14 +587,14 @@ PersonalFolderUsage DetectPersonalFoldersInOneDrive(const std::wstring& oneDrive
         {&FOLDERID_Videos, L"Videos"}
     }};
     PersonalFolderUsage result;
-    if (oneDriveRoot.empty()) {
+    if (roots.empty()) {
         result.complete = false;
         return result;
     }
     for (const PersonalFolderSpec& folder : folders) {
         PWSTR path = nullptr;
         if (SUCCEEDED(SHGetKnownFolderPath(*folder.id, KF_FLAG_DONT_VERIFY, nullptr, &path)) && path) {
-            if (cloudnav::PathIsWithin(path, oneDriveRoot)) {
+            if (std::any_of(roots.begin(), roots.end(), [&](const auto& root) { return cloudnav::PathIsWithin(path, root); })) {
                 result.names.emplace_back(folder.label);
             }
             CoTaskMemFree(path);
@@ -601,11 +631,45 @@ std::wstring DetectOneDriveUninstaller() {
 }
 
 void DetectOneDriveClientState(AppState& state) {
+    state.oneDriveClient = cloudnav::DetectClientInstallation(cloudnav::CloudClient::OneDrive);
     state.oneDriveAutoStart = DetectOneDriveAutoStart();
-    state.oneDriveUninstaller = DetectOneDriveUninstaller();
-    const PersonalFolderUsage usage = DetectPersonalFoldersInOneDrive(state.oneDrive.path);
+    state.oneDriveUninstaller = state.oneDriveClient.uninstallExecutable;
+    if (state.oneDriveUninstaller.empty() && state.oneDriveClient.installed) {
+        state.oneDriveUninstaller = DetectOneDriveUninstaller();
+        state.oneDriveClient.uninstallExecutable = state.oneDriveUninstaller;
+        state.oneDriveClient.uninstallArguments = L"/uninstall";
+    }
+    std::vector<std::wstring> roots;
+    if (!state.oneDrive.path.empty()) roots.push_back(state.oneDrive.path);
+    HKEY accounts = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\OneDrive\\Accounts", 0, KEY_READ, &accounts) == ERROR_SUCCESS) {
+        for (DWORD index = 0;; ++index) {
+            wchar_t name[256]; DWORD length = ARRAYSIZE(name);
+            if (RegEnumKeyExW(accounts, index, name, &length, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+            std::wstring path;
+            if (ReadRegistryString(accounts, name, L"UserFolder", path) && !path.empty()) roots.push_back(path);
+        }
+        RegCloseKey(accounts);
+    }
+    const PersonalFolderUsage usage = DetectPersonalFoldersInRoots(roots);
     state.oneDrivePersonalFolders = usage.names;
     state.personalFolderScanComplete = usage.complete;
+}
+
+void DetectGoogleClientState(AppState& state) {
+    state.googleClient = cloudnav::DetectClientInstallation(cloudnav::CloudClient::GoogleDrive);
+    std::vector<std::wstring> roots;
+    if (!state.myDrivePath.empty()) roots.push_back(state.myDrivePath);
+    const DWORD drives = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i) {
+        if (!(drives & (1u << i))) continue;
+        std::wstring root = L"A:\\"; root[0] += static_cast<wchar_t>(i);
+        wchar_t label[MAX_PATH] = {};
+        if (GetVolumeInformationW(root.c_str(), label, ARRAYSIZE(label), nullptr, nullptr, nullptr, nullptr, 0) &&
+            ContainsInsensitive(label, L"Google Drive")) roots.push_back(root);
+    }
+    state.googleRootsKnown = !roots.empty();
+    state.googlePersonalFolders = DetectPersonalFoldersInRoots(roots);
 }
 
 AppState DetectState() {
@@ -620,8 +684,24 @@ AppState DetectState() {
         demo.oneDriveAutoStart = true;
         demo.oneDriveUninstaller = L"C:\\Windows\\System32\\OneDriveSetup.exe";
         demo.personalFolderScanComplete = true;
+        demo.oneDriveClient = {true, true, demo.oneDriveUninstaller, L"/uninstall"};
+        demo.googleClient = {true, true, L"C:\\Program Files\\Google\\Drive File Stream\\130.0.2.0\\uninstall.exe", L""};
+        demo.googleRootsKnown = true;
         if (!g_demoSafeOneDriveActions) {
             demo.oneDrivePersonalFolders = {L"Documents", L"Pictures"};
+            demo.googlePersonalFolders.names = {L"Music"};
+        }
+        if (g_demoClientsMissing) {
+            demo.oneDriveClient = {}; demo.googleClient = {};
+            demo.oneDrive.detected = false;
+            demo.oneDriveAutoStart = false;
+            demo.oneDrivePersonalFolders.clear(); demo.googlePersonalFolders.names.clear();
+        }
+        if (g_demoClientUnknownRoots) {
+            demo.oneDrive.path.clear();
+            demo.personalFolderScanComplete = false;
+            demo.googleRootsKnown = false;
+            demo.googlePersonalFolders.complete = false;
         }
         return demo;
     }
@@ -637,6 +717,7 @@ AppState DetectState() {
     state.myDriveVisible = pinned != 0 && RegistryKeyExists(HKEY_LOCAL_MACHINE, namespaceKey);
     state.oneDrive = DetectOneDrive();
     DetectOneDriveClientState(state);
+    DetectGoogleClientState(state);
 
     DetectGoogleDriveRoot(state.googleDriveLetter);
     if (state.googleDriveLetter) {
@@ -722,21 +803,22 @@ void UpdateControlsFromState() {
     }
 
     const bool anyPersonalFolderUsesOneDrive = !g_state.oneDrivePersonalFolders.empty();
-    const bool canDetach = cloudnav::CanDetachOneDrive(
-        g_state.oneDrive.detected, !g_state.oneDrive.path.empty(),
-        g_state.personalFolderScanComplete, anyPersonalFolderUsesOneDrive);
-    g_oneDriveBlocked = g_state.oneDrive.detected &&
+    const auto oneDriveActions = cloudnav::AvailableClientActions(g_state.oneDriveClient,
+        !g_state.oneDrive.path.empty(), g_state.personalFolderScanComplete, anyPersonalFolderUsesOneDrive, ClientBusy());
+    const bool canDetach = g_state.oneDriveClient.detectionComplete && !ClientBusy() && cloudnav::CanDetachOneDrive(
+        g_state.oneDriveClient.installed, !g_state.oneDrive.path.empty(), g_state.personalFolderScanComplete, anyPersonalFolderUsesOneDrive);
+    g_oneDriveBlocked = g_state.oneDriveClient.installed &&
         (anyPersonalFolderUsesOneDrive || !g_state.personalFolderScanComplete ||
          g_state.oneDrive.path.empty());
     if (!g_state.oneDrivePersonalFolders.empty()) {
-        const std::wstring warning = L"⚠ OneDrive is still used by: " +
+        const std::wstring warning = L"Used by: " +
             JoinFolderNames(g_state.oneDrivePersonalFolders) +
-            L". Move these folders before disabling or uninstalling OneDrive.";
+            L". Move these folders before disabling startup or uninstalling.";
         SetWindowTextW(g_oneDriveSafety, warning.c_str());
     } else if (g_oneDriveBlocked) {
         SetWindowTextW(g_oneDriveSafety,
             L"⚠ Unable to check all personal folders; OneDrive actions are blocked.");
-    } else if (g_state.oneDrive.detected) {
+    } else if (g_state.oneDriveClient.installed) {
         SetWindowTextW(g_oneDriveSafety,
             L"None of the six managed personal folders uses OneDrive. Other folders have not been checked.");
     } else {
@@ -746,24 +828,51 @@ void UpdateControlsFromState() {
                  canDetach && g_state.oneDriveAutoStart ? TRUE : FALSE);
     EnableWindow(g_uninstallOneDrive,
                  canDetach && !g_state.oneDriveUninstaller.empty() ? TRUE : FALSE);
+    ShowWindow(g_installOneDrive, !g_state.oneDriveClient.installed ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_uninstallOneDrive, g_state.oneDriveClient.installed ? SW_SHOW : SW_HIDE);
+    EnableWindow(g_installOneDrive, oneDriveActions.install || (g_clientDownloading && g_activeClient == cloudnav::CloudClient::OneDrive));
+    SetWindowTextW(g_installOneDrive, g_clientDownloading && g_activeClient == cloudnav::CloudClient::OneDrive ? L"Cancel download" : L"Install OneDrive");
+    const std::wstring oneDriveStatus = !g_state.oneDriveClient.detectionComplete ? L"Installation status unavailable" :
+        !g_state.oneDriveClient.installed ? L"Not installed" :
+        g_state.oneDriveAutoStart ? L"Installed · Automatic startup enabled" : L"Installed · Automatic startup disabled";
+    SetWindowTextW(g_startupDetail, oneDriveStatus.c_str());
+    if (g_state.oneDriveClient.installed && g_state.oneDriveClient.uninstallExecutable.empty())
+        SetWindowTextW(g_oneDriveSafety, L"Uninstaller not found. Repair or remove the client using Windows Installed apps.");
     InvalidateRect(g_oneDriveSafety, nullptr, TRUE);
+
+    const auto googleActions = cloudnav::AvailableClientActions(g_state.googleClient, g_state.googleRootsKnown,
+        g_state.googlePersonalFolders.complete, !g_state.googlePersonalFolders.names.empty(), ClientBusy());
+    ShowWindow(g_installGoogle, !g_state.googleClient.installed ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_uninstallGoogle, g_state.googleClient.installed ? SW_SHOW : SW_HIDE);
+    EnableWindow(g_installGoogle, googleActions.install || (g_clientDownloading && g_activeClient == cloudnav::CloudClient::GoogleDrive));
+    SetWindowTextW(g_installGoogle, g_clientDownloading && g_activeClient == cloudnav::CloudClient::GoogleDrive ? L"Cancel download" : L"Install Google Drive");
+    EnableWindow(g_uninstallGoogle, googleActions.uninstall);
+    SetWindowTextW(g_googleClientDetail, !g_state.googleClient.detectionComplete ? L"Installation status unavailable" :
+        g_state.googleClient.installed ? L"Installed" : L"Not installed");
+    const std::wstring googleSafety = !g_state.googleClient.installed ? L"" :
+        !g_state.googlePersonalFolders.names.empty() ? L"Used by: " + JoinFolderNames(g_state.googlePersonalFolders.names) + L". Move these folders before uninstalling." :
+        !g_state.googleRootsKnown ? L"Folder locations unknown. Start Google Drive and choose its My Drive folder before uninstalling." :
+        !g_state.googlePersonalFolders.complete ? L"Unable to check all personal folders. Uninstall is blocked." :
+        g_state.googleClient.uninstallExecutable.empty() ? L"Uninstaller not found. Repair or remove the client using Windows Installed apps." :
+        L"None of the six managed personal folders uses the detected Google Drive locations. Other folders have not been checked.";
+    SetWindowTextW(g_googleSafety, googleSafety.c_str());
 
     SetWindowTextW(g_googleDrive, GoogleDriveLabel(g_state).c_str());
     SetWindowTextW(g_googleDriveDetail, GoogleDriveDetail(g_state).c_str());
     EnableWindow(g_googleDrive, g_state.googleDriveLetter != 0);
     Button_SetCheck(g_googleDrive, g_state.googleDriveVisible ? BST_CHECKED : BST_UNCHECKED);
     UpdateVisibilityPending();
+    for (HWND control : {g_browse, g_personalFolders, g_migrateCloud, g_refresh}) EnableWindow(control, !ClientBusy());
+    if (ClientBusy()) EnableWindow(g_apply, FALSE);
 }
 
 bool VerifyOneDriveActionGuard() {
     if (!g_demoMode) {
-        const PersonalFolderUsage usage = DetectPersonalFoldersInOneDrive(g_state.oneDrive.path);
-        g_state.oneDrivePersonalFolders = usage.names;
-        g_state.personalFolderScanComplete = usage.complete;
+        g_state = DetectState();
     }
     UpdateControlsFromState();
-    if (!cloudnav::CanDetachOneDrive(
-            g_state.oneDrive.detected, !g_state.oneDrive.path.empty(),
+    if (!g_state.oneDriveClient.detectionComplete || !cloudnav::CanDetachOneDrive(
+            g_state.oneDriveClient.installed, !g_state.oneDrive.path.empty(),
             g_state.personalFolderScanComplete,
             !g_state.oneDrivePersonalFolders.empty())) {
         const std::wstring message = !g_state.oneDrivePersonalFolders.empty()
@@ -806,7 +915,117 @@ void DisableOneDriveStartup() {
         g_state.oneDriveAutoStart);
 }
 
+bool LaunchClientProgram(cloudnav::CloudClient client, const std::wstring& executable,
+                         const std::wstring& arguments, bool uninstall) {
+    std::wstring error;
+    // Hold the file against replacement between verification and process launch.
+    HANDLE locked = CreateFileW(executable.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (locked == INVALID_HANDLE_VALUE) { ShowStatus(L"Unable to open the client setup program.", true); return false; }
+    const bool trusted = cloudnav::VerifyClientPublisher(executable, client, error);
+    SHELLEXECUTEINFOW execute = {sizeof(execute)};
+    execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    execute.hwnd = g_window;
+    execute.lpVerb = uninstall ? L"runas" : L"open";
+    execute.lpFile = executable.c_str();
+    execute.lpParameters = arguments.empty() ? nullptr : arguments.c_str();
+    execute.nShow = SW_SHOWNORMAL;
+    const bool launched = trusted && ShellExecuteExW(&execute);
+    const DWORD launchError = GetLastError();
+    CloseHandle(locked);
+    if (!launched) {
+        ShowStatus(trusted ? (launchError == ERROR_CANCELLED ? L"Setup cancelled. No installation change confirmed." :
+            L"Unable to start setup: " + FormatWindowsError(launchError)) : error, true);
+        return false;
+    }
+    g_activeClient = client;
+    g_clientProcess = execute.hProcess;
+    if (g_clientProcess) SetTimer(g_window, kClientProcessTimer, 1000, nullptr);
+    ShowStatus(std::wstring(cloudnav::ClientName(client)) + (uninstall ? L" uninstaller opened. Follow its instructions." : L" installer opened. Follow its instructions, then sign in."));
+    UpdateControlsFromState();
+    return true;
+}
+
+void InstallClient(cloudnav::CloudClient client) {
+    if (g_clientDownloading && client == g_activeClient) {
+        g_cancelClientDownload = true;
+        ShowStatus(L"Cancelling download…");
+        return;
+    }
+    if (ClientBusy()) return;
+    if (!g_demoMode) g_state = DetectState();
+    const auto& info = client == cloudnav::CloudClient::OneDrive ? g_state.oneDriveClient : g_state.googleClient;
+    UpdateControlsFromState();
+    if (!cloudnav::AvailableClientActions(info, false, false, false, false).install) {
+        ShowStatus(info.installed ? L"This client is already installed." : L"Unable to determine whether the client is installed.", true);
+        return;
+    }
+    const std::wstring name = cloudnav::ClientName(client);
+    if (!cloudnav::ui::Confirm(g_window, (L"CloudNav — install " + name).c_str(), (L"Install " + name + L" on this PC?").c_str(),
+        L"CloudNav will download the official installer and verify its publisher signature. Follow the setup instructions; Windows may request administrator approval. Sign in to your account after installation.",
+        (L"Install " + name).c_str())) { ShowStatus(name + L" installation cancelled."); return; }
+    if (!g_demoMode) {
+        const auto current = cloudnav::DetectClientInstallation(client);
+        if (current.installed || !current.detectionComplete) { g_state = DetectState(); UpdateControlsFromState(); ShowStatus(L"Client status changed. Review it before installing.", true); return; }
+    }
+    if (g_demoMode) {
+        if (g_demoClientFailure) { ShowStatus(L"Test mode: installer download failed. Nothing was launched.", true); return; }
+        auto& simulated = client == cloudnav::CloudClient::OneDrive ? g_state.oneDriveClient : g_state.googleClient;
+        simulated = {true, true, L"C:\\Example\\setup.exe", L"/uninstall"};
+        UpdateControlsFromState();
+        ShowStatus(L"Test mode: " + name + L" installation simulated.");
+        return;
+    }
+    g_activeClient = client;
+    g_clientDownloading = true;
+    g_cancelClientDownload = false;
+    UpdateControlsFromState();
+    ShowStatus(L"Downloading the official " + name + L" installer…");
+    try {
+        g_clientDownloadThread = std::thread([client, owner = g_window] {
+            auto result = std::make_unique<ClientDownloadResult>();
+            try { cloudnav::DownloadClientInstaller(client, g_cancelClientDownload, result->path, result->error); }
+            catch (...) { result->error = L"Unable to prepare the installer."; cloudnav::RemoveClientDownload(result->path); result->path.clear(); }
+            if (PostMessageW(owner, WM_CLIENT_DOWNLOAD, 0, reinterpret_cast<LPARAM>(result.get()))) result.release();
+            else cloudnav::RemoveClientDownload(result->path);
+        });
+    } catch (...) {
+        g_clientDownloading = false;
+        UpdateControlsFromState();
+        ShowStatus(L"Unable to start the installer download.", true);
+    }
+}
+
+bool VerifyGoogleActionGuard() {
+    if (!g_demoMode) g_state = DetectState();
+    UpdateControlsFromState();
+    const auto actions = cloudnav::AvailableClientActions(g_state.googleClient, g_state.googleRootsKnown,
+        g_state.googlePersonalFolders.complete, !g_state.googlePersonalFolders.names.empty(), ClientBusy());
+    if (actions.uninstall) return true;
+    MessageBoxW(g_window, L"Google Drive removal is blocked. Review the client status and move any personal folders that still use Google Drive before trying again.",
+        L"CloudNav — Google Drive", MB_OK | MB_ICONWARNING);
+    ShowStatus(L"Google Drive uninstall blocked to protect personal folders.", true);
+    return false;
+}
+
+void UninstallGoogleDrive() {
+    if (ClientBusy() || !VerifyGoogleActionGuard()) return;
+    if (!cloudnav::ui::Confirm(g_window, L"CloudNav — uninstall Google Drive", L"Uninstall Google Drive from this PC?",
+        L"The six managed personal folders do not use the detected Google Drive locations. Other synced or backed-up folders have not been checked.\n\n"
+        L"Make sure Google Drive has finished syncing. Streamed files will no longer be available through its virtual drive. Cloud files remain accessible at drive.google.com.",
+        L"Uninstall Google Drive", true)) { ShowStatus(L"Google Drive uninstall cancelled."); return; }
+    if (!VerifyGoogleActionGuard()) return;
+    if (g_demoMode) {
+        g_state.googleClient = {};
+        UpdateControlsFromState();
+        ShowStatus(L"Test mode: Google Drive uninstall simulated.");
+        return;
+    }
+    LaunchClientProgram(cloudnav::CloudClient::GoogleDrive, g_state.googleClient.uninstallExecutable,
+                        g_state.googleClient.uninstallArguments, true);
+}
+
 void UninstallOneDrive() {
+    if (ClientBusy()) return;
     if (!VerifyOneDriveActionGuard()) {
         return;
     }
@@ -828,25 +1047,15 @@ void UninstallOneDrive() {
         return;
     }
     if (g_demoMode) {
+        g_state.oneDriveClient = {};
+        g_state.oneDriveAutoStart = false;
+        UpdateControlsFromState();
         ShowStatus(L"Test mode: OneDrive uninstall simulated.");
         return;
     }
-    SHELLEXECUTEINFOW execute = {sizeof(execute)};
-    execute.fMask = SEE_MASK_NOCLOSEPROCESS;
-    execute.hwnd = g_window;
-    execute.lpVerb = L"runas";
-    execute.lpFile = g_state.oneDriveUninstaller.c_str();
-    execute.lpParameters = L"/uninstall";
-    execute.nShow = SW_SHOWNORMAL;
-    if (!ShellExecuteExW(&execute)) {
-        ShowStatus(L"Unable to start OneDrive uninstall: " +
-                   FormatWindowsError(GetLastError()), true);
-        return;
-    }
-    if (execute.hProcess) {
-        CloseHandle(execute.hProcess);
-    }
-    ShowStatus(L"OneDrive uninstall started. Refresh the status afterward.");
+    if (!VerifyOneDriveActionGuard()) return;
+    LaunchClientProgram(cloudnav::CloudClient::OneDrive, g_state.oneDriveClient.uninstallExecutable,
+                        g_state.oneDriveClient.uninstallArguments, true);
 }
 
 std::wstring PickFolder(HWND owner) {
@@ -1295,32 +1504,38 @@ void UpdateVisibilityPending() {
 }
 
 void LayoutMainControls(UINT dpi) {
-    MoveControl(g_title, 28, 18, 684, 36, dpi);
-    MoveControl(g_subtitle, 28, 58, 684, 24, dpi);
-    MoveControl(g_sectionTitle, 28, 98, 684, 22, dpi);
-    MoveControl(g_myDrive, 56, 128, 540, 25, dpi);
-    MoveControl(g_myDriveDetail, 78, 154, 520, 20, dpi);
-    MoveControl(g_browse, 614, 128, 98, 32, dpi);
-    MoveControl(g_oneDrive, 56, 180, 656, 25, dpi);
-    MoveControl(g_oneDriveDetail, 78, 206, 634, 20, dpi);
-    MoveControl(g_googleDrive, 56, 232, 656, 25, dpi);
-    MoveControl(g_googleDriveDetail, 78, 258, 634, 20, dpi);
-    for (int i = 0; i < 3; ++i) MoveControl(g_providerIcons[i], 28, 130 + i * 52, 22, 22, dpi);
-    MoveControl(g_explanation, 28, 297, 476, 34, dpi);
-    MoveControl(g_apply, 520, 293, 192, 34, dpi);
-    MoveControl(g_foldersSection, 28, 352, 350, 22, dpi);
-    MoveControl(g_personalFoldersDetail, 28, 378, 400, 18, dpi);
-    MoveControl(g_personalFolders, 456, 357, 256, 34, dpi);
-    MoveControl(g_migrationSection, 28, 418, 400, 22, dpi);
-    MoveControl(g_migrateCloudDetail, 28, 444, 410, 26, dpi);
-    MoveControl(g_migrateCloud, 456, 425, 256, 34, dpi);
-    MoveControl(g_oneDriveSection, 28, 496, 344, 22, dpi);
-    MoveControl(g_startupDetail, 388, 498, 324, 20, dpi);
-    MoveControl(g_oneDriveSafety, 28, 522, 684, 30, dpi);
-    MoveControl(g_disableOneDriveStartup, 28, 562, 246, 32, dpi);
-    MoveControl(g_uninstallOneDrive, 286, 562, 166, 32, dpi);
-    MoveControl(g_status, 28, 615, 570, 28, dpi);
-    MoveControl(g_refresh, 614, 608, 98, 32, dpi);
+    MoveControl(g_title, 28, 16, 684, 32, dpi);
+    MoveControl(g_subtitle, 28, 50, 684, 24, dpi);
+    MoveControl(g_sectionTitle, 28, 86, 684, 22, dpi);
+    MoveControl(g_myDrive, 56, 112, 540, 25, dpi);
+    MoveControl(g_myDriveDetail, 78, 138, 520, 20, dpi);
+    MoveControl(g_browse, 614, 112, 98, 32, dpi);
+    MoveControl(g_oneDrive, 56, 160, 656, 25, dpi);
+    MoveControl(g_oneDriveDetail, 78, 186, 634, 20, dpi);
+    MoveControl(g_googleDrive, 56, 208, 656, 25, dpi);
+    MoveControl(g_googleDriveDetail, 78, 234, 634, 20, dpi);
+    for (int i = 0; i < 3; ++i) MoveControl(g_providerIcons[i], 28, 114 + i * 48, 22, 22, dpi);
+    MoveControl(g_explanation, 28, 268, 476, 34, dpi);
+    MoveControl(g_apply, 520, 264, 192, 34, dpi);
+    MoveControl(g_foldersSection, 28, 314, 350, 22, dpi);
+    MoveControl(g_personalFoldersDetail, 28, 338, 400, 18, dpi);
+    MoveControl(g_personalFolders, 456, 318, 256, 34, dpi);
+    MoveControl(g_migrationSection, 28, 370, 400, 22, dpi);
+    MoveControl(g_migrateCloudDetail, 28, 394, 410, 26, dpi);
+    MoveControl(g_migrateCloud, 456, 374, 256, 34, dpi);
+    MoveControl(g_oneDriveSection, 28, 448, 324, 22, dpi);
+    MoveControl(g_startupDetail, 28, 476, 324, 24, dpi);
+    MoveControl(g_oneDriveSafety, 28, 504, 324, 56, dpi);
+    MoveControl(g_installOneDrive, 28, 568, 324, 32, dpi);
+    MoveControl(g_uninstallOneDrive, 28, 568, 324, 32, dpi);
+    MoveControl(g_disableOneDriveStartup, 28, 606, 324, 30, dpi);
+    MoveControl(g_googleSection, 388, 448, 324, 22, dpi);
+    MoveControl(g_googleClientDetail, 388, 476, 324, 24, dpi);
+    MoveControl(g_googleSafety, 388, 504, 324, 56, dpi);
+    MoveControl(g_installGoogle, 388, 568, 324, 32, dpi);
+    MoveControl(g_uninstallGoogle, 388, 568, 324, 32, dpi);
+    MoveControl(g_status, 28, 652, 570, 34, dpi);
+    MoveControl(g_refresh, 614, 648, 98, 32, dpi);
 }
 
 void CreateInterface(HWND window) {
@@ -1398,6 +1613,22 @@ void CreateInterface(HWND window) {
     g_migrationSection = CreateLabel(window, L"Cloud sync", g_bodyBoldFont);
     g_oneDriveSection = CreateLabel(window, L"OneDrive client settings", g_bodyBoldFont);
     g_startupDetail = CreateLabel(window, L"", g_smallFont);
+    SetWindowLongPtrW(g_startupDetail, GWLP_ID, 1017);
+    g_googleSection = CreateLabel(window, L"Google Drive client settings", g_bodyBoldFont);
+    g_googleClientDetail = CreateLabel(window, L"", g_smallFont);
+    SetWindowLongPtrW(g_googleClientDetail, GWLP_ID, 1018);
+    g_googleSafety = CreateLabel(window, L"", g_smallFont);
+    SetWindowLongPtrW(g_googleSafety, GWLP_ID, 1019);
+    SetWindowLongPtrW(g_status, GWLP_ID, 1020);
+    const auto clientButton = [&](int id, const wchar_t* text) {
+        HWND button = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_instance, nullptr);
+        SetControlFont(button, g_bodyFont);
+        return button;
+    };
+    g_installOneDrive = clientButton(IDC_INSTALL_ONEDRIVE, L"Install OneDrive");
+    g_installGoogle = clientButton(IDC_INSTALL_GOOGLE, L"Install Google Drive");
+    g_uninstallGoogle = clientButton(IDC_UNINSTALL_GOOGLE, L"Uninstall Google Drive");
     g_providerImages.Load(g_instance);
     for (int i = 0; i < 3; ++i) {
         g_providerIcons[i] = CreateWindowExW(0, L"STATIC", L"",
@@ -1409,6 +1640,37 @@ void CreateInterface(HWND window) {
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_CLIENT_DOWNLOAD: {
+        std::unique_ptr<ClientDownloadResult> result(reinterpret_cast<ClientDownloadResult*>(lParam));
+        if (g_clientDownloadThread.joinable()) g_clientDownloadThread.join();
+        g_clientDownloading = false;
+        if (g_closeAfterDownload || g_cancelClientDownload) {
+            cloudnav::RemoveClientDownload(result->path);
+            UpdateControlsFromState();
+            ShowStatus(L"Download cancelled. Nothing was launched.");
+            if (g_closeAfterDownload) PostMessageW(window, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        UpdateControlsFromState();
+        if (!result->error.empty() || result->path.empty()) { ShowStatus(result->error.empty() ? L"Installer download failed." : result->error, true); return 0; }
+        if (LaunchClientProgram(g_activeClient, result->path, L"", false)) g_downloadedInstaller = result->path;
+        else cloudnav::RemoveClientDownload(result->path);
+        return 0;
+    }
+    case WM_TIMER:
+        if (wParam == kClientProcessTimer && g_clientProcess && WaitForSingleObject(g_clientProcess, 0) == WAIT_OBJECT_0) {
+            DWORD exitCode = 0; GetExitCodeProcess(g_clientProcess, &exitCode);
+            CloseHandle(g_clientProcess); g_clientProcess = nullptr;
+            KillTimer(window, kClientProcessTimer);
+            cloudnav::RemoveClientDownload(g_downloadedInstaller); g_downloadedInstaller.clear();
+            g_state = DetectState(); UpdateControlsFromState();
+            const auto& client = g_activeClient == cloudnav::CloudClient::OneDrive ? g_state.oneDriveClient : g_state.googleClient;
+            ShowStatus(L"Setup exited (code " + std::to_wstring(exitCode) + L"). " + cloudnav::ClientName(g_activeClient) +
+                (!client.detectionComplete ? L" status unavailable. Refresh after setup finishes." : client.installed ?
+                    L" is detected as installed. Refresh if setup is still open." : L" is not detected as installed. Refresh if setup is still open."), exitCode != 0);
+            return 0;
+        }
+        break;
     case WM_CREATE:
         g_uiDpi = GetDpiForWindow(window);
         RecreateUiFonts(g_uiDpi);
@@ -1420,7 +1682,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     case WM_COMMAND:
+        if (ClientBusy() && LOWORD(wParam) != IDC_INSTALL_ONEDRIVE && LOWORD(wParam) != IDC_INSTALL_GOOGLE) return 0;
         switch (LOWORD(wParam)) {
+        case IDC_INSTALL_ONEDRIVE: InstallClient(cloudnav::CloudClient::OneDrive); return 0;
+        case IDC_INSTALL_GOOGLE: InstallClient(cloudnav::CloudClient::GoogleDrive); return 0;
+        case IDC_UNINSTALL_GOOGLE: UninstallGoogleDrive(); return 0;
         case IDC_BROWSE: {
             const std::wstring selected = PickFolder(window);
             if (!selected.empty()) {
@@ -1536,6 +1802,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SaveWindowPosition(window);
         return 0;
     case WM_CLOSE:
+        if (g_clientDownloading) {
+            g_closeAfterDownload = true;
+            g_cancelClientDownload = true;
+            ShowStatus(L"Cancelling download before closing…");
+            return 0;
+        }
         SaveWindowPosition(window);
         DestroyWindow(window);
         return 0;
@@ -1544,7 +1816,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         HDC dc = BeginPaint(window, &paint);
         HPEN linePen = CreatePen(PS_SOLID, 1, RGB(226, 232, 240));
         HGDIOBJ oldPen = SelectObject(dc, linePen);
-        for (int y : {338, 406, 482}) {
+        for (int y : {304, 360, 432}) {
             MoveToEx(dc, ScaleDip(28, g_uiDpi), ScaleDip(y, g_uiDpi), nullptr);
             LineTo(dc, ScaleDip(712, g_uiDpi), ScaleDip(y, g_uiDpi));
         }
@@ -1554,6 +1826,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_DESTROY:
+        if (g_clientProcess) { CloseHandle(g_clientProcess); g_clientProcess = nullptr; }
         PostQuitMessage(0);
         return 0;
     default:
@@ -1587,6 +1860,10 @@ void RecreateUiFonts(UINT dpi) {
     SetControlFont(g_migrationSection, g_bodyBoldFont);
     SetControlFont(g_oneDriveSection, g_bodyBoldFont);
     SetControlFont(g_startupDetail, g_smallFont);
+    SetControlFont(g_googleSection, g_bodyBoldFont);
+    SetControlFont(g_googleClientDetail, g_smallFont);
+    SetControlFont(g_googleSafety, g_smallFont);
+    for (HWND button : {g_installOneDrive, g_installGoogle, g_uninstallGoogle}) SetControlFont(button, g_bodyFont);
     SetControlFont(g_migrateCloud, g_bodyBoldFont);
     SetControlFont(g_migrateCloudDetail, g_smallFont);
     SetControlFont(g_myDrive, g_bodyBoldFont);
@@ -1707,6 +1984,11 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
         } else if (EqualsInsensitive(arguments[index], L"--demo-safe-onedrive")) {
             g_demoMode = true;
             g_demoSafeOneDriveActions = true;
+        } else if (EqualsInsensitive(arguments[index], L"--demo-clients-missing") || EqualsInsensitive(arguments[index], L"--demo-client-failure")) {
+            g_demoMode = true; g_demoClientsMissing = true; g_demoSafeOneDriveActions = true;
+            g_demoClientFailure = EqualsInsensitive(arguments[index], L"--demo-client-failure");
+        } else if (EqualsInsensitive(arguments[index], L"--demo-clients-unknown-roots")) {
+            g_demoMode = true; g_demoSafeOneDriveActions = true; g_demoClientUnknownRoots = true;
         } else if (EqualsInsensitive(arguments[index], L"--demo-migration")) {
             g_demoMode = true;
             g_demoMigration = true;
@@ -1769,6 +2051,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
             DispatchMessageW(&message);
         }
     }
+
+    g_cancelClientDownload = true;
+    if (g_clientDownloadThread.joinable()) g_clientDownloadThread.join();
 
     DeleteObject(g_titleFont);
     DeleteObject(g_bodyFont);

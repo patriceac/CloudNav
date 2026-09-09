@@ -10,7 +10,7 @@ CloudNav is a native, portable Windows 11 utility that brings together two setti
 
 One standalone `.exe`, with no installer or additional application runtime.
 
-The shared cloud analysis and synchronization modes described below are available in source builds. They are not included in the v1.2.2 release linked above.
+The shared cloud analysis, synchronization modes, English interface, and client installation controls described below are available in source builds. They are not included in the v1.2.2 release linked above.
 
 ## Features
 
@@ -20,6 +20,7 @@ The shared cloud analysis and synchronization modes described below are availabl
 - redirect Desktop, Documents, Pictures, Downloads, Music, and Videos to their local location, OneDrive, Google Drive, or a custom folder;
 - identify providers consistently across Explorer visibility, personal folders, and migration;
 - disable OneDrive automatic startup or launch its uninstaller when no managed personal folder still depends on OneDrive;
+- install OneDrive or Google Drive through their official setup programs, and uninstall Google Drive with personal-folder checks;
 - analyze OneDrive and Google Drive together, then choose either one-way copy direction or a manual bidirectional sync without repeating the comparison;
 - preview per-file actions, preserve both conflicting versions, archive overwritten/deleted files, and recover interrupted transfers through a reviewed merge;
 - inspect complete current/proposed paths and collateral folder changes before an action-specific final confirmation;
@@ -35,6 +36,16 @@ The checkboxes in the main window only control visibility in the File Explorer n
 Personal-folder changes are shown in a separate review before anything is applied. Current and proposed paths can be selected and copied in full. CloudNav validates destinations, blocks nested paths, and attempts to restore previous locations if a redirect-only operation fails. Copy/move failures report any steps that already completed.
 
 OneDrive client actions stay disabled while Desktop, Documents, Pictures, Downloads, Music, or Videos points anywhere inside the detected OneDrive root. CloudNav names the folders that must be moved and checks their locations again immediately before disabling automatic startup or launching the uninstaller. This check covers those six managed personal folders only, not every other folder that OneDrive may synchronize. Before uninstalling, CloudNav asks the user to verify that OneDrive is up to date and warns that online-only files will remain accessible through OneDrive.com.
+
+## Install or uninstall cloud clients
+
+The main window shows separate **OneDrive client settings** and **Google Drive client settings** sections. Installation detection is independent of account connection and mounted-drive visibility. Each section offers **Install** when its client is absent, or **Uninstall** when it is installed. Unknown installation status disables actions; a missing uninstaller is reported rather than treated as an absent application.
+
+Install downloads the setup program from the links published by [Microsoft](https://support.microsoft.com/en-us/onedrive/choose-between-the-64-bit-32-bit-and-arm-version-of-onedrive) or [Google](https://support.google.com/drive/answer/10838124?hl=en), checks its Authenticode signature and publisher, and opens the normal vendor setup interface. Downloads run in the background and can be cancelled. Follow the installer instructions and sign in afterward. Windows may request elevation. CloudNav refreshes detection when the launched process exits; use **Refresh** if a vendor bootstrapper leaves another setup window running. Exiting setup is not itself reported as successful installation.
+
+Google Drive removal checks the same six personal folders against the detected mounted Google Drive volumes and selected My Drive path, and checks again after confirmation. Unknown roots or unreadable folder locations block removal. Other synced folders, Google Photos backups, and other users are outside this check. Complete synchronization before uninstalling; streamed files will stop being available through the virtual drive, while cloud files remain on the provider's website. Client management does not delete cloud data or change the separate rclone account connections used by CloudNav.
+
+Uninstall uses the registered vendor executable, never a shell command or guessed version folder. Both setup and uninstall programs must have the expected executable name and a trusted vendor signature. The signature check uses the local Windows trust store and cached trust information; it does not perform an online revocation check.
 
 **Analyze** reads an inventory from each account and compares their union. The same comparison supports **OneDrive → Google Drive**, **Google Drive → OneDrive**, and **OneDrive ↔ Google Drive**. Changing the direction only rebuilds the action plan in memory. The report distinguishes OneDrive-only, Google-Drive-only, different, identical, and blocked files, with a proposed action for each path.
 
@@ -93,7 +104,8 @@ The build downloads the official pinned rclone archive, verifies its SHA-256 che
 - `build\Release\CloudNav.exe`;
 - `build\Release\CloudNavTests.exe`;
 - `build\Release\CloudNavWindowPositionTests.exe`;
-- `build\Release\CloudNavUiTests.exe`.
+- `build\Release\CloudNavUiTests.exe`;
+- `build\Release\CloudNavClientTests.exe`.
 
 The build script runs the logic tests automatically. UI and integration scenarios for the isolated Windows test harness are available in `tests/`.
 
@@ -109,8 +121,12 @@ With the Codex Hyper-V SYSTEM broker installed, run the repeatable offline relea
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Migration,MigrationResume,MigrationEngine
 # Check the KPI summary, category filters, and partial/stale report handling:
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario MigrationReport,MigrationEngine
+# Check client buttons, confirmations, folder guards, and installation detection:
+.\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Clients,ClientRuntime
 ```
 
 The runner keys checkpoints to the exact executable, test driver, action file, and runner hashes. It checks declared assertions, screenshot presence, process cleanup, VM shutdown, and disposable payload deletion before saving a pass. Screenshots still require visual review. The engine test exercises the embedded rclone against synthetic local directories with no cloud credentials: read-only analysis, both copy directions, first merge, conflict preservation, archived deletion, stale-plan rejection, and interrupted recovery. UI tests check switching modes without discarding the comparison. Offline fixtures and demo operations do not qualify real OAuth, provider-specific cloud behavior, cloud performance, or actual OneDrive uninstallation.
+
+Client tests use disposable registry/filesystem fixtures to cover unquoted uninstaller paths, installed clients without connected accounts, missing uninstallers, and rejection of unsigned or unexpected programs. UI client installation/removal is simulated. The optional `CloudNavClientTests.exe <result.json> --downloads` mode downloads both official installers, validates their publisher signatures, and deletes the downloads without executing them. Run it only through the isolated harness with its approved `InternetOnly` profile; it is deliberately excluded from the offline release suite.
 
 The JSON parser is vendored from nlohmann/json v3.12.0 under the MIT License; see [`third_party/nlohmann/LICENSE.MIT`](third_party/nlohmann/LICENSE.MIT).

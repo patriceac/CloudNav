@@ -6,9 +6,11 @@
 #include "../src/migration_logic.h"
 #include "../src/migration_report.h"
 #include "SyncLogicTests.h"
+#include "ClientLogicTests.h"
 
 int wmain() {
     RunSyncLogicTests();
+    TestClientManagementLogic();
     using cloudnav::DriveBit;
     using cloudnav::IsDriveVisible;
     using cloudnav::CloudRelativePath;
