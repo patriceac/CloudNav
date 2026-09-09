@@ -99,6 +99,7 @@ struct DialogContext {
     ui::DialogTheme theme;
     unsigned statisticsUpdates = 0;
     unsigned inventoryReads = 0;
+    unsigned listingProgressUpdates = 0;
     ui::ProviderImages images;
     Task task = Task::None;
     std::wstring demoResultPath;
@@ -253,7 +254,9 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     LeaveCriticalSection(&context.processLock);
 
     context.statisticsUpdates = 0;
-    PostProgress(context, -1, stage, stage == MigrationStage::Copying
+    const bool listingOneDrive = arguments.size() > 1 && arguments[1] == context.oneDrivePath;
+    const ULONGLONG listingStarted = GetTickCount64();
+    PostProgress(context, -1, stage, captured ? SyncListingProgress(listingOneDrive, 0, 0) : stage == MigrationStage::Copying
         ? L"Preparing copy — opening selected files…"
         : L"Reading accounts — waiting for initial statistics…");
     std::string pending;
@@ -263,7 +266,24 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     DWORD read = 0;
     HANDLE log = captured ? INVALID_HANDLE_VALUE : CreateFileW(context.logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    while (ReadFile(readPipe, buffer, sizeof(buffer), &read, nullptr) && read) {
+    for (;;) {
+        // A blocking pipe read freezes progress during provider enumeration.
+        // Poll availability so even a silent listing gets an honest heartbeat.
+        const auto now = GetTickCount64();
+        if (captured && now - lastInventoryUpdate >= 1000) {
+            PostProgress(context, -1, stage, SyncListingProgress(listingOneDrive, receivedFiles, (now - listingStarted) / 1000));
+            ++context.listingProgressUpdates;
+            lastInventoryUpdate = now;
+        }
+        DWORD available = 0;
+        if (!PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr)) break;
+        if (!available) {
+            if (WaitForSingleObject(process.hProcess, 100) == WAIT_OBJECT_0) {
+                // Drain final bytes written just before the process exited.
+                if (!PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr) || !available) break;
+            } else continue;
+        }
+        if (!ReadFile(readPipe, buffer, (std::min)(available, static_cast<DWORD>(sizeof(buffer))), &read, nullptr) || !read) break;
         if (captured) captured->append(buffer, read);
         if (log != INVALID_HANDLE_VALUE) {
             DWORD logged = 0;
@@ -279,12 +299,6 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
                 while (!rowText.empty() && (rowText.back() == ',' || rowText.back() == '\r')) rowText.pop_back();
                 const auto row = SyncJson::parse(rowText, nullptr, false);
                 if (row.is_object() && row.contains("Path") && row.contains("IsDir") && row["IsDir"] == false) ++receivedFiles;
-                const auto now = GetTickCount64();
-                if (now - lastInventoryUpdate >= 1000) {
-                    PostProgress(context, -1, stage, std::wstring(arguments.size() > 1 && arguments[1] == context.oneDrivePath
-                        ? L"OneDrive : " : L"Google Drive : ") + std::to_wstring(receivedFiles) + L" files read — analyzing…");
-                    lastInventoryUpdate = now;
-                }
             }
             if (report) report->Log(line);
             MigrationStatistics stats;
@@ -1001,6 +1015,22 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
         context.configPath = root + L"\\isolated-rclone.conf";
         // Only synthetic local paths and an empty config: no account credentials
         // or cloud requests are used by this integration test.
+        if (passed) {
+            step = "silentListingProgress";
+            const auto fixture = root + L"\\delayed-listing.ps1";
+            passed = WriteEvidence(fixture, "Start-Sleep -Seconds 3\r\nWrite-Output '['\r\n"
+                "Write-Output '{\"Path\":\"sample.txt\",\"Size\":1,\"IsDir\":false,\"ModTime\":\"2026-09-09T10:00:00Z\"}'\r\nWrite-Output ']'\r\n");
+            wchar_t systemDirectory[MAX_PATH] = {};
+            passed = passed && GetSystemDirectoryW(systemDirectory, MAX_PATH) != 0;
+            context.runtimePath = std::wstring(systemDirectory) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
+            const auto updates = context.listingProgressUpdates;
+            std::string output, parseError;
+            SyncInventory inventory;
+            passed = passed && RunProcess(context, {L"-NoProfile", L"-NonInteractive", L"-ExecutionPolicy", L"Bypass", L"-File", fixture}, MigrationStage::Analyzing,
+                error, nullptr, nullptr, &output) && context.listingProgressUpdates >= updates + 2 &&
+                ReadSyncInventory(output, inventory, parseError) && inventory.size() == 1;
+            context.runtimePath = runtime;
+        }
         const auto read = [](const std::filesystem::path& path) {
             std::ifstream file(path, std::ios::binary);
             if (!file) throw std::runtime_error("fixture read failed");
@@ -1146,7 +1176,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();

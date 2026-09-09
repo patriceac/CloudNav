@@ -49,6 +49,8 @@ Uninstall uses the registered vendor executable, never a shell command or guesse
 
 **Analyze** reads an inventory from each account and compares their union. The same comparison supports **OneDrive → Google Drive**, **Google Drive → OneDrive**, and **OneDrive ↔ Google Drive**. Changing the direction only rebuilds the action plan in memory. The report distinguishes OneDrive-only, Google-Drive-only, different, identical, and blocked files, with a proposed action for each path.
 
+During analysis, the active account and elapsed time update once per second, including while the engine is silent. The file counter reports only listing entries received so far; the total and percentage remain unknown until enumeration completes.
+
 The selected direction is saved immediately for the current Windows user and restored when the assistant or application is reopened. A missing or invalid preference defaults to OneDrive → Google Drive. Restoring a direction does not start a transfer or bypass analysis and review.
 
 One-way modes copy the selected source's new and different files with `rclone copy`, preserving destination-only files. Bidirectional mode compares both inventories against the last successful two-way baseline. Without a baseline it merges files without propagating deletions. If both versions changed, both accounts retain the OneDrive version under the original name and the Google version under a unique `.conflict-Google-…` sibling name. When an edit conflicts with a deletion, the edited version is restored to the other account.

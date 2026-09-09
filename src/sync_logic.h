@@ -20,6 +20,13 @@ inline SyncMode SyncModeFromSetting(std::uint32_t value) {
 }
 enum class SyncAction { None, ToGoogle, ToOneDrive, DeleteGoogle, DeleteOneDrive, KeepBoth, Blocked };
 
+inline std::wstring SyncListingProgress(bool oneDrive, size_t files, std::uint64_t elapsedSeconds) {
+    return std::wstring(oneDrive ? L"OneDrive" : L"Google Drive") + L" — " +
+        (files ? std::to_wstring(files) + L" files received" : L"waiting for listing data") +
+        L" — elapsed " + std::to_wstring(elapsedSeconds / 60) + L"m " +
+        std::to_wstring(elapsedSeconds % 60) + L"s";
+}
+
 inline std::string SyncBindingMaterial(const std::string& config) {
     std::map<std::string, std::map<std::string, std::string>> remotes;
     std::istringstream input(config);

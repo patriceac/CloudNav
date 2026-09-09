@@ -3,6 +3,8 @@
 
 inline void RunSyncLogicTests() {
     using namespace cloudnav;
+    assert(SyncListingProgress(true, 0, 0) == L"OneDrive — waiting for listing data — elapsed 0m 0s");
+    assert(SyncListingProgress(false, 12, 65) == L"Google Drive — 12 files received — elapsed 1m 5s");
     assert(SyncModeFromSetting(0) == SyncMode::ToGoogle);
     assert(SyncModeFromSetting(1) == SyncMode::ToOneDrive);
     assert(SyncModeFromSetting(2) == SyncMode::Bidirectional);
