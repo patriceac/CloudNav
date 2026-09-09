@@ -3,6 +3,11 @@
 
 inline void RunSyncLogicTests() {
     using namespace cloudnav;
+    const std::string configBefore = "# keep\n[cloudnav-onedrive]\ntoken = oldOD\n[unrelated]\nx = keep\n[cloudnav-gdrive]\ntoken = oldGD\n";
+    auto merged = MergeSyncAccountConfig(configBefore, "[cloudnav-onedrive]\ntoken = newOD\n[cloudnav-gdrive]\ntoken = staleGD\n", "cloudnav-onedrive");
+    merged = MergeSyncAccountConfig(merged, "[cloudnav-onedrive]\ntoken = staleOD\n[cloudnav-gdrive]\ntoken = newGD", "cloudnav-gdrive");
+    assert(merged == "# keep\n[cloudnav-onedrive]\ntoken = newOD\n[unrelated]\nx = keep\n[cloudnav-gdrive]\ntoken = newGD\n");
+    assert(MergeSyncAccountConfig(configBefore, "", "cloudnav-onedrive") == configBefore);
     assert(SyncListingProgress(true, 0, 0) == L"OneDrive — waiting for listing data — elapsed 0m 0s");
     assert(SyncListingProgress(false, 12, 65) == L"Google Drive — 12 files received — elapsed 1m 5s");
     assert(SyncModeFromSetting(0) == SyncMode::ToGoogle);

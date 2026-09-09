@@ -20,6 +20,33 @@ inline SyncMode SyncModeFromSetting(std::uint32_t value) {
 }
 enum class SyncAction { None, ToGoogle, ToOneDrive, DeleteGoogle, DeleteOneDrive, KeepBoth, Blocked };
 
+inline std::pair<size_t, size_t> SyncConfigSection(const std::string& text, const std::string& remote) {
+    size_t start = std::string::npos;
+    for (size_t pos = 0; pos < text.size();) {
+        auto end = text.find('\n', pos);
+        if (end == std::string::npos) end = text.size();
+        auto line = text.substr(pos, end - pos);
+        const auto first = line.find_first_not_of(" \t\r");
+        const auto last = line.find_last_not_of(" \t\r");
+        if (first != std::string::npos) line = line.substr(first, last - first + 1);
+        if (!line.empty() && line.front() == '[' && line.back() == ']') {
+            if (start != std::string::npos) return {start, pos - start};
+            if (line == "[" + remote + "]") start = pos;
+        }
+        pos = end == text.size() ? end : end + 1;
+    }
+    return {start, start == std::string::npos ? 0 : text.size() - start};
+}
+
+inline std::string MergeSyncAccountConfig(std::string current, const std::string& updated, const std::string& remote) {
+    const auto from = SyncConfigSection(updated, remote), to = SyncConfigSection(current, remote);
+    if (from.first == std::string::npos || to.first == std::string::npos) return current;
+    auto section = updated.substr(from.first, from.second);
+    if (!section.empty() && section.back() != '\n') section += '\n';
+    current.replace(to.first, to.second, section);
+    return current;
+}
+
 inline std::wstring SyncListingProgress(bool oneDrive, size_t files, std::uint64_t elapsedSeconds) {
     return std::wstring(oneDrive ? L"OneDrive" : L"Google Drive") + L" — " +
         (files ? std::to_wstring(files) + L" files received" : L"waiting for listing data") +
