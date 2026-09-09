@@ -281,8 +281,12 @@ struct SyncAnalysis {
             const bool same = a && b && SyncEquivalent(od->second, gd->second);
             SyncRow row{path, same ? '=' : a && b ? '*' : a ? '+' : '-', SyncAction::None, 0};
             if (!complete || collisions.count(path)) { row.action = SyncAction::Blocked; row.category = '!'; }
-            else if (mode == SyncMode::ToGoogle) { if (a && !same) row.action = SyncAction::ToGoogle; }
-            else if (mode == SyncMode::ToOneDrive) { if (b && !same) row.action = SyncAction::ToOneDrive; }
+            else if (mode == SyncMode::ToGoogle) {
+                if (a && (!b || (!same && od->second.time.substr(0, 19) > gd->second.time.substr(0, 19)))) row.action = SyncAction::ToGoogle;
+            }
+            else if (mode == SyncMode::ToOneDrive) {
+                if (b && (!a || (!same && gd->second.time.substr(0, 19) > od->second.time.substr(0, 19)))) row.action = SyncAction::ToOneDrive;
+            }
             else if (!same) {
                 const auto oldA = previousOneDrive.find(path), oldB = previousGoogle.find(path);
                 const bool hadA = hasBaseline && oldA != previousOneDrive.end();

@@ -41,6 +41,19 @@ inline void RunSyncLogicTests() {
     assert(analysis.Plan(SyncMode::Bidirectional)[1].action == SyncAction::ToOneDrive);
     assert(analysis.oneDrive == before); // changing modes cannot mutate inventories
     analysis.google = {{"a.txt", changed}};
+    assert(analysis.Plan(SyncMode::ToGoogle)[0].action == SyncAction::None);
+    assert(analysis.Plan(SyncMode::ToOneDrive)[0].action == SyncAction::ToOneDrive);
+    analysis.oneDrive["a.txt"] = changed;
+    analysis.google["a.txt"] = original;
+    assert(analysis.Plan(SyncMode::ToGoogle)[0].action == SyncAction::ToGoogle);
+    assert(analysis.Plan(SyncMode::ToOneDrive)[0].action == SyncAction::None);
+    analysis.oneDrive["a.txt"] = original;
+    auto equalDate = changed;
+    equalDate.time = original.time;
+    analysis.google["a.txt"] = equalDate;
+    assert(analysis.Plan(SyncMode::ToGoogle)[0].action == SyncAction::None);
+    assert(analysis.Plan(SyncMode::ToOneDrive)[0].action == SyncAction::None);
+    analysis.google["a.txt"] = changed;
     assert(analysis.Plan(SyncMode::Bidirectional)[0].action == SyncAction::KeepBoth);
     analysis.previousOneDrive = analysis.previousGoogle = {{"a.txt", original}};
     analysis.hasBaseline = true;

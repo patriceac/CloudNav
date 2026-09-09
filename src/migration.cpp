@@ -546,7 +546,10 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         if (!WriteEvidence(path, list)) { error = L"Unable to prepare the file list."; return false; }
         auto args = baseArgs(remove ? L"move" : L"copy", source, remove ? backup(source) : destination);
         args.insert(args.end(), {L"--files-from-raw", path, L"--no-traverse"});
-        if (!remove) args.insert(args.end(), {L"--ignore-times", L"--backup-dir", backup(destination)});
+        if (!remove) {
+            if (context.mode == SyncMode::Bidirectional) args.insert(args.end(), {L"--ignore-times", L"--backup-dir", backup(destination)});
+            else args.push_back(L"--update");
+        }
         const bool ok = RunProcess(context, args, MigrationStage::Copying, error);
         DeleteFileW(path.c_str());
         return ok;
@@ -692,7 +695,7 @@ std::wstring CurrentPlanDetails(const DialogContext& context) {
     return std::wstring(!context.analyzed && context.sync.complete && !context.running ? L"Previous plan — new analysis required.\r\n" : L"") +
         L"→ Google Drive : " + std::to_wstring(toGoogle) + L"    → OneDrive : " + std::to_wstring(toOneDrive) +
         L"    Estimated size: " + FormatBytes(bytes) + L"\r\n" +
-        (context.mode != SyncMode::Bidirectional ? L"One-way copy: extra files are kept." :
+        (context.mode != SyncMode::Bidirectional ? L"Copy missing/newer source files directly; no archiving. Extra destination files are kept." :
         context.sync.recovery ? L"Recovery: merge without removals. New history will be created after success." :
         context.sync.hasBaseline ? L"History available: deletions are propagated with archiving." :
         L"First merge: no removals. Both versions of conflicts will be kept.");
@@ -1211,6 +1214,11 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 WriteEvidence(context.googlePath + L"google.txt", "google only") &&
                 WriteEvidence(context.oneDrivePath + L"both.txt", "OneDrive version") &&
                 WriteEvidence(context.googlePath + L"both.txt", "Google version");
+            if (passed) {
+                const auto now = std::filesystem::file_time_type::clock::now();
+                std::filesystem::last_write_time(context.oneDrivePath + L"both.txt", now - std::chrono::hours(2));
+                std::filesystem::last_write_time(context.googlePath + L"both.txt", now - std::chrono::hours(1));
+            }
             const auto odBefore = snapshot(context.oneDrivePath), gdBefore = snapshot(context.googlePath);
             const auto analyzeSync = [&] {
                 context.sync = {};
@@ -1229,8 +1237,28 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                     ExecuteSyncPlan(context, error) && context.inventoryReads == reads &&
                     !std::filesystem::exists(context.oneDrivePath + L"late-file.txt") &&
                     read(context.oneDrivePath + L"both.txt") == "Google version" &&
-                    read(context.oneDrivePath + L"google.txt") == "google only" && read(context.oneDrivePath + L"one.txt") == "one only";
+                    read(context.oneDrivePath + L"google.txt") == "google only" && read(context.oneDrivePath + L"one.txt") == "one only" &&
+                    !std::filesystem::exists(context.oneDrivePath + L".CloudNav-history");
                 passed = DeleteFileW((context.googlePath + L"late-file.txt").c_str()) && passed;
+            }
+            if (passed) {
+                step = "forwardDirectOverwrite";
+                context.mode = SyncMode::ToGoogle;
+                passed = WriteEvidence(context.oneDrivePath + L"oneway.txt", "new source") &&
+                    WriteEvidence(context.googlePath + L"oneway.txt", "old destination");
+                const auto now = std::filesystem::file_time_type::clock::now();
+                std::filesystem::last_write_time(context.oneDrivePath + L"oneway.txt", now - std::chrono::hours(1));
+                std::filesystem::last_write_time(context.googlePath + L"oneway.txt", now - std::chrono::hours(2));
+                passed = passed && analyzeSync() && ExecuteSyncPlan(context, error) &&
+                    read(context.googlePath + L"oneway.txt") == "new source" &&
+                    !std::filesystem::exists(context.googlePath + L".CloudNav-history");
+                if (passed) {
+                    step = "preserveNewerDestination";
+                    passed = WriteEvidence(context.googlePath + L"oneway.txt", "destination edited since analysis");
+                    std::filesystem::last_write_time(context.googlePath + L"oneway.txt", now);
+                    passed = passed && ExecuteSyncPlan(context, error) &&
+                        read(context.googlePath + L"oneway.txt") == "destination edited since analysis";
+                }
             }
             if (passed) {
                 step = "firstBidirectionalMerge";

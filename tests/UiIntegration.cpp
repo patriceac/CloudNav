@@ -357,7 +357,8 @@ void RunMigrationReport(const std::wstring& executable) {
     CheckBounds(migration);
     Capture(migration, L"report-summary.png");
     Select(migration, IDC_MIGRATION_MODE, 1);
-    Require(Wait([&] { return Text(migration, IDC_MIGRATION_PLAN).find(L"→ OneDrive : 2") != std::wstring::npos; }), "reverse plan did not reuse analysis");
+    Require(Wait([&] { return Text(migration, IDC_MIGRATION_PLAN).find(L"→ OneDrive : 1") != std::wstring::npos; }), "reverse plan did not preserve equal-date destination");
+    Require(Text(migration, IDC_MIGRATION_PLAN).find(L"no archiving") != std::wstring::npos, "direct-copy policy is missing");
     Require(Text(migration, IDC_MIGRATION_SUMMARY) == summary && IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)), "mode switch discarded comparison");
     Capture(migration, L"report-reverse.png");
     Select(migration, IDC_MIGRATION_MODE, 2);
