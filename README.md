@@ -86,7 +86,7 @@ Inventories use rclone's `lsjson --recursive --hash`, with `--fast-list` and `--
 1. Download `CloudNav.exe` from the latest GitHub Release.
 2. Make sure Google Drive for desktop and/or OneDrive is installed and running, depending on the features you need.
 3. Run the executable directly; no installation is required.
-4. Use **Apply visibility** for Explorer entries, **Personal folders…** for folder locations, or **Compare accounts…** in **Cloud sync** for cloud analysis and transfer.
+4. Use **Apply visibility** for Explorer entries, **Personal folders…** for folder locations, or **Transfer or sync files…** in **Cloud sync** for cloud analysis and transfer.
 5. In the folder manager, select **Review…**, review all affected folders, then choose the explicit copy, move, or redirect action.
 
 File Explorer may restart once to reload its configuration. Any open folder windows will close when that happens.

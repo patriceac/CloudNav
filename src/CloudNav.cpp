@@ -1555,14 +1555,14 @@ void CreateInterface(HWND window) {
         window, L"Choose where Windows stores your six personal folders.", g_smallFont);
 
     g_migrateCloud = CreateWindowExW(
-        0, L"BUTTON", L"Compare accounts…",
+        0, L"BUTTON", L"Transfer or sync files…",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MIGRATE_CLOUD)),
         g_instance, nullptr);
     SetControlFont(g_migrateCloud, g_bodyBoldFont);
     g_migrateCloudDetail = CreateLabel(
-        window, L"Compare both accounts and choose a transfer direction.", g_smallFont);
+        window, L"Analyze OneDrive and Google Drive, then choose how files should move.", g_smallFont);
 
     g_explanation = CreateLabel(
         window,

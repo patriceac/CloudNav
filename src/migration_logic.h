@@ -68,7 +68,7 @@ inline const wchar_t* MigrationStageTitle(MigrationStage stage) {
 inline const wchar_t* MigrationStageDetails(MigrationStage stage) {
     switch (stage) {
     case MigrationStage::Connecting: return L"Finish signing in in your browser, then return here.";
-    case MigrationStage::Analyzing: return L"Comparing accounts. No files are copied during analysis.";
+    case MigrationStage::Analyzing: return L"Analyzing cloud files. No files are copied during analysis.";
     case MigrationStage::Copying: return L"Applying the analyzed actions. You can cancel; analyze again to resume after a transfer.";
     case MigrationStage::Verifying: return L"Independent comparison. Folder setup will be offered after success.";
     default: return L"Progress will appear when the operation starts. You can cancel at any time.";

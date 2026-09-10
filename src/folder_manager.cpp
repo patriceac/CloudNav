@@ -857,7 +857,7 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
     if (context.backupReleaseRequired && selected != TransferChoice::Repoint) {
         context.guidanceIsWarning = true;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            L"OneDrive backup is active: use Compare accounts to copy and check files before changing these locations.");
+            L"OneDrive backup is active: transfer and check the files before changing these locations.");
         InvalidateRect(GetDlgItem(dialog, IDC_FOLDER_WARNING), nullptr, TRUE);
         return;
     }
@@ -1517,10 +1517,10 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
             const TransferChoice transfer = ReadTransferChoice(dialog);
             if (PlanNeedsOneDriveBackupDisable(*context, operations) && IsOneDriveBackupActive(*context) &&
                 transfer != TransferChoice::Repoint) {
-                SetStatus(dialog, L"Copy required: open Compare accounts from the main window.", true);
+                SetStatus(dialog, L"Copy required: open Transfer or sync files from the main window.", true);
                 MessageBoxW(dialog,
-                    L"OneDrive backup protects these folders. To keep all files, use Compare accounts: "
-                    L"copy and check the data before redirecting folders. No locations were changed.",
+                    L"OneDrive backup protects these folders. To keep all files, open Transfer or sync files "
+                    L"from the main window, then copy and check the data before redirecting folders. No locations were changed.",
                     L"CloudNav — copy before redirecting", MB_OK | MB_ICONINFORMATION);
                 return TRUE;
             }

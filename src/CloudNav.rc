@@ -15,8 +15,8 @@ STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "CloudNav — cloud sync"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT "Compare OneDrive and Google Drive", IDC_DIALOG_HEADING, 16, 10, 468, 22
-    LTEXT "Analyze both accounts once, then choose a transfer direction without comparing again.", -1, 16, 37, 468, 20
+    LTEXT "Transfer or sync cloud files", IDC_DIALOG_HEADING, 16, 10, 468, 22
+    LTEXT "Analyze OneDrive and Google Drive, then choose how files should move.", -1, 16, 37, 468, 20
     CONTROL "", IDC_MIGRATION_ONEDRIVE_ICON, "STATIC", SS_OWNERDRAW | WS_CHILD | WS_VISIBLE, 16, 63, 14, 14
     LTEXT "OneDrive", -1, 36, 64, 136, 12
     LTEXT "Not connected", IDC_MIGRATION_ONEDRIVE_STATUS, 183, 64, 180, 12

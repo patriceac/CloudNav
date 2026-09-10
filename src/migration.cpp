@@ -1123,13 +1123,13 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 SetMigrationProgress(*context, 100);
                 SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analysis complete: ready to copy");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analysis complete — no files transferred");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Both accounts have been compared. Choose a transfer direction and review the actions in View details.");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Analysis complete. Choose a transfer direction and review the actions in View details.");
             } else if (update->task == Task::Copy) {
                 context->copied = true;
                 SetMigrationProgress(*context, 100);
                 SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, context->mode == SyncMode::Bidirectional ? L"Synchronization complete" : L"2 / 2 — Copy complete");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, context->mode == SyncMode::Bidirectional ?
-                    L"100 % — accounts compared after transfer, history saved" : L"100 % — copy complete with no errors reported");
+                    L"100 % — cloud files checked after transfer, history saved" : L"100 % — copy complete with no errors reported");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"You can now set up Windows folders or close this window.");
             }
         } else {

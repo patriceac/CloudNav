@@ -194,6 +194,7 @@ void Run(const std::wstring& executable) {
     Require(Text(app.main, 1001) == L"Google Drive — My Drive folder", "folder provider label is ambiguous");
     Require(Text(app.main, 1003).find(L"OneDrive") != std::wstring::npos, "account label omits OneDrive");
     Require(Text(app.main, 1004) == L"Google Drive — drive G:", "drive provider label is ambiguous");
+    Require(Text(app.main, 1010) == L"Transfer or sync files…", "cloud transfer entry point is mislabeled");
     Capture(app.main, L"ui-main.png");
     SendDlgItemMessageW(app.main, 1001, BM_SETCHECK, BST_UNCHECKED, 0);
     Click(app.main, 1001);
@@ -390,6 +391,8 @@ void RunSyncDirectionPersistence(const std::wstring& executable) {
 void RunAuth(const std::wstring& executable) {
     App app(executable, L"--demo-migration");
     const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+    Require(Text(migration, IDC_DIALOG_HEADING) == L"Transfer or sync cloud files",
+        "cloud transfer dialog heading is mislabeled");
     Click(migration, IDC_MIGRATION_ONEDRIVE_CONNECT);
     Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ONEDRIVE_CONNECT)) &&
         !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_GOOGLE_CONNECT)); }),
