@@ -15,7 +15,7 @@ if (-not (Test-Path -LiteralPath $runner)) { throw 'The isolated Hyper-V test ha
 $checkpointRoot = Join-Path $projectRoot 'output\release-checks'
 New-Item -ItemType Directory -Force -Path $checkpointRoot | Out-Null
 $cases = @{
-    Auth = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json" --auth'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('auth-drive-selection.png') }
+    Auth = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json" --auth'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('auth-dialog-free.png') }
     Clients = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json" --clients'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('clients-protected.png','clients-unknown.png','clients-missing.png','clients-install-google.png','clients-install-onedrive.png','clients-uninstall-google.png','clients-uninstall-onedrive.png','clients-download-failure.png') }
     ClientRuntime = @{ Exe = 'CloudNavClientTests.exe'; Args = '"{OUTDIR}\client-result.json"'; Actions = 'vm-client-runtime-actions.json'; Result = 'client-result.json'; Images = @() }
     Ui = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json"'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('ui-main.png','ui-unverified.png','ui-folder-preview.png','ui-folder-confirm.png','ui-folder-applied.png') }

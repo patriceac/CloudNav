@@ -39,7 +39,6 @@ constexpr wchar_t kOneDriveRemote[] = L"cloudnav-onedrive";
 constexpr wchar_t kGoogleRemote[] = L"cloudnav-gdrive";
 constexpr UINT WM_MIGRATION_PROGRESS = WM_APP + 41;
 constexpr UINT WM_MIGRATION_COMPLETE = WM_APP + 42;
-constexpr UINT WM_AUTH_QUESTION = WM_APP + 43;
 
 using Task = MigrationTask;
 
@@ -91,6 +90,7 @@ struct DialogContext {
     bool copied = false;
     bool oneDriveReady = false;
     bool googleReady = false;
+    bool googleUsesSharedClient = false;
     bool sawAnalyzeProgress = false;
     bool sawCopyProgress = false;
     bool sawVerifyProgress = false;
@@ -174,7 +174,7 @@ bool ResourceMatchesFile(HINSTANCE instance, const std::wstring& path) {
 
 bool ExtractRclone(HINSTANCE instance, std::wstring& path, std::wstring& error) {
     const std::wstring root = LocalAppDataPath() + L"\\CloudNav\\Runtime";
-    path = root + L"\\rclone-v1.75.0.exe";
+    path = root + L"\\rclone-v1.75.0-cloudnav.3.exe";
     if (ResourceMatchesFile(instance, path)) return true;
     HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(IDR_RCLONE_EXE), RT_RCDATA);
     if (!resource) { error = L"The embedded rclone resource was not found."; return false; }
@@ -272,7 +272,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     context.statisticsUpdates = 0;
     const bool listingOneDrive = arguments.size() > 1 && arguments[1] == context.oneDrivePath;
     const ULONGLONG listingStarted = GetTickCount64();
-    if (privateOutput) PostProgress(context, -1, stage, L"Connecting account — follow the setup window and browser.");
+    if (privateOutput) PostProgress(context, -1, stage, L"Connecting account — complete browser sign-in if it opens.");
     else if (captured) PostListingProgress(context, listingOneDrive, stage, SyncListingProgress(listingOneDrive, 0, 0));
     else PostProgress(context, -1, stage, stage == MigrationStage::Copying
         ? L"Preparing copy — opening selected files…"
@@ -402,74 +402,6 @@ std::string WideToUtf8(const std::wstring& value) {
     return result;
 }
 
-struct AuthQuestion {
-    SyncJson option;
-    std::string answer;
-    std::vector<std::string> values;
-};
-
-INT_PTR CALLBACK AuthQuestionProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
-    auto* question = reinterpret_cast<AuthQuestion*>(GetWindowLongPtrW(dialog, DWLP_USER));
-    if (message == WM_INITDIALOG) {
-        question = reinterpret_cast<AuthQuestion*>(lParam);
-        SetWindowLongPtrW(dialog, DWLP_USER, lParam);
-        const auto& option = question->option;
-        SetDlgItemTextW(dialog, IDC_AUTH_HELP, Utf8ToWide(option.value("Help", std::string("Choose an account option."))).c_str());
-        const bool password = option.value("IsPassword", false);
-        if (password) SendDlgItemMessageW(dialog, IDC_AUTH_VALUE, EM_SETPASSWORDCHAR, L'\x25cf', 0);
-        std::string initial;
-        if (option.contains("Default") && !option["Default"].is_null())
-            initial = option["Default"].is_string() ? option["Default"].get<std::string>() : option["Default"].dump();
-        if (option.contains("Examples") && option["Examples"].is_array()) for (const auto& example : option["Examples"]) {
-            const auto value = example.value("Value", std::string());
-            const auto label = Utf8ToWide(example.value("Help", value));
-            SendDlgItemMessageW(dialog, IDC_AUTH_CHOICES, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-            question->values.push_back(value);
-            if (value == initial) SendDlgItemMessageW(dialog, IDC_AUTH_CHOICES, CB_SETCURSEL, question->values.size() - 1, 0);
-        }
-        ShowWindow(GetDlgItem(dialog, IDC_AUTH_CHOICES), question->values.empty() ? SW_HIDE : SW_SHOW);
-        ShowWindow(GetDlgItem(dialog, IDC_AUTH_VALUE), option.value("Exclusive", false) && !question->values.empty() ? SW_HIDE : SW_SHOW);
-        SetDlgItemTextW(dialog, IDC_AUTH_VALUE, Utf8ToWide(initial).c_str());
-        return TRUE;
-    }
-    if (!question) return FALSE;
-    if (message == WM_COMMAND && LOWORD(wParam) == IDC_AUTH_CHOICES && HIWORD(wParam) == CBN_SELCHANGE) {
-        const auto index = SendDlgItemMessageW(dialog, IDC_AUTH_CHOICES, CB_GETCURSEL, 0, 0);
-        if (index >= 0 && static_cast<size_t>(index) < question->values.size())
-            SetDlgItemTextW(dialog, IDC_AUTH_VALUE, Utf8ToWide(question->values[static_cast<size_t>(index)]).c_str());
-        return TRUE;
-    }
-    if (message == WM_COMMAND && LOWORD(wParam) == IDOK) {
-        question->answer = WideToUtf8(ui::ControlText(dialog, IDC_AUTH_VALUE));
-        if (question->option.value("Exclusive", false) && !question->values.empty()) {
-            const auto index = SendDlgItemMessageW(dialog, IDC_AUTH_CHOICES, CB_GETCURSEL, 0, 0);
-            if (index < 0 || static_cast<size_t>(index) >= question->values.size()) return TRUE;
-            question->answer = question->values[static_cast<size_t>(index)];
-        }
-        if (question->option.value("Required", false) && question->answer.empty()) return TRUE;
-        EndDialog(dialog, IDOK); return TRUE;
-    }
-    if (message == WM_CLOSE || (message == WM_COMMAND && LOWORD(wParam) == IDCANCEL)) {
-        EndDialog(dialog, IDCANCEL); return TRUE;
-    }
-    return FALSE;
-}
-
-bool AskAuth(DialogContext& context, const SyncJson& option, std::string& answer) {
-    if (context.cancelRequested) return false;
-    // Only browser sign-in mechanics are automatic; drive/account selection
-    // and provider confirmations remain explicit choices in the GUI.
-    const auto name = option.value("Name", std::string());
-    if (name == "config_is_local" || name == "config_refresh_token") { answer = "true"; return true; }
-    if (name == "config_shared_client_id") return false;
-    AuthQuestion question{option, {}, {}};
-    if (SendMessageW(context.dialog, WM_AUTH_QUESTION, 0, reinterpret_cast<LPARAM>(&question)) != IDOK) {
-        context.cancelRequested = true; return false;
-    }
-    answer = question.answer;
-    return true;
-}
-
 bool ProbeAccount(DialogContext& context, const std::wstring& config, const std::wstring& remote, std::wstring& error) {
     return RunProcess(context, {L"lsd", remote + L":", L"--config", config, L"--retries", L"1",
         L"--low-level-retries", L"1", L"--contimeout", L"15s", L"--timeout", L"30s"},
@@ -482,44 +414,41 @@ bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) 
     const auto original = ReadSyncFile(context.configPath);
     const auto fields = AuthFields(original, remoteName);
     const bool existing = !fields.empty();
+    const auto preferredDrive = fields.find("drive_id") == fields.end() ? std::string() : fields.at("drive_id");
     // Same-directory staging permits atomic replacement. No provider failure
     // can leave a new token-only remote in the live configuration.
     const auto staged = context.configPath + L".auth-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
     struct Cleanup { std::wstring path; ~Cleanup() { DeleteFileW(path.c_str()); } } cleanup{staged};
     if (!WriteEvidence(staged, original)) { error = L"Unable to stage account configuration."; return false; }
     auto args = AuthenticationArguments(oneDrive, existing, remote, staged);
-    if (!oneDrive) {
-        for (const auto* key : {"client_id", "client_secret"}) {
-            const auto field = fields.find(key);
-            std::string value;
-            const bool secret = std::string(key) == "client_secret";
-            const SyncJson option = {{"Name", key}, {"Required", true}, {"IsPassword", secret},
-                {"Default", !secret && field != fields.end() ? field->second : ""},
-                {"Help", secret ? "Enter the client secret for your Google OAuth desktop application. It is saved in the account configuration, never in the diagnostic log." :
-                    "Enter your Google OAuth Desktop app client ID. Create it in Google Cloud Console with the Drive API enabled and your account allowed on the consent screen. CloudNav requires your own client instead of rclone's shared client."}};
-            if (!AskAuth(context, option, value)) return false;
-            args.push_back(Utf8ToWide(std::string(key) + "=" + value));
-        }
-        args.push_back(L"--obscure");
-    }
     const bool complete = CompleteAuth([&](bool continuation, const std::string& state, const std::string& answer, std::string& output) {
         auto command = continuation ? std::vector<std::wstring>{L"config", L"update", remote, L"--config", staged,
-            L"--non-interactive", L"--continue", L"--state", Utf8ToWide(state), L"--result", Utf8ToWide(answer)} : args;
-        return RunProcess(context, command, MigrationStage::Connecting, error, nullptr, nullptr, &output, true);
-    }, [&](const SyncJson& option, std::string& answer) { return AskAuth(context, option, answer); }, error);
+            L"config_is_local=true", L"config_refresh_token=true", L"--continue", L"--state", Utf8ToWide(state), L"--result", Utf8ToWide(answer)} : args;
+        const bool success = RunProcess(context, command, MigrationStage::Connecting, error, nullptr, nullptr, &output, true);
+        if (!success) {
+            const auto details = AuthFailureDetails(output);
+            if (!details.empty()) error += L"\n" + details;
+        }
+        return success;
+    }, [&](const SyncJson& option, std::string& answer) {
+        return !context.cancelRequested && AutomaticAuthAnswer(option, oneDrive, preferredDrive, answer);
+    }, error);
     if (!complete) {
         if (error.empty() && !context.cancelRequested)
-            error = L"Google Drive requires your own OAuth desktop client. Reconnect and enter your own client ID and client secret.";
+            error = L"Account setup did not complete. Reconnect to try again.";
         return false;
     }
-    if (!AuthReady(ReadSyncFile(staged), remoteName, oneDrive)) {
-        error = L"Account setup is incomplete. Reconnect and finish selecting a drive before analyzing."; return false;
+    const auto stagedConfig = ReadSyncFile(staged);
+    if (!AuthReady(stagedConfig, remoteName, oneDrive)) {
+        error = L"Account setup is incomplete. Reconnect so CloudNav can identify the account drive."; return false;
     }
     if (!ProbeAccount(context, staged, remote, error) || context.cancelRequested) return false;
     if (ReadSyncFile(context.configPath) != original) { error = L"Account configuration changed during setup. Reconnect to try again."; return false; }
+    const bool sharedGoogleClient = !oneDrive && UsesSharedGoogleClient(stagedConfig, remoteName);
     if (!MoveFileExW(staged.c_str(), context.configPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         error = L"Unable to save the validated account configuration."; return false;
     }
+    if (!oneDrive) context.googleUsesSharedClient = sharedGoogleClient;
     return true;
 }
 
@@ -746,7 +675,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
                     {{"Value", "personal-fixture"}, {"Help", "Personal OneDrive (personal)"}},
                     {{"Value", "business-fixture"}, {"Help", "Work OneDrive (business)"}},
                     {{"Value", "library-fixture"}, {"Help", "Team documents (documentLibrary)"}}})}};
-            AskAuth(context, option, answer);
+            success = AutomaticAuthAnswer(option, true, "business-fixture", answer) && answer == "business-fixture";
         }
         context.parallelListing = stage == MigrationStage::Analyzing;
         context.listingStatus[0] = SyncListingProgress(true, 0, 0);
@@ -768,7 +697,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
             Sleep(100);
         }
         context.parallelListing = false;
-        success = !context.cancelRequested;
+        success = !context.cancelRequested && (stage != MigrationStage::Connecting || success);
         if (context.task == Task::Analyze) {
             const std::string time = "2026-09-09T10:00:00Z";
             sync.oneDrive = {{"Documents/nouveau.pdf", {1048576, time, {}}}, {"Photos/vacances.jpg", {2097152, time, {}}},
@@ -901,6 +830,32 @@ void CancelTask(DialogContext& context) {
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, L"Cancelling… Files already copied will be reused when resuming.");
 }
 
+void RestoreAuthenticationFocus(HWND dialog, Task task) {
+    if (!IsWindow(dialog) || !IsWindowVisible(dialog)) return;
+
+    const HWND foreground = GetForegroundWindow();
+    const DWORD currentThread = GetCurrentThreadId();
+    const DWORD foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const bool attached = foregroundThread && foregroundThread != currentThread &&
+        AttachThreadInput(currentThread, foregroundThread, TRUE);
+
+    if (IsIconic(dialog)) ShowWindow(dialog, SW_RESTORE);
+    SetWindowPos(dialog, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetForegroundWindow(dialog);
+    SetActiveWindow(dialog);
+    HWND target = GetDlgItem(dialog, task == Task::AuthenticateOneDrive ?
+        IDC_MIGRATION_ONEDRIVE_CONNECT : IDC_MIGRATION_GOOGLE_CONNECT);
+    if (IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_ANALYZE)))
+        target = GetDlgItem(dialog, IDC_MIGRATION_ANALYZE);
+    if (target && IsWindowEnabled(target)) SetFocus(target);
+
+    if (attached) AttachThreadInput(currentThread, foregroundThread, FALSE);
+    if (GetForegroundWindow() != dialog) {
+        FLASHWINFO flash{sizeof(flash), dialog, FLASHW_TRAY, 3, 0};
+        FlashWindowEx(&flash);
+    }
+}
+
 bool WriteEvidence(const std::wstring& path, const std::string& json) {
     if (path.empty()) return true;
     if (!EnsureParentDirectory(path)) return false;
@@ -1029,12 +984,18 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         context->configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
         context->logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\migration.log";
         EnsureParentDirectory(context->configPath);
-        context->oneDriveReady = context->demoMode || AuthReady(ReadSyncFile(context->configPath), "cloudnav-onedrive", true);
-        context->googleReady = context->demoMode || AuthReady(ReadSyncFile(context->configPath), "cloudnav-gdrive", false);
+        const auto savedConfig = ReadSyncFile(context->configPath);
+        context->oneDriveReady = context->demoMode || AuthReady(savedConfig, "cloudnav-onedrive", true);
+        context->googleReady = context->demoMode || AuthReady(savedConfig, "cloudnav-gdrive", false);
+        context->googleUsesSharedClient = !context->demoMode && context->googleReady &&
+            UsesSharedGoogleClient(savedConfig, "cloudnav-gdrive");
         SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, context->demoMode ? L"Demo account" : context->oneDriveReady ? L"Connection saved" : L"Not connected");
-        SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Demo account" : context->googleReady ? L"Connection saved" : L"Not connected");
+        SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Demo account" : context->googleReady ?
+            context->googleUsesSharedClient ? L"Connected — shared client" : L"Connection saved" : L"Not connected");
         if (context->oneDriveReady && context->googleReady)
-            SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Analysis checks account access and estimates the copy. No files are transferred.");
+            SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, context->googleUsesSharedClient ?
+                L"Ready. Google's shared sign-in client is being retired; this notice does not block synchronization." :
+                L"Analysis checks account access and estimates the copy. No files are transferred.");
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PHASE, WM_SETFONT, reinterpret_cast<WPARAM>(context->theme.bold), TRUE);
         RefreshPlan(*context);
         return TRUE;
@@ -1127,13 +1088,11 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         }
         delete update;
         return TRUE;
-    } else if (message == WM_AUTH_QUESTION) {
-        const auto result = context->cancelRequested ? IDCANCEL :
-            DialogBoxParamW(context->instance, MAKEINTRESOURCEW(IDD_AUTH_QUESTION), dialog, AuthQuestionProc, lParam);
-        SetWindowLongPtrW(dialog, DWLP_MSGRESULT, result);
-        return TRUE;
     } else if (message == WM_MIGRATION_COMPLETE) {
         auto* update = reinterpret_cast<CompletionUpdate*>(lParam);
+        const Task completedTask = update->task;
+        const bool authentication = completedTask == Task::AuthenticateOneDrive ||
+            completedTask == Task::AuthenticateGoogle;
         if (context->worker) { CloseHandle(context->worker); context->worker = nullptr; }
         context->running = false;
         if (update->task == Task::Analyze) {
@@ -1152,8 +1111,12 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 context->oneDriveReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, L"Connection saved");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"OneDrive account connected.");
             } else if (update->task == Task::AuthenticateGoogle) {
-                context->googleReady = true; SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, L"Connection saved");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Google Drive account connected.");
+                context->googleReady = true;
+                SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS,
+                    context->googleUsesSharedClient ? L"Connected — shared client" : L"Connection saved");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, context->googleUsesSharedClient ?
+                    L"Google Drive connected. The shared sign-in retirement notice does not block synchronization." :
+                    L"Google Drive account connected.");
             } else if (update->task == Task::Analyze) {
                 context->analyzed = true;
                 SetDlgItemTextW(dialog, IDC_MIGRATION_PLAN, CurrentPlanDetails(*context).c_str());
@@ -1200,6 +1163,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 ui::ControlText(dialog, IDC_MIGRATION_STATS) == L"Operation stopped — no transfer running";
             WriteMilestone(*context, L"cancelled.json", context->cancellationConsistent);
         }
+        if (authentication && !close) RestoreAuthenticationFocus(dialog, completedTask);
         if (close) EndDialog(dialog, 1);
         return TRUE;
     }
@@ -1487,7 +1451,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.3\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();

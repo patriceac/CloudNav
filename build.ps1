@@ -11,28 +11,14 @@ $testRoot = Join-Path $projectRoot 'tests'
 $outputRoot = Join-Path $projectRoot "build\$Configuration"
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 
-$rcloneVersion = '1.75.0'
-$rcloneSha256 = '203581f0a7baeae873f2347483a798c79e2eaf5c384a4e9d866aa374f1c89ac0'
-$rcloneExeSha256 = '8be30f02266a6eaad9d481941ef287b9744bb7140034b097ad862a2ccff3e24c'
+$rcloneVersion = '1.75.0-cloudnav.3'
+$rcloneExeSha256 = '7a2c1e8ed2ab58b588b89004f7787a0aae13d5a80318eabef8d7f5e8420b2ae9'
 $rcloneCache = Join-Path $projectRoot ".third-party\rclone\v$rcloneVersion"
 $rcloneExe = Join-Path $rcloneCache 'rclone.exe'
 $rcloneReady = (Test-Path -LiteralPath $rcloneExe) -and
     ((Get-FileHash -LiteralPath $rcloneExe -Algorithm SHA256).Hash.ToLowerInvariant() -eq $rcloneExeSha256)
 if (-not $rcloneReady) {
-    New-Item -ItemType Directory -Force -Path $rcloneCache | Out-Null
-    $archive = Join-Path $rcloneCache "rclone-v$rcloneVersion-windows-amd64.zip"
-    Invoke-WebRequest -UseBasicParsing -Uri "https://downloads.rclone.org/v$rcloneVersion/rclone-v$rcloneVersion-windows-amd64.zip" -OutFile $archive
-    $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne $rcloneSha256) {
-        throw 'The downloaded rclone archive does not have the expected SHA-256 checksum.'
-    }
-    $expanded = Join-Path $rcloneCache 'expanded'
-    Expand-Archive -LiteralPath $archive -DestinationPath $expanded -Force
-    $downloadedExe = Join-Path $expanded "rclone-v$rcloneVersion-windows-amd64\rclone.exe"
-    if (-not (Test-Path -LiteralPath $downloadedExe)) {
-        throw 'Le téléchargement rclone ne contient pas le fichier attendu.'
-    }
-    Copy-Item -LiteralPath $downloadedExe -Destination $rcloneExe
+    & (Join-Path $projectRoot 'third_party\Build-Rclone.ps1') -OutputPath $rcloneExe
 }
 if ((Get-FileHash -LiteralPath $rcloneExe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $rcloneExeSha256) {
     throw 'The extracted rclone.exe does not have the expected SHA-256 checksum.'

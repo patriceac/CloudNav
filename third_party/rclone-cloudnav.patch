@@ -1,0 +1,50 @@
+--- a/lib/oauthutil/oauthutil.go
++++ b/lib/oauthutil/oauthutil.go
+@@ -952,0 +953,6 @@
++	// Reserve the callback listener before constructing the authorization URL.
++	// Windows can exclude the fixed port even when no process is listening.
++	server, err := cloudNavAuthServer(id, opt, oauthConfig)
++	if err != nil {
++		return "", fmt.Errorf("failed to start auth webserver: %w", err)
++	}
+@@ -954,0 +961 @@
++		server.Stop()
+@@ -957,8 +964,2 @@
+-
+-	// Prepare webserver
+-	server := newAuthServer(opt, bindAddress, state, authURL)
+-	err = server.Init()
+-	if err != nil {
+-		return "", fmt.Errorf("failed to start auth webserver: %w", err)
+-	}
+-	authURL = "http://" + bindAddress + "/auth?state=" + state
++	server.state, server.authURL = state, authURL
++	authURL = "http://" + server.listener.Addr().String() + "/auth?state=" + state
+@@ -1015,0 +1017,27 @@
++// cloudNavAuthServer preserves the normal port when available. Google Drive and
++// OneDrive permit an ephemeral loopback port; other providers keep their URI.
++func cloudNavAuthServer(id string, opt *Options, oauthConfig *Config) (*authServer, error) {
++	server := newAuthServer(opt, bindAddress, "", "")
++	err := server.Init()
++	cloudNavProvider := id == "drive" || id == "onedrive"
++	loopbackRedirect := oauthConfig.RedirectURL == RedirectURL || oauthConfig.RedirectURL == RedirectLocalhostURL
++	if err != nil && cloudNavProvider && loopbackRedirect {
++		redirectHost := "127.0.0.1"
++		if oauthConfig.RedirectURL == RedirectLocalhostURL {
++			redirectHost = "localhost"
++		}
++		server = newAuthServer(opt, "127.0.0.1:0", "", "")
++		err = server.Init()
++		if err == nil {
++			_, port, splitErr := net.SplitHostPort(server.listener.Addr().String())
++			if splitErr != nil {
++				server.Stop()
++				return server, splitErr
++			}
++			// The caller uses this same config for the token exchange.
++			oauthConfig.RedirectURL = "http://" + net.JoinHostPort(redirectHost, port) + "/"
++		}
++	}
++	return server, err
++}
++

@@ -46,9 +46,49 @@ void Require(bool condition, const char* message) {
 
 bool Wait(const std::function<bool()>& condition) {
     const ULONGLONG deadline = GetTickCount64() + 15000;
-    do { if (condition()) return true; Sleep(50); } while (GetTickCount64() < deadline);
+    do {
+        MSG message = {};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        if (condition()) return true;
+        Sleep(50);
+    } while (GetTickCount64() < deadline);
     return false;
 }
+
+class FocusSink {
+public:
+    FocusSink() {
+        WNDCLASSW type = {};
+        type.lpfnWndProc = DefWindowProcW;
+        type.hInstance = GetModuleHandleW(nullptr);
+        type.lpszClassName = L"CloudNavFocusSink";
+        RegisterClassW(&type);
+        window_ = CreateWindowExW(WS_EX_TOOLWINDOW, type.lpszClassName, L"Browser sign-in simulation",
+            WS_OVERLAPPED | WS_CAPTION | WS_VISIBLE, 40, 40, 300, 90,
+            nullptr, nullptr, type.hInstance, nullptr);
+        Require(window_ != nullptr, "focus simulation window could not be created");
+        ShowWindow(window_, SW_SHOW);
+        const HWND foreground = GetForegroundWindow();
+        const DWORD currentThread = GetCurrentThreadId();
+        const DWORD foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+        const bool attached = foregroundThread && foregroundThread != currentThread &&
+            AttachThreadInput(currentThread, foregroundThread, TRUE);
+        SetForegroundWindow(window_);
+        SetActiveWindow(window_);
+        SetFocus(window_);
+        if (attached) AttachThreadInput(currentThread, foregroundThread, FALSE);
+        Require(Wait([&] { return GetForegroundWindow() == window_; }),
+            "focus simulation window did not become foreground");
+    }
+
+    ~FocusSink() { if (window_) DestroyWindow(window_); }
+
+private:
+    HWND window_ = nullptr;
+};
 
 std::wstring Text(HWND window) {
     const LRESULT length = SendMessageW(window, WM_GETTEXTLENGTH, 0, 0);
@@ -80,6 +120,12 @@ HWND Window(DWORD pid, const wchar_t* title) {
     Search search{pid, title};
     Require(Wait([&] { EnumWindows(Find, reinterpret_cast<LPARAM>(&search)); return search.found != nullptr; }),
             "expected application dialog did not open");
+    return search.found;
+}
+
+HWND VisibleWindow(DWORD pid, const wchar_t* title) {
+    Search search{pid, title};
+    EnumWindows(Find, reinterpret_cast<LPARAM>(&search));
     return search.found;
 }
 
@@ -345,18 +391,41 @@ void RunAuth(const std::wstring& executable) {
     App app(executable, L"--demo-migration");
     const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
     Click(migration, IDC_MIGRATION_ONEDRIVE_CONNECT);
-    HWND question = Window(app.process.dwProcessId, L"CloudNav — connect account");
-    Require(SendDlgItemMessageW(question, IDC_AUTH_CHOICES, CB_GETCOUNT, 0, 0) == 3, "drive choices missing");
-    Require(!IsWindowVisible(GetDlgItem(question, IDC_AUTH_VALUE)), "exclusive drive accepts arbitrary text");
-    CheckBounds(question);
-    Select(question, IDC_AUTH_CHOICES, 2);
-    Capture(question, L"auth-drive-selection.png");
-    Click(question, IDOK);
-    Require(Wait([&] { return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ONEDRIVE_CONNECT)) != FALSE; }), "drive confirmation did not finish");
-    Require(Text(migration, IDC_MIGRATION_DETAILS) == L"OneDrive account connected.", "drive confirmation failed");
+    Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ONEDRIVE_CONNECT)) &&
+        !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_GOOGLE_CONNECT)); }),
+        "reconnect controls remained active during an attempt");
+    bool dialogFree = true;
+    {
+        FocusSink browser;
+        Require(Wait([&] {
+            dialogFree &= VisibleWindow(app.process.dwProcessId, L"CloudNav — connect account") == nullptr;
+            return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ONEDRIVE_CONNECT)) != FALSE;
+        }), "automatic OneDrive connection did not finish");
+        Require(Wait([&] { return GetForegroundWindow() == migration; }),
+            "CloudNav did not regain focus after OneDrive connection");
+    }
+    Require(dialogFree, "OneDrive connection opened a CloudNav question dialog");
+    Require(Text(migration, IDC_MIGRATION_DETAILS) == L"OneDrive account connected.", "automatic OneDrive connection failed");
+    Click(migration, IDC_MIGRATION_GOOGLE_CONNECT);
+    Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ONEDRIVE_CONNECT)) &&
+        !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_GOOGLE_CONNECT)); }),
+        "Google reconnect did not enter the single-attempt state");
+    {
+        FocusSink browser;
+        Require(Wait([&] {
+            dialogFree &= VisibleWindow(app.process.dwProcessId, L"CloudNav — connect account") == nullptr;
+            return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_GOOGLE_CONNECT)) != FALSE;
+        }), "automatic Google connection did not finish");
+        Require(Wait([&] { return GetForegroundWindow() == migration; }),
+            "CloudNav did not regain focus after Google connection");
+    }
+    Require(dialogFree, "Google connection opened a CloudNav question dialog");
+    Require(Text(migration, IDC_MIGRATION_DETAILS) == L"Google Drive account connected.", "automatic Google connection failed");
+    Capture(migration, L"auth-dialog-free.png");
     Click(migration, IDC_MIGRATION_ONEDRIVE_CONNECT);
-    question = Window(app.process.dwProcessId, L"CloudNav — connect account");
-    Click(question, IDCANCEL);
+    Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ONEDRIVE_CONNECT)); }),
+        "cancellation fixture did not start");
+    Click(migration, IDCANCEL);
     Require(Wait([&] { return Text(migration, IDC_MIGRATION_PHASE) == L"Operation cancelled."; }), "setup cancellation failed");
     Require(!IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)), "cancelled setup enabled copy");
     Click(migration, IDCANCEL);
@@ -449,7 +518,7 @@ int wmain(int argc, wchar_t** argv) {
     if (Gdiplus::GdiplusStartup(&token, &graphicsInput, nullptr) != Gdiplus::Ok) return 4;
     try { if (auth) RunAuth(executable); else if (clients) RunClients(executable); else if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
     Gdiplus::GdiplusShutdown(token);
-    const std::string json = error.empty() && auth ? "{\"passed\":true,\"driveSelection\":true,\"cancelSetup\":true,\"simulated\":true}" : error.empty()
+    const std::string json = error.empty() && auth ? "{\"passed\":true,\"dialogFreeSetup\":true,\"singleAttemptGuard\":true,\"focusRestored\":true,\"cancelSetup\":true,\"simulated\":true}" : error.empty()
         ? (clients ? "{\"passed\":true,\"clientControls\":true,\"cancelPreservesState\":true,\"folderGuards\":true,\"downloadFailure\":true,\"simulated\":true}" : migrationReport ? "{\"passed\":true,\"summary\":true,\"filters\":true,\"partialResults\":true,\"staleReportCleared\":true,\"bounds\":true}" : "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"collateralPreview\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}")
         : "{\"passed\":false,\"error\":\"" + error + "\"}";
     HANDLE file = CreateFileW(argv[1], GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
