@@ -101,6 +101,42 @@ inline void RunSyncLogicTests() {
     auto duplicate = SaveSyncInventory(analysis.oneDrive);
     duplicate.push_back(duplicate[0]);
     assert(!ReadSyncInventory(duplicate.dump(), inventory, error));
+    SyncJson googleRows = SyncJson::array({
+        {{"Path", "duplicate.jpg"}, {"IsDir", false}, {"Size", 10}, {"ModTime", "2026-09-09T10:00:00Z"}},
+        {{"Path", "duplicate.jpg"}, {"IsDir", false}, {"Size", 20}, {"ModTime", "2026-09-09T11:00:00Z"}},
+        {{"Path", "safe.jpg"}, {"IsDir", false}, {"Size", 30}, {"ModTime", "2026-09-09T12:00:00Z"}}
+    });
+    SyncIgnoredPaths ignored;
+    assert(ReadGoogleSyncInventory(googleRows.dump(), inventory, ignored, error));
+    assert(inventory.size() == 1 && inventory.count("safe.jpg") == 1);
+    assert(ignored.size() == 1 && ignored.at("duplicate.jpg").objectCount == 2);
+    SyncAnalysis ignoredAnalysis;
+    ignoredAnalysis.complete = true;
+    ignoredAnalysis.oneDrive = {{"duplicate.jpg", original}, {"one-only.txt", original}};
+    ignoredAnalysis.google = inventory;
+    ignoredAnalysis.ignoredGooglePaths = ignored;
+    const auto ignoredPlan = ignoredAnalysis.Plan(SyncMode::Bidirectional);
+    const auto ignoredRow = std::find_if(ignoredPlan.begin(), ignoredPlan.end(), [](const auto& row) {
+        return row.path == "duplicate.jpg";
+    });
+    assert(ignoredRow != ignoredPlan.end() && ignoredRow->category == '~' && ignoredRow->action == SyncAction::Ignored);
+    assert(ignoredAnalysis.IgnoredGoogleObjectCount() == 2);
+    assert(SyncPlanSummary(ignoredAnalysis, SyncMode::Bidirectional).find(L"Ignored: 1") != std::wstring::npos);
+    const auto baseline = SyncBaselineInventory(ignoredAnalysis.oneDrive, ignoredAnalysis.ignoredGooglePaths);
+    assert(baseline.count("duplicate.jpg") == 0 && baseline.count("one-only.txt") == 1);
+    googleRows.erase(googleRows.begin() + 1);
+    assert(ReadGoogleSyncInventory(googleRows.dump(), inventory, ignored, error));
+    assert(inventory.size() == 2 && ignored.empty());
+
+    const SyncJson duplicateFolders = SyncJson::array({
+        {{"Path", "photos"}, {"IsDir", true}, {"Size", -1}, {"ModTime", "2026-09-09T10:00:00Z"}},
+        {{"Path", "photos"}, {"IsDir", true}, {"Size", -1}, {"ModTime", "2026-09-09T10:00:00Z"}},
+        {{"Path", "photos/one.jpg"}, {"IsDir", false}, {"Size", 1}, {"ModTime", "2026-09-09T10:00:00Z"}},
+        {{"Path", "outside.jpg"}, {"IsDir", false}, {"Size", 1}, {"ModTime", "2026-09-09T10:00:00Z"}}
+    });
+    assert(ReadGoogleSyncInventory(duplicateFolders.dump(), inventory, ignored, error));
+    assert(inventory.size() == 1 && inventory.count("outside.jpg") == 1);
+    assert(ignored.size() == 1 && ignored.count("photos/one.jpg") == 1);
     duplicate = SaveSyncInventory(analysis.oneDrive);
     duplicate[0]["Size"] = -1;
     assert(!ReadSyncInventory(duplicate.dump(), inventory, error));

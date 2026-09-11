@@ -458,7 +458,13 @@ void RunMigrationReport(const std::wstring& executable) {
     const auto summary = Text(migration, IDC_MIGRATION_SUMMARY);
     Require(summary.find(L"OneDrive only: 1") != std::wstring::npos && summary.find(L"Google Drive only: 1") != std::wstring::npos &&
         summary.find(L"Identical: 1") != std::wstring::npos && summary.find(L"Different: 1") != std::wstring::npos &&
-        summary.find(L"Blocked: 0") != std::wstring::npos, "analysis KPIs are incorrect");
+        summary.find(L"Ignored: 1") != std::wstring::npos && summary.find(L"Blocked: 0") != std::wstring::npos,
+        "analysis KPIs are incorrect");
+    Require(Text(migration, IDC_MIGRATION_PHASE).find(L"duplicate paths ignored") != std::wstring::npos &&
+        Text(migration, IDC_MIGRATION_DETAILS).find(L"skip every file") != std::wstring::npos,
+        "duplicate-path warning is missing");
+    Require(IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)) != FALSE,
+        "ignored duplicate path blocked the remaining plan");
     CheckBounds(migration);
     Capture(migration, L"report-summary.png");
     Select(migration, IDC_MIGRATION_MODE, 1);
@@ -475,13 +481,18 @@ void RunMigrationReport(const std::wstring& executable) {
     Click(migration, IDC_MIGRATION_REPORT);
     const HWND report = Window(app.process.dwProcessId, L"CloudNav — analysis results");
     const HWND list = GetDlgItem(report, IDC_REPORT_LIST);
-    Require(ListView_GetItemCount(list) == 4, "report omits files");
+    Require(ListView_GetItemCount(list) == 5, "report omits files");
     CheckBounds(report);
     Capture(report, L"report-all.png");
-    for (int selection = 1; selection <= 5; ++selection) {
+    for (int selection = 1; selection <= 6; ++selection) {
         Select(report, IDC_REPORT_FILTER, selection);
-        Require(Wait([&] { return ListView_GetItemCount(list) == (selection == 5 ? 0 : 1); }), "category filter is incorrect");
+        Require(Wait([&] { return ListView_GetItemCount(list) == (selection == 6 ? 0 : 1); }), "category filter is incorrect");
         if (selection == 1) Capture(report, L"report-new.png");
+        if (selection == 5) {
+            Require(Wait([&] { return Text(report, IDC_REPORT_SELECTED).find(L"contains 2 files") != std::wstring::npos; }),
+                "the single ignored row was not selected with its object count visible");
+            Capture(report, L"report-ignored.png");
+        }
     }
     Click(report, IDCANCEL);
     Require(Wait([&] { return !IsWindow(report); }), "report did not close");

@@ -482,7 +482,6 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
         auto& accountError = errors[oneDrive ? 0 : 1];
         try {
         std::string output, parseError;
-        auto& inventory = oneDrive ? analysis.oneDrive : analysis.google;
         const std::wstring remote = oneDrive ? context.oneDrivePath : context.googlePath;
         ++context.inventoryReads;
         const auto log = context.logPath + (oneDrive ? L".onedrive" : L".google");
@@ -492,11 +491,23 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
             context.listingFailed = true;
             return false;
         }
-        if (!ReadSyncInventory(output, inventory, parseError)) {
+        const bool parsed = oneDrive
+            ? ReadSyncInventory(output, analysis.oneDrive, parseError)
+            : ReadGoogleSyncInventory(output, analysis.google, analysis.ignoredGooglePaths, parseError);
+        if (!parsed) {
             accountError = Utf8ToWide(parseError); context.listingFailed = true; return false;
         }
-        PostListingProgress(context, oneDrive, stage, std::wstring(oneDrive ? L"OneDrive : " : L"Google Drive : ") +
-            std::to_wstring(inventory.size()) + L" files read — complete");
+        const auto fileCount = oneDrive ? analysis.oneDrive.size() :
+            analysis.google.size() + analysis.IgnoredGoogleObjectCount();
+        auto status = std::wstring(oneDrive ? L"OneDrive : " : L"Google Drive : ") +
+            std::to_wstring(fileCount) + L" files read — complete";
+        if (!oneDrive && !analysis.ignoredGooglePaths.empty()) {
+            const auto paths = analysis.ignoredGooglePaths.size();
+            const auto objects = analysis.IgnoredGoogleObjectCount();
+            status += L" — " + std::to_wstring(paths) + (paths == 1 ? L" duplicate path ignored (" : L" duplicate paths ignored (") +
+                std::to_wstring(objects) + (objects == 1 ? L" file)" : L" files)");
+        }
+        PostListingProgress(context, oneDrive, stage, status);
         return true;
         } catch (const std::exception& e) {
             accountError = Utf8ToWide(e.what()); context.listingFailed = true; return false;
@@ -558,7 +569,8 @@ AnalysisReport SyncReport(const SyncAnalysis& analysis, SyncMode mode) {
         auto& file = report.files[row.path];
         file.category = row.category;
         file.bytes = row.bytes;
-        file.sizeKnown = true;
+        file.sizeKnown = row.action != SyncAction::Ignored;
+        if (row.action == SyncAction::Ignored) file.error = analysis.ignoredGooglePaths.at(row.path).reason;
         if (row.action == SyncAction::Blocked) file.error = "Ambiguous name, path collision, or incomplete analysis.";
     }
     if (!analysis.error.empty()) {
@@ -584,7 +596,7 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         return false;
     }
     if (context.mode != SyncMode::Bidirectional && std::all_of(rows.begin(), rows.end(),
-        [](const auto& row) { return row.action == SyncAction::None; })) return true;
+        [](const auto& row) { return row.action == SyncAction::None || row.action == SyncAction::Ignored; })) return true;
     const auto stamp = std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(GetCurrentProcessId());
     const auto& od = context.oneDrivePath;
     const auto& gd = context.googlePath;
@@ -638,10 +650,13 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         if (!ReadCurrentSync(context, after, error, MigrationStage::Verifying)) return false;
         if (after.binding != context.sync.binding) { error = L"The accounts changed. History was not committed."; return false; }
         const auto remaining = after.Plan(SyncMode::Bidirectional);
-        if (std::any_of(remaining.begin(), remaining.end(), [](const auto& row) { return row.action != SyncAction::None; })) {
+        if (std::any_of(remaining.begin(), remaining.end(), [](const auto& row) {
+            return row.action != SyncAction::None && row.action != SyncAction::Ignored;
+        })) {
             error = L"Differences remain after transfer. Analyze again; the previous history has been kept."; return false;
         }
-        const SyncJson document = {{"version", 1}, {"binding", after.binding}, {"oneDrive", SaveSyncInventory(after.oneDrive)},
+        const auto baselineOneDrive = SyncBaselineInventory(after.oneDrive, after.ignoredGooglePaths);
+        const SyncJson document = {{"version", 1}, {"binding", after.binding}, {"oneDrive", SaveSyncInventory(baselineOneDrive)},
             {"google", SaveSyncInventory(after.google)}};
         if (!WriteEvidence(state, document.dump())) { error = L"History was not saved. A recovery analysis will be needed."; return false; }
         if (!DeleteFileW((state + L".pending").c_str())) { error = L"The recovery journal could not be finalized. Analyze again."; return false; }
@@ -701,9 +716,11 @@ DWORD WINAPI WorkerProc(void* parameter) {
         if (context.task == Task::Analyze) {
             const std::string time = "2026-09-09T10:00:00Z";
             sync.oneDrive = {{"Documents/nouveau.pdf", {1048576, time, {}}}, {"Photos/vacances.jpg", {2097152, time, {}}},
-                {"Documents/identique.txt", {10, time, {}}}};
+                {"Documents/identique.txt", {10, time, {}}}, {"Photos/doublon.jpg", {4096, time, {}}}};
             sync.google = {{"Archives/conservé.txt", {512, time, {}}}, {"Photos/vacances.jpg", {1024, time, {}}},
                 {"Documents/identique.txt", {10, time, {}}}};
+            sync.ignoredGooglePaths = {{"Photos/doublon.jpg", {2,
+                "Google Drive contains 2 files with this same path. CloudNav ignored all of them; rename them to unique names to sync them with OneDrive."}}};
             sync.complete = success;
             report = SyncReport(sync, context.mode);
         }
@@ -889,7 +906,7 @@ struct ReportDialog {
 
 void FilterReport(HWND dialog, ReportDialog& context) {
     const int selection = ComboBox_GetCurSel(GetDlgItem(dialog, IDC_REPORT_FILTER));
-    const char category = selection > 0 && selection <= 5 ? "+*=-!"[selection - 1] : 0;
+    const char category = selection > 0 && selection <= 6 ? "+*=-~!"[selection - 1] : 0;
     context.visible.clear();
     for (size_t i = 0; i < context.rows.size(); ++i)
         if (!category || context.rows[i].category == category) context.visible.push_back(i);
@@ -897,6 +914,12 @@ void FilterReport(HWND dialog, ReportDialog& context) {
     ListView_SetItemCountEx(list, static_cast<int>(context.visible.size()), 0);
     InvalidateRect(list, nullptr, TRUE);
     SetDlgItemTextW(dialog, IDC_REPORT_SELECTED, L"Select a file to read and copy its full path.");
+    if (context.visible.size() == 1) {
+        ListView_SetItemState(list, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        const auto& row = context.rows[context.visible.front()];
+        SetDlgItemTextW(dialog, IDC_REPORT_SELECTED, (row.path + L"\r\n" + row.action +
+            (row.error.empty() ? L"" : L" — " + row.error)).c_str());
+    }
     if (selection == 1) WriteMilestone(*context.owner, L"report-filtered.json",
         context.visible.size() == context.owner->report.Count('+'));
 }
@@ -916,7 +939,7 @@ INT_PTR CALLBACK ReportDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
             context->rows.push_back({file.category, AnalysisCategory(file.category), Utf8ToWide(item.first),
                 file.sizeKnown ? FormatBytes(file.bytes) : L"—", Utf8ToWide(file.error), actions[item.first]});
         }
-        for (const wchar_t* label : {L"All files", L"OneDrive only", L"Different", L"Identical", L"Google Drive only", L"Errors"})
+        for (const wchar_t* label : {L"All files", L"OneDrive only", L"Different", L"Identical", L"Google Drive only", L"Ignored", L"Errors"})
             ComboBox_AddString(GetDlgItem(dialog, IDC_REPORT_FILTER), label);
         ComboBox_SetCurSel(GetDlgItem(dialog, IDC_REPORT_FILTER), 0);
         const HWND list = GetDlgItem(dialog, IDC_REPORT_LIST);
@@ -1121,9 +1144,17 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 context->analyzed = true;
                 SetDlgItemTextW(dialog, IDC_MIGRATION_PLAN, CurrentPlanDetails(*context).c_str());
                 SetMigrationProgress(*context, 100);
-                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analysis complete: ready to copy");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Analysis complete — no files transferred");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Analysis complete. Choose a transfer direction and review the actions in View details.");
+                const auto ignored = context->sync.ignoredGooglePaths.size();
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, ignored ?
+                    L"1 / 2 — Analysis complete: ready, with duplicate paths ignored" :
+                    L"1 / 2 — Analysis complete: ready to copy");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, ignored ?
+                    (L"Analysis complete — " + std::to_wstring(ignored) +
+                        (ignored == 1 ? L" duplicate Google Drive path ignored" : L" duplicate Google Drive paths ignored")).c_str() :
+                    L"Analysis complete — no files transferred");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, ignored ?
+                    L"CloudNav will skip every file at duplicate Google Drive paths. Open View details to see which files need unique names." :
+                    L"Analysis complete. Choose a transfer direction and review the actions in View details.");
             } else if (update->task == Task::Copy) {
                 context->copied = true;
                 SetMigrationProgress(*context, 100);

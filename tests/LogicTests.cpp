@@ -239,6 +239,7 @@ int wmain() {
     report.Log(R"({"level":"error","object":"changed.txt","msg":"access denied"})");
     report.Log(R"({"level":"error","object":"changed.txt","msg":"access denied"})");
     assert(report.Count('!') == 1 && report.Count('*') == 0);
+    assert(std::wstring(cloudnav::AnalysisCategory('~')) == L"Ignored");
     cloudnav::AnalysisReport emptyReport;
     std::istringstream emptyCombined("");
     emptyReport.Combined(emptyCombined);

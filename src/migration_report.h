@@ -96,7 +96,7 @@ struct AnalysisReport {
         while (std::getline(input, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty()) continue;
-            if (line.size() < 3 || line[1] != ' ' || std::string("+=*-!").find(line[0]) == std::string::npos) {
+            if (line.size() < 3 || line[1] != ' ' || std::string("+=*-!~").find(line[0]) == std::string::npos) {
                 malformed = true;
                 continue;
             }
@@ -151,6 +151,7 @@ inline const wchar_t* AnalysisCategory(char category) {
     case '*': return L"Different";
     case '=': return L"Identical";
     case '-': return L"Google Drive only";
+    case '~': return L"Ignored";
     case '!': return L"Error";
     default: return L"Unclassified";
     }
