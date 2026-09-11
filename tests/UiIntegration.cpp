@@ -44,8 +44,8 @@ void Require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-bool Wait(const std::function<bool()>& condition) {
-    const ULONGLONG deadline = GetTickCount64() + 15000;
+bool Wait(const std::function<bool()>& condition, ULONGLONG timeoutMilliseconds = 15000) {
+    const ULONGLONG deadline = GetTickCount64() + timeoutMilliseconds;
     do {
         MSG message = {};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -164,7 +164,8 @@ class App {
 public:
     PROCESS_INFORMATION process = {};
     HWND main = nullptr;
-    explicit App(const std::wstring& executable, const wchar_t* args) {
+    explicit App(const std::wstring& executable, const wchar_t* args,
+                 const wchar_t* title = L"CloudNav — visual test") {
         std::wstring command = L"\"" + executable + L"\" " + args;
         std::vector<wchar_t> buffer(command.begin(), command.end());
         buffer.push_back(0);
@@ -172,7 +173,7 @@ public:
         Require(CreateProcessW(executable.c_str(), buffer.data(), nullptr, nullptr, FALSE, 0,
                                nullptr, nullptr, &startup, &process) != FALSE, "application launch failed");
         CloseHandle(process.hThread);
-        main = Window(process.dwProcessId, L"CloudNav — visual test");
+        main = Window(process.dwProcessId, title);
     }
     ~App() {
         if (main) PostMessageW(main, WM_CLOSE, 0, 0);
@@ -514,6 +515,36 @@ void RunMigrationReport(const std::wstring& executable) {
     Click(migration, IDCANCEL);
 }
 
+void RunHostGoogleReconnect(const std::wstring& executable) {
+    App app(executable, L"", L"CloudNav");
+    Click(app.main, 1010);
+    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+    Require(Text(migration, IDC_MIGRATION_GOOGLE_STATUS) == L"Connection saved",
+        "dedicated Google connection was not loaded");
+    Click(migration, IDC_MIGRATION_GOOGLE_CONNECT);
+    Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_GOOGLE_CONNECT)); }),
+        "Google reconnect did not start");
+    Require(Wait([&] {
+        return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_GOOGLE_CONNECT)) != FALSE &&
+            Text(migration, IDC_MIGRATION_GOOGLE_STATUS) == L"Connection saved" &&
+            Text(migration, IDC_MIGRATION_DETAILS) == L"Google Drive account connected.";
+    }, 300000), "Google reconnect did not complete");
+    Capture(migration, L"host-google-reconnect.png");
+    Click(migration, IDC_MIGRATION_ANALYZE);
+    Require(Wait([&] {
+        return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_ANALYZE)) &&
+            Text(migration, IDC_MIGRATION_PHASE) == L"1 / 2 — Analyzing differences";
+    }), "host analysis did not start");
+    Require(Wait([&] {
+        return IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_REPORT)) != FALSE &&
+            Text(migration, IDC_MIGRATION_PHASE).find(L"Analysis complete") != std::wstring::npos;
+    }, 600000), "host analysis did not complete");
+    Require(IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)) != FALSE,
+        "host analysis did not produce a transferable plan");
+    Capture(migration, L"host-google-analysis.png");
+    Click(migration, IDCANCEL);
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -521,6 +552,7 @@ int wmain(int argc, wchar_t** argv) {
     const bool migrationReport = argc == 3 && std::wstring(argv[2]) == L"--migration-report";
     const bool clients = argc == 3 && std::wstring(argv[2]) == L"--clients";
     const bool auth = argc == 3 && std::wstring(argv[2]) == L"--auth";
+    const bool hostGoogleReconnect = argc == 3 && std::wstring(argv[2]) == L"--host-google-reconnect";
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     wchar_t module[32768] = {};
     GetModuleFileNameW(nullptr, module, ARRAYSIZE(module));
@@ -530,9 +562,9 @@ int wmain(int argc, wchar_t** argv) {
     ULONG_PTR token = 0;
     Gdiplus::GdiplusStartupInput graphicsInput;
     if (Gdiplus::GdiplusStartup(&token, &graphicsInput, nullptr) != Gdiplus::Ok) return 4;
-    try { if (auth) RunAuth(executable); else if (clients) RunClients(executable); else if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
+    try { if (hostGoogleReconnect) RunHostGoogleReconnect(executable); else if (auth) RunAuth(executable); else if (clients) RunClients(executable); else if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
     Gdiplus::GdiplusShutdown(token);
-    const std::string json = error.empty() && auth ? "{\"passed\":true,\"dialogFreeSetup\":true,\"singleAttemptGuard\":true,\"focusRestored\":true,\"cancelSetup\":true,\"simulated\":true}" : error.empty()
+    const std::string json = error.empty() && hostGoogleReconnect ? "{\"passed\":true,\"host\":true,\"googleReconnect\":true,\"analysis\":true,\"copyStarted\":false}" : error.empty() && auth ? "{\"passed\":true,\"dialogFreeSetup\":true,\"singleAttemptGuard\":true,\"focusRestored\":true,\"cancelSetup\":true,\"simulated\":true}" : error.empty()
         ? (clients ? "{\"passed\":true,\"clientControls\":true,\"cancelPreservesState\":true,\"folderGuards\":true,\"downloadFailure\":true,\"simulated\":true}" : migrationReport ? "{\"passed\":true,\"summary\":true,\"filters\":true,\"partialResults\":true,\"staleReportCleared\":true,\"bounds\":true}" : "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"collateralPreview\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}")
         : "{\"passed\":false,\"error\":\"" + error + "\"}";
     HANDLE file = CreateFileW(argv[1], GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

@@ -16,11 +16,30 @@ enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analy
 enum class MigrationStage { Preparing, Connecting, Analyzing, Copying, Verifying };
 
 inline std::vector<std::wstring> AuthenticationArguments(bool oneDrive, bool existing,
-    const std::wstring& remote, const std::wstring& configPath) {
+    const std::wstring& remote, const std::wstring& configPath,
+    const std::wstring& googleClientId = {}, const std::wstring& googleClientSecret = {}) {
     std::vector<std::wstring> args{L"config", existing ? L"update" : L"create", remote};
     if (!existing) args.push_back(oneDrive ? L"onedrive" : L"drive");
+    if (!oneDrive) {
+        args.push_back(L"client_id=" + googleClientId);
+        args.push_back(L"client_secret=" + googleClientSecret);
+    }
     args.insert(args.end(), {L"config_is_local=true", L"config_refresh_token=true",
         L"--non-interactive", L"--config", configPath});
+    return args;
+}
+
+inline std::vector<std::wstring> AuthenticationContinuationArguments(bool oneDrive,
+    const std::wstring& remote, const std::wstring& configPath, const std::wstring& state,
+    const std::wstring& answer, const std::wstring& googleClientId = {},
+    const std::wstring& googleClientSecret = {}) {
+    std::vector<std::wstring> args{L"config", L"update", remote};
+    if (!oneDrive) {
+        args.push_back(L"client_id=" + googleClientId);
+        args.push_back(L"client_secret=" + googleClientSecret);
+    }
+    args.insert(args.end(), {L"config_is_local=true", L"config_refresh_token=true",
+        L"--continue", L"--state", state, L"--result", answer, L"--config", configPath});
     return args;
 }
 

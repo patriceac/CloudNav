@@ -3,12 +3,17 @@ param(
     [ValidateSet('Auth', 'Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime')]
     [string[]]$Scenario = @('Auth', 'Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime'),
     [switch]$SkipBuild,
+    [string]$GoogleOAuthConfigPath = $env:CLOUDNAV_GOOGLE_OAUTH_CONFIG_PATH,
+    [string]$GoogleOAuthRemote = 'gdrive',
     [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-if (-not $SkipBuild) { & (Join-Path $projectRoot 'build.ps1') -Configuration Release }
+if (-not $SkipBuild) {
+    & (Join-Path $projectRoot 'build.ps1') -Configuration Release `
+        -GoogleOAuthConfigPath $GoogleOAuthConfigPath -GoogleOAuthRemote $GoogleOAuthRemote
+}
 $releasePath = Join-Path $projectRoot 'build\Release'
 $runner = Join-Path $env:USERPROFILE '.agents\skills\hyperv-test-executables\scripts\Invoke-HyperVExecutableTest.ps1'
 if (-not (Test-Path -LiteralPath $runner)) { throw 'The isolated Hyper-V test harness is required.' }

@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.1
+# CloudNav 1.4.2
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -63,11 +63,11 @@ Bidirectional completion requires another comparison and saves the new baseline 
 
 Comparison prefers a shared checksum when available; otherwise it uses size and UTC modification time at second precision. OneDrive and Google Drive do not always expose a common hash. Equality is therefore not a promise of a downloaded byte-for-byte comparison. When Google Drive contains several files at the same path, CloudNav lists that path as ignored and skips every ambiguous object while continuing with the rest of the plan; rename those objects to unique names to include them. Files inside duplicate Google Drive folder paths are skipped for the same reason. Case/Unicode collisions across accounts, unsupported paths, and unreadable inventories still block execution.
 
-CloudNav embeds rclone **1.75.0-cloudnav.3**, built from pinned upstream 1.75.0 sources with a small OAuth callback patch, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. OAuth credentials and migration state remain per-user in `%LOCALAPPDATA%\CloudNav`; no credentials are embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
+CloudNav embeds rclone **1.75.0-cloudnav.3**, built from pinned upstream 1.75.0 sources with a small OAuth callback patch, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. Google Drive uses CloudNav's dedicated installed-app OAuth credentials; they identify CloudNav but do not authenticate a user. Every user signs in separately and receives a per-user token in `%LOCALAPPDATA%\CloudNav`; tokens and migration state are never embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
 
 If Windows reserves rclone's usual callback port 53682, Google Drive and OneDrive sign-in fall back to an available port on `127.0.0.1`. The same callback URI is used for authorization and token exchange; state validation remains enabled. Other providers retain their registered callback behavior. This follows the loopback redirect rules documented by [Google](https://developers.google.com/identity/protocols/oauth2/native-app) and [Microsoft](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url#localhost-exceptions). The reproducible engine build recipe, patch, and regression test are in `third_party/Build-Rclone.ps1`, `third_party/rclone-cloudnav.patch`, and `third_party/rclone-cloudnav_test.go`. This Windows engine uses a non-CGO build; CloudNav does not use rclone's optional FUSE mount commands.
 
-Account setup uses rclone's [non-interactive continuation protocol](https://rclone.org/commands/rclone_config_create/) without opening CloudNav question dialogs. OneDrive reconnect keeps the configured drive when the signed-in account still offers it; otherwise CloudNav selects the account's personal or business root. Google reconnect keeps an existing Shared Drive choice, while a new connection defaults to My Drive. Google Drive supports browser sign-in using rclone's built-in client; existing custom developer credentials are preserved when reconnecting. CloudNav accepts the built-in client's retirement notice automatically and shows it as a nonblocking connection status. Shared-client availability is controlled by Google and rclone, and the root check must succeed before the connection is saved.
+Account setup uses rclone's [non-interactive continuation protocol](https://rclone.org/commands/rclone_config_create/) without opening CloudNav question dialogs. OneDrive reconnect keeps the configured drive when the signed-in account still offers it; otherwise CloudNav selects the account's personal or business root. Google reconnect keeps an existing Shared Drive choice, while a new connection defaults to My Drive. Existing custom Google developer credentials are preserved; otherwise CloudNav supplies its dedicated desktop client before opening the per-user browser sign-in. Configurations that still depend on rclone's retired shared client are treated as disconnected and must reconnect once.
 
 Setup stages changes beside the configuration and replaces the saved file only after all required fields and a read-only root listing succeed. Incomplete OneDrive configurations require reconnecting and selecting a drive. Provider errors stop the attempt; reconnect starts discovery again. Setup is limited to 32 continuation steps and five minutes per subprocess. Authentication and readiness-probe output are excluded from diagnostic logs. Both accounts are checked before comparison. Existing logs from older versions may contain credentials: do not share them unredacted, and revoke any credentials exposed through those logs.
 
@@ -106,8 +106,10 @@ Official OneDrive and Google Drive artwork is used only to identify the correspo
 Visual Studio Build Tools 2022 with the x64 C++ toolchain is required. From PowerShell:
 
 ```powershell
-.\build.ps1 -Configuration Release
+.\build.ps1 -Configuration Release -GoogleOAuthConfigPath C:\secure\rclone.conf -GoogleOAuthRemote gdrive
 ```
+
+The selected Google Drive remote must contain CloudNav's dedicated desktop `client_id` and `client_secret`. The source configuration stays outside the repository; the generated header remains under the ignored `build` directory. Debug builds may omit the OAuth configuration, but Release builds fail closed without it.
 
 The build downloads the official pinned rclone archive, verifies its SHA-256 checksum, and embeds the engine as a resource. The Release build uses the static C++ runtime (`/MT`) and produces:
 

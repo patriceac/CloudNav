@@ -27,6 +27,7 @@
 #include "migration_report.h"
 #include "sync_logic.h"
 #include "auth_logic.h"
+#include "google_oauth_config.h"
 #include "resource.h"
 #include "ui.h"
 
@@ -90,7 +91,6 @@ struct DialogContext {
     bool copied = false;
     bool oneDriveReady = false;
     bool googleReady = false;
-    bool googleUsesSharedClient = false;
     bool sawAnalyzeProgress = false;
     bool sawCopyProgress = false;
     bool sawVerifyProgress = false;
@@ -403,9 +403,15 @@ std::string WideToUtf8(const std::wstring& value) {
 }
 
 bool ProbeAccount(DialogContext& context, const std::wstring& config, const std::wstring& remote, std::wstring& error) {
-    return RunProcess(context, {L"lsd", remote + L":", L"--config", config, L"--retries", L"1",
+    std::string output;
+    const bool success = RunProcess(context, {L"lsd", remote + L":", L"--config", config, L"--retries", L"1",
         L"--low-level-retries", L"1", L"--contimeout", L"15s", L"--timeout", L"30s"},
-        MigrationStage::Connecting, error, nullptr, nullptr, nullptr, true);
+        MigrationStage::Connecting, error, nullptr, nullptr, &output, true);
+    if (!success) {
+        const auto details = AuthFailureDetails(output);
+        if (!details.empty()) error += L"\n" + details;
+    }
+    return success;
 }
 
 bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) {
@@ -415,15 +421,34 @@ bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) 
     const auto fields = AuthFields(original, remoteName);
     const bool existing = !fields.empty();
     const auto preferredDrive = fields.find("drive_id") == fields.end() ? std::string() : fields.at("drive_id");
+    std::wstring googleClientId;
+    std::wstring googleClientSecret;
+    if (!oneDrive) {
+        const auto configuredId = fields.find("client_id");
+        const auto configuredSecret = fields.find("client_secret");
+        if (configuredId != fields.end() && configuredSecret != fields.end() &&
+            !configuredId->second.empty() && !configuredSecret->second.empty()) {
+            googleClientId = Utf8ToWide(configuredId->second);
+            googleClientSecret = Utf8ToWide(configuredSecret->second);
+        } else {
+            googleClientId = kGoogleOAuthClientId;
+            googleClientSecret = kGoogleOAuthClientSecret;
+        }
+        if (googleClientId.empty() || googleClientSecret.empty()) {
+            error = L"This CloudNav build has no dedicated Google OAuth client.";
+            return false;
+        }
+    }
     // Same-directory staging permits atomic replacement. No provider failure
     // can leave a new token-only remote in the live configuration.
     const auto staged = context.configPath + L".auth-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
     struct Cleanup { std::wstring path; ~Cleanup() { DeleteFileW(path.c_str()); } } cleanup{staged};
     if (!WriteEvidence(staged, original)) { error = L"Unable to stage account configuration."; return false; }
-    auto args = AuthenticationArguments(oneDrive, existing, remote, staged);
+    auto args = AuthenticationArguments(oneDrive, existing, remote, staged, googleClientId, googleClientSecret);
     const bool complete = CompleteAuth([&](bool continuation, const std::string& state, const std::string& answer, std::string& output) {
-        auto command = continuation ? std::vector<std::wstring>{L"config", L"update", remote, L"--config", staged,
-            L"config_is_local=true", L"config_refresh_token=true", L"--continue", L"--state", Utf8ToWide(state), L"--result", Utf8ToWide(answer)} : args;
+        auto command = continuation ? AuthenticationContinuationArguments(oneDrive, remote, staged,
+            Utf8ToWide(state), Utf8ToWide(answer),
+            googleClientId, googleClientSecret) : args;
         const bool success = RunProcess(context, command, MigrationStage::Connecting, error, nullptr, nullptr, &output, true);
         if (!success) {
             const auto details = AuthFailureDetails(output);
@@ -444,11 +469,9 @@ bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) 
     }
     if (!ProbeAccount(context, staged, remote, error) || context.cancelRequested) return false;
     if (ReadSyncFile(context.configPath) != original) { error = L"Account configuration changed during setup. Reconnect to try again."; return false; }
-    const bool sharedGoogleClient = !oneDrive && UsesSharedGoogleClient(stagedConfig, remoteName);
     if (!MoveFileExW(staged.c_str(), context.configPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         error = L"Unable to save the validated account configuration."; return false;
     }
-    if (!oneDrive) context.googleUsesSharedClient = sharedGoogleClient;
     return true;
 }
 
@@ -1010,14 +1033,10 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         const auto savedConfig = ReadSyncFile(context->configPath);
         context->oneDriveReady = context->demoMode || AuthReady(savedConfig, "cloudnav-onedrive", true);
         context->googleReady = context->demoMode || AuthReady(savedConfig, "cloudnav-gdrive", false);
-        context->googleUsesSharedClient = !context->demoMode && context->googleReady &&
-            UsesSharedGoogleClient(savedConfig, "cloudnav-gdrive");
         SetDlgItemTextW(dialog, IDC_MIGRATION_ONEDRIVE_STATUS, context->demoMode ? L"Demo account" : context->oneDriveReady ? L"Connection saved" : L"Not connected");
-        SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Demo account" : context->googleReady ?
-            context->googleUsesSharedClient ? L"Connected — shared client" : L"Connection saved" : L"Not connected");
+        SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, context->demoMode ? L"Demo account" : context->googleReady ? L"Connection saved" : L"Not connected");
         if (context->oneDriveReady && context->googleReady)
-            SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, context->googleUsesSharedClient ?
-                L"Ready. Google's shared sign-in client is being retired; this notice does not block synchronization." :
+            SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS,
                 L"Analysis checks account access and estimates the copy. No files are transferred.");
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PHASE, WM_SETFONT, reinterpret_cast<WPARAM>(context->theme.bold), TRUE);
         RefreshPlan(*context);
@@ -1135,11 +1154,8 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"OneDrive account connected.");
             } else if (update->task == Task::AuthenticateGoogle) {
                 context->googleReady = true;
-                SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS,
-                    context->googleUsesSharedClient ? L"Connected — shared client" : L"Connection saved");
-                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, context->googleUsesSharedClient ?
-                    L"Google Drive connected. The shared sign-in retirement notice does not block synchronization." :
-                    L"Google Drive account connected.");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, L"Connection saved");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"Google Drive account connected.");
             } else if (update->task == Task::Analyze) {
                 context->analyzed = true;
                 SetDlgItemTextW(dialog, IDC_MIGRATION_PLAN, CurrentPlanDetails(*context).c_str());

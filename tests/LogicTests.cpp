@@ -256,11 +256,22 @@ int wmain() {
     assert(!cloudnav::JsonString("{\"object\":\"\\ud800\"}", "object", decoded));
 
     for (bool oneDrive : {false, true}) for (bool existing : {false, true}) {
-        const auto args = cloudnav::AuthenticationArguments(oneDrive, existing, L"account", L"test.conf");
+        const auto args = cloudnav::AuthenticationArguments(oneDrive, existing, L"account", L"test.conf",
+            L"cloudnav-client", L"cloudnav-secret");
         const auto has = [&](const wchar_t* value) { return std::find(args.begin(), args.end(), value) != args.end(); };
         assert(args[1] == (existing ? L"update" : L"create"));
         assert(has(L"--non-interactive") && has(L"config_refresh_token=true") && has(L"config_is_local=true"));
         assert(!has(L"--auto-confirm") && !has(L"config_type=driveid") && !has(L"config_shared_client_id=true"));
+        assert(has(L"client_id=cloudnav-client") == !oneDrive);
+        assert(has(L"client_secret=cloudnav-secret") == !oneDrive);
+        const auto continuation = cloudnav::AuthenticationContinuationArguments(oneDrive, L"account", L"test.conf",
+            L"opaque-state", L"answer", L"cloudnav-client", L"cloudnav-secret");
+        const auto continuedHas = [&](const wchar_t* value) {
+            return std::find(continuation.begin(), continuation.end(), value) != continuation.end();
+        };
+        assert(continuedHas(L"--continue") && continuedHas(L"opaque-state") && continuedHas(L"answer"));
+        assert(continuedHas(L"client_id=cloudnav-client") == !oneDrive);
+        assert(continuedHas(L"client_secret=cloudnav-secret") == !oneDrive);
     }
     std::wcout << L"CloudNav logic tests: OK\n";
     return 0;

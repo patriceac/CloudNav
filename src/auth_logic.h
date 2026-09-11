@@ -18,6 +18,9 @@ inline std::wstring AuthFailureDetails(const std::string& output) {
     if (output.find("bind:") != std::string::npos) return L"The local browser sign-in port is unavailable. Close other sign-in attempts and reconnect.";
     if (output.find("invalid_client") != std::string::npos) return L"Google rejected the OAuth client. Reconnect with a supported client.";
     if (output.find("invalid_grant") != std::string::npos) return L"The saved authorization has expired or was revoked. Reconnect to sign in again.";
+    if (output.find("RATE_LIMIT_EXCEEDED") != std::string::npos ||
+        output.find("rateLimitExceeded") != std::string::npos || output.find("Quota exceeded") != std::string::npos)
+        return L"Google Drive's API quota is temporarily exhausted. Try again later.";
     if (output.find("unknown flag") != std::string::npos) return L"The bundled engine rejected an account setup option.";
     return {};
 }
@@ -46,18 +49,11 @@ inline bool AuthReady(const std::string& config, const std::string& remote, bool
     const auto token = SyncJson::parse(fields["token"], nullptr, false);
     if (!token.is_object() || !token.contains("access_token") || !token["access_token"].is_string() ||
         token["access_token"].get<std::string>().empty()) return false;
-    // Empty client fields select rclone's built-in OAuth client. A custom
-    // client must have both fields; the root probe validates actual access.
-    if (!oneDrive) return fields["client_id"].empty() == fields["client_secret"].empty();
+    // The shared rclone client is retired during 2026. Google connections are
+    // ready only after a dedicated desktop client and a per-user token exist.
+    if (!oneDrive) return !fields["client_id"].empty() && !fields["client_secret"].empty();
     return !fields["drive_id"].empty() && (fields["drive_type"] == "personal" ||
         fields["drive_type"] == "business" || fields["drive_type"] == "documentLibrary");
-}
-
-inline bool UsesSharedGoogleClient(const std::string& config, const std::string& remote) {
-    const auto fields = AuthFields(config, remote);
-    return fields.count("type") && fields.at("type") == "drive" &&
-        (!fields.count("client_id") || fields.at("client_id").empty()) &&
-        (!fields.count("client_secret") || fields.at("client_secret").empty());
 }
 
 inline bool AuthOptionHasValue(const SyncJson& option, const std::string& value) {
@@ -74,7 +70,7 @@ inline bool AutomaticAuthAnswer(const SyncJson& option, bool oneDrive,
     const std::string& preferredDriveId, std::string& answer) {
     if (!option.is_object()) return false;
     const auto name = option.value("Name", std::string());
-    if (name == "config_is_local" || name == "config_refresh_token" || name == "config_shared_client_id" ||
+    if (name == "config_is_local" || name == "config_refresh_token" ||
         (oneDrive && name == "config_drive_ok")) {
         answer = "true";
         return true;
