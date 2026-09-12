@@ -2,6 +2,21 @@
 #include "sync_logic.h"
 
 namespace cloudnav {
+// Public client identifier from the pinned rclone Drive backend. Explicitly
+// configured copies of the shared client need the same upgrade as empty IDs.
+inline bool LegacyGoogleClient(const std::string& id) {
+    return id.empty() || id == "202264815644.apps.googleusercontent.com" || id.rfind("202264815644-", 0) == 0;
+}
+
+inline std::pair<std::string, std::string> SelectGoogleClient(const std::map<std::string, std::string>& fields,
+    const std::string& applicationId, const std::string& applicationSecret) {
+    const auto id = fields.find("client_id"), secret = fields.find("client_secret");
+    if (id != fields.end() && secret != fields.end() && !LegacyGoogleClient(id->second) && !secret->second.empty())
+        return {id->second, secret->second};
+    if (LegacyGoogleClient(applicationId) || applicationSecret.empty()) return {};
+    return {applicationId, applicationSecret};
+}
+
 inline std::wstring AuthFailureDetails(const std::string& output) {
     // Deliberately return fixed descriptions, never provider output or tokens.
     if (output.find("panic:") != std::string::npos) {
@@ -51,7 +66,7 @@ inline bool AuthReady(const std::string& config, const std::string& remote, bool
         token["access_token"].get<std::string>().empty()) return false;
     // The shared rclone client is retired during 2026. Google connections are
     // ready only after a dedicated desktop client and a per-user token exist.
-    if (!oneDrive) return !fields["client_id"].empty() && !fields["client_secret"].empty();
+    if (!oneDrive) return !LegacyGoogleClient(fields["client_id"]) && !fields["client_secret"].empty();
     return !fields["drive_id"].empty() && (fields["drive_type"] == "personal" ||
         fields["drive_type"] == "business" || fields["drive_type"] == "documentLibrary");
 }

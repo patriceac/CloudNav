@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.2
+# CloudNav 1.4.3
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -10,7 +10,7 @@ CloudNav is a native, portable Windows 11 utility that brings together two setti
 
 One standalone `.exe`, with no installer or additional application runtime.
 
-The shared cloud analysis, synchronization modes, English interface, and client installation controls described below are available in source builds. They are not included in the v1.2.2 release linked above.
+Version 1.4.3 adds fixed transfer totals, stable ETA handling, account upgrade checks, per-user Explorer registration, and resumable folder setup. The title bar displays the running version.
 
 ## Features
 
@@ -23,19 +23,25 @@ The shared cloud analysis, synchronization modes, English interface, and client 
 - install OneDrive or Google Drive through their official setup programs, and uninstall Google Drive with personal-folder checks;
 - analyze OneDrive and Google Drive together, then choose either one-way copy direction or a manual bidirectional sync without repeating the comparison;
 - preview per-file actions, preserve both conflicting versions, archive overwritten/deleted files, and recover interrupted transfers through a reviewed merge;
-- inspect complete current/proposed paths and collateral folder changes before an action-specific final confirmation;
+- inspect complete current/proposed paths and selected folder changes before an action-specific final confirmation;
 - apply Explorer visibility independently, with the Apply button enabled only for pending changes;
 - remember the window position and bring it back onto a visible display if the monitor layout changes.
 
 CloudNav detects the paths and account labels available on the current PC. No user name, account name, or user-specific path is hard-coded in the application.
 
-The navigation section distinguishes installed OneDrive accounts with accessible folders from leftover registrations, missing folders, and unknown availability. Unavailable entries cannot be enabled; an already-visible stale entry can still be hidden. Google Drive's virtual-drive control requires a detected mounted volume, and a remaining My Drive folder is labeled local when the Google client is absent. My Drive is detected automatically, preferring the mounted Google Drive location before standard local folders. The navigation controls group both Google Drive entries before OneDrive. Refresh reloads these states; visibility checkboxes describe Explorer settings, not cloud synchronization health.
+The navigation section distinguishes installed OneDrive accounts with accessible folders from leftover registrations, missing folders, and unknown availability. Unavailable entries cannot be enabled; an already-visible stale entry can still be hidden. Google Drive's virtual-drive control requires a detected mounted volume, and a remaining My Drive folder is labeled local when the Google client is absent. My Drive visibility and its target belong to the current Windows user. An established target is preserved across visibility changes, even while offline; fresh detection requires one unambiguous candidate. Legacy machine registration is masked only for the current user, without importing its possibly foreign target or modifying other profiles. Other users migrate when they next open CloudNav. The navigation controls group both Google Drive entries before OneDrive. Refresh reloads these states; visibility checkboxes describe Explorer settings, not cloud synchronization health.
 
 ## Safety
 
-The checkboxes in the main window only control visibility in the File Explorer navigation pane. Hiding the Google Drive letter uses the Windows `NoDrives` policy: the icon disappears, but the drive and its files remain accessible.
+The checkboxes in the main window only control visibility in the File Explorer navigation pane. Hiding the Google Drive letter uses the current user’s Windows `NoDrives` policy: the icon disappears, but the drive and its files remain accessible.
 
 Personal-folder changes are shown in a separate review before anything is applied. Current and proposed paths can be selected and copied in full. CloudNav validates destinations, blocks nested paths, and attempts to restore previous locations if a redirect-only operation fails. Copy/move failures report any steps that already completed.
+
+After a OneDrive → Google Drive copy, **Set up folders** recommends **Redirect only** for corresponding folders. Completion is not treated as proof: before redirection CloudNav reads and compares every selected source file against the actual mounted destination using rclone `check --download --one-way --links`. This can download online-only files. Missing or different files, unreadable content, or changed accounts block redirection; extra destination files are retained. Pause editing and external synchronization while checking and applying.
+
+CloudNav saves the approved folder pairs in the current user's registry before setup. Recovery is bound to that Windows SID, the cloud account fingerprint and both mounted root identities. Every resume rechecks the original data and any files newly written to the released local folder. Completed paths are recognized, unapproved path changes are rejected, and failed redirection attempts restore their starting Windows locations where possible. A rollback does not undo a backup change already made in OneDrive; the saved plan remains available to continue or explicitly discard.
+
+For protected folders, CloudNav opens OneDrive settings and gives the supported steps: **Sync and backup → Manage backup**, stop backup only for the selected folders, and keep files in OneDrive. Then use **Continue setup**. CloudNav waits for Windows to report the selected folders' local default locations; there is no guessed timeout and no machine-wide policy modification or OneDrive restart. Unselected folders keep their locations. Existing administrator policies, including any left by an older CloudNav version, are not removed automatically because their ownership cannot be established. If they prevent stopping backup, the app identifies the required administrator action. See [Microsoft's folder-backup instructions](https://support.microsoft.com/en-us/onedrive/back-up-your-folders-with-onedrive).
 
 OneDrive client actions stay disabled while Desktop, Documents, Pictures, Downloads, Music, or Videos points anywhere inside the detected OneDrive root. CloudNav names the folders that must be moved and checks their locations again immediately before disabling automatic startup or launching the uninstaller. This check covers those six managed personal folders only, not every other folder that OneDrive may synchronize. Before uninstalling, CloudNav asks the user to verify that OneDrive is up to date and warns that online-only files will remain accessible through OneDrive.com.
 
@@ -53,6 +59,8 @@ Uninstall uses the registered vendor executable, never a shell command or guesse
 
 During analysis, OneDrive and Google Drive are listed concurrently. Each account has its own file count and elapsed time, updated once per second even while its engine is silent. Cancel stops both processes; an incomplete listing cannot authorize a transfer. Separate temporary configurations prevent simultaneous token refreshes from overwriting each other. The file counter reports only listing entries received so far; the total and percentage remain unknown until enumeration completes.
 
+During transfer, the denominator comes from the reviewed plan and stays fixed. Successfully completed file operations are counted once; retries do not inflate the planned total. Network traffic is shown separately and explicitly includes retries. ETA uses recent logical progress across the whole job, waits for enough samples, and disappears during stalls or unresolved retry errors. Google quota responses show a retry state. A dedicated Google client has its own quotas and does not guarantee uninterrupted service.
+
 The selected direction is saved immediately for the current Windows user and restored when the assistant or application is reopened. A missing or invalid preference defaults to OneDrive → Google Drive. Restoring a direction does not start a transfer or bypass analysis.
 
 One-way modes copy missing files and directly overwrite older destination files when the source is newer (UTC timestamps at whole-second precision). Equal-date or newer destination files and destination-only files are kept. One-way copies do not archive overwritten files. Bidirectional mode compares both inventories against the last successful two-way baseline. Without a baseline it merges files without propagating deletions. If both versions changed, both accounts retain the OneDrive version under the original name and the Google version under a unique `.conflict-Google-…` sibling name. When an edit conflicts with a deletion, the edited version is restored to the other account.
@@ -63,7 +71,7 @@ Bidirectional completion requires another comparison and saves the new baseline 
 
 Comparison prefers a shared checksum when available; otherwise it uses size and UTC modification time at second precision. OneDrive and Google Drive do not always expose a common hash. Equality is therefore not a promise of a downloaded byte-for-byte comparison. When Google Drive contains several files at the same path, CloudNav lists that path as ignored and skips every ambiguous object while continuing with the rest of the plan; rename those objects to unique names to include them. Files inside duplicate Google Drive folder paths are skipped for the same reason. Case/Unicode collisions across accounts, unsupported paths, and unreadable inventories still block execution.
 
-CloudNav embeds rclone **1.75.0-cloudnav.3**, built from pinned upstream 1.75.0 sources with a small OAuth callback patch, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. Google Drive uses CloudNav's dedicated installed-app OAuth credentials; they identify CloudNav but do not authenticate a user. Every user signs in separately and receives a per-user token in `%LOCALAPPDATA%\CloudNav`; tokens and migration state are never embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
+CloudNav embeds rclone **1.75.0-cloudnav.3**, built from pinned upstream 1.75.0 sources with a small OAuth callback patch, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. Google Drive uses CloudNav's dedicated installed-app OAuth credentials; they identify CloudNav but do not authenticate a user. Upgrades detect both implicit and explicitly configured rclone shared Google clients and require **Reconnect after upgrade**. Reconnect uses the packaged CloudNav client and a fresh sign-in for that user; valid intentional custom clients are retained. A failed connection leaves the previous configuration intact. Every user signs in separately and receives a per-user token in `%LOCALAPPDATA%\CloudNav`; tokens and migration state are never embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
 
 If Windows reserves rclone's usual callback port 53682, Google Drive and OneDrive sign-in fall back to an available port on `127.0.0.1`. The same callback URI is used for authorization and token exchange; state validation remains enabled. Other providers retain their registered callback behavior. This follows the loopback redirect rules documented by [Google](https://developers.google.com/identity/protocols/oauth2/native-app) and [Microsoft](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url#localhost-exceptions). The reproducible engine build recipe, patch, and regression test are in `third_party/Build-Rclone.ps1`, `third_party/rclone-cloudnav.patch`, and `third_party/rclone-cloudnav_test.go`. This Windows engine uses a non-CGO build; CloudNav does not use rclone's optional FUSE mount commands.
 
@@ -71,9 +79,9 @@ Account setup uses rclone's [non-interactive continuation protocol](https://rclo
 
 Setup stages changes beside the configuration and replaces the saved file only after all required fields and a read-only root listing succeed. Incomplete OneDrive configurations require reconnecting and selecting a drive. Provider errors stop the attempt; reconnect starts discovery again. Setup is limited to 32 continuation steps and five minutes per subprocess. Authentication and readiness-probe output are excluded from diagnostic logs. Both accounts are checked before comparison. Existing logs from older versions may contain credentials: do not share them unredacted, and revoke any credentials exposed through those logs.
 
-When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, CloudNav can disable OneDrive Known Folder Backup before a redirect-only operation. The preview and final review explicitly list other protected folders that will return to their local locations. No OneDrive file is deleted. Copy/move plans requiring this backup release are blocked: use the migration assistant to copy the original cloud data and check the result yourself before redirecting, so releasing backup cannot change the copy source to an empty local folder.
+When Desktop, Documents, or Pictures moves from OneDrive to Google Drive, use the selected-folder backup-release flow described above. If files were already copied, choose **Redirect only** to check the existing destination rather than starting another transfer.
 
-If a scheduled task named `OneDrive-GDrive-Bidirectional-Sync` is present, CloudNav reports **external synchronization detected**. Completing a transfer makes the ordinary personal-folder manager available without automatically recommending redirect-only.
+If a scheduled task named `OneDrive-GDrive-Bidirectional-Sync` is present, CloudNav reports **external synchronization detected**. Task detection alone never proves that files match. A completed OneDrive → Google Drive transfer recommends redirect-only for corresponding folders, followed by a content check before any location change.
 
 Analysis shows files received from each provider with an animated activity bar. Transfers show the current operation's percentage, speed, and ETA when available; these are not an overall multi-operation ETA. The pre-transfer comparison remains available for consultation. Progress statistics are emitted once per second during active transfer operations.
 
@@ -87,7 +95,7 @@ Inventories use rclone's `lsjson --recursive --hash`, with `--fast-list` and `--
 2. Make sure Google Drive for desktop and/or OneDrive is installed and running, depending on the features you need.
 3. Run the executable directly; no installation is required.
 4. Use **Apply visibility** for Explorer entries, **Personal folders…** for folder locations, or **Transfer or sync files…** in **Cloud sync** for cloud analysis and transfer.
-5. In the folder manager, select **Review…**, review all affected folders, then choose the explicit copy, move, or redirect action.
+5. In the folder manager, select **Review…**, review the selected folders, and confirm the action. If OneDrive still protects them, follow its per-folder backup instructions and return to **Continue setup**.
 
 File Explorer may restart once to reload its configuration. Any open folder windows will close when that happens.
 
@@ -135,6 +143,8 @@ With the Codex Hyper-V SYSTEM broker installed, run the repeatable offline relea
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario MigrationReport,MigrationEngine
 # Check client buttons, confirmations, folder guards, and installation detection:
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Clients,ClientRuntime
+# Check per-user Explorer state, saved setup, and real Windows path redirection/rollback:
+.\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario UserNavigation,KnownFolders
 # Check account selection/cancellation and atomic setup failure recovery:
 .\tests\Invoke-ReleaseChecks.ps1 -SkipBuild -Scenario Auth,MigrationEngine
 ```
@@ -143,6 +153,6 @@ The runner keys checkpoints to the exact executable, test driver, action file, a
 
 Client tests use disposable registry/filesystem fixtures to cover unquoted uninstaller paths, installed clients without connected accounts, missing uninstallers, and rejection of unsigned or unexpected programs. UI client installation/removal is simulated. The optional `CloudNavClientTests.exe <result.json> --downloads` mode downloads both official installers, validates their publisher signatures, and deletes the downloads without executing them. Run it only through the isolated harness with its approved `InternetOnly` profile; it is deliberately excluded from the offline release suite.
 
-The account tests cover the native drive selector and cancellation. The engine test runs the real non-interactive rclone protocol with stdin closed against a local backend, then uses a synthetic subprocess to check provider errors, incomplete metadata, failed root checks, successful atomic replacement, recovery after failed listing, temporary-file cleanup, and exclusion of authentication output from logs. `CloudNavAuthFixture.exe` is test-only and is not part of the portable application distribution.
+Folder tests exercise real registry subtrees representing two user scopes, plus actual known-folder redirection and restoration in an isolated guest. These are not two simultaneous interactive Windows logons. They check saved plan restoration, identity mismatch rejection, wrong destinations, and delayed/failed release states. The content check uses real engine fixtures, including equal-size/equal-time mismatches and missing files. The account tests cover fresh Google setup, implicit and explicit shared-client upgrades, custom-client preservation, the native drive selector, and cancellation. The engine test runs the real non-interactive rclone protocol with stdin closed against a local backend, then uses a synthetic subprocess to check provider errors, incomplete metadata, failed root checks, successful atomic replacement, recovery after failed listing, temporary-file cleanup, and exclusion of authentication output from logs. `CloudNavAuthFixture.exe` is test-only and is not part of the portable application distribution.
 
 The JSON parser is vendored from nlohmann/json v3.12.0 under the MIT License; see [`third_party/nlohmann/LICENSE.MIT`](third_party/nlohmann/LICENSE.MIT).

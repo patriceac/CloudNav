@@ -8,6 +8,10 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <gdiplus.h>
+#include <sddl.h>
+#include <filesystem>
+#include <future>
+#include "../third_party/nlohmann/json.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,6 +21,8 @@
 #include <vector>
 
 #include "folder_manager.h"
+#include "folder_recovery.h"
+#include "migration.h"
 #include "logic.h"
 #include "resource.h"
 #include "ui.h"
@@ -72,12 +78,6 @@ struct FolderRow {
     bool redirectable = false;
 };
 
-struct FolderOperation {
-    size_t rowIndex = 0;
-    std::wstring source;
-    std::wstring target;
-};
-
 struct PlanProfile {
     bool hasChanges = false;
     bool hasMirroredCloudChanges = false;
@@ -95,6 +95,12 @@ struct DialogContext {
     bool backupReleaseRequired = false;
     size_t selectedChanges = 0;
     size_t sideEffects = 0;
+    bool busy = false;
+    std::atomic<bool> cancelled = false;
+    std::vector<FolderOperation> pendingPlan;
+    std::string pendingIdentity;
+    bool savedPlanInvalid = false;
+    bool pendingNeedsRelease = false;
     ui::DialogTheme theme;
     IStream* oneDriveLogoStream = nullptr;
     IStream* googleDriveLogoStream = nullptr;
@@ -199,124 +205,6 @@ bool RegistryPolicyValueEnabled(HKEY root, const wchar_t* valueName) {
     return true;
 }
 
-bool IsAdministrator() {
-    BOOL isAdmin = FALSE;
-    PSID administrators = nullptr;
-    SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
-    if (AllocateAndInitializeSid(&authority, 2, SECURITY_BUILTIN_DOMAIN_RID,
-                                 DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
-                                 &administrators)) {
-        CheckTokenMembership(nullptr, administrators, &isAdmin);
-        FreeSid(administrators);
-    }
-    return isAdmin == TRUE;
-}
-
-std::wstring GetModulePath() {
-    std::vector<wchar_t> buffer(512);
-    for (;;) {
-        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(),
-                                                static_cast<DWORD>(buffer.size()));
-        if (length == 0) {
-            return {};
-        }
-        if (length < buffer.size() - 1) {
-            return std::wstring(buffer.data(), length);
-        }
-        buffer.resize(buffer.size() * 2);
-    }
-}
-
-int ConfigureOneDriveFolderBackupPolicy() {
-    if (!IsAdministrator()) {
-        return ERROR_ACCESS_DENIED;
-    }
-
-    DWORD existing = 0;
-    if (ReadRegistryDword(HKEY_LOCAL_MACHINE, kOneDrivePolicyKey,
-                          L"KFMBlockOptIn", existing)) {
-        if (existing == 2) {
-            return ERROR_SUCCESS;
-        }
-        return ERROR_ACCESS_DISABLED_BY_POLICY;
-    }
-
-    const std::array<const wchar_t*, 3> incompatiblePolicies = {
-        L"KFMBlockOptOut", L"KFMSilentOptIn", L"KFMOptInWithWizard"
-    };
-    for (const wchar_t* valueName : incompatiblePolicies) {
-        if (RegistryPolicyValueEnabled(HKEY_LOCAL_MACHINE, valueName) ||
-            RegistryPolicyValueEnabled(HKEY_CURRENT_USER, valueName)) {
-            return ERROR_ACCESS_DISABLED_BY_POLICY;
-        }
-    }
-
-    HKEY key = nullptr;
-    DWORD disposition = 0;
-    LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, kOneDrivePolicyKey,
-                                     0, nullptr, 0, KEY_SET_VALUE,
-                                     nullptr, &key, &disposition);
-    if (status != ERROR_SUCCESS) {
-        return status;
-    }
-    const DWORD value = 2;
-    status = RegSetValueExW(key, L"KFMBlockOptIn", 0, REG_DWORD,
-                            reinterpret_cast<const BYTE*>(&value), sizeof(value));
-    RegCloseKey(key);
-    return status;
-}
-
-bool RunElevatedOneDriveBackupDisable(HWND owner, std::wstring& error) {
-    DWORD current = 0;
-    if (ReadRegistryDword(HKEY_LOCAL_MACHINE, kOneDrivePolicyKey,
-                          L"KFMBlockOptIn", current) && current == 2) {
-        return true;
-    }
-
-    if (IsAdministrator()) {
-        const int result = ConfigureOneDriveFolderBackupPolicy();
-        if (result == ERROR_SUCCESS) {
-            return true;
-        }
-        error = result == ERROR_ACCESS_DISABLED_BY_POLICY
-            ? L"An existing OneDrive policy prevents CloudNav from automatically disabling backup."
-            : FormatWindowsError(static_cast<DWORD>(result));
-        return false;
-    }
-
-    const std::wstring executable = GetModulePath();
-    if (executable.empty()) {
-        error = L"CloudNav cannot find its own executable.";
-        return false;
-    }
-    SHELLEXECUTEINFOW execute = {sizeof(execute)};
-    execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-    execute.hwnd = owner;
-    execute.lpVerb = L"runas";
-    execute.lpFile = executable.c_str();
-    execute.lpParameters = L"--elevated-disable-onedrive-backup";
-    execute.nShow = SW_HIDE;
-    if (!ShellExecuteExW(&execute)) {
-        const DWORD code = GetLastError();
-        error = code == ERROR_CANCELLED
-            ? L"Administrator approval cancelled. No folders were redirected."
-            : FormatWindowsError(code);
-        return false;
-    }
-    WaitForSingleObject(execute.hProcess, INFINITE);
-    DWORD exitCode = ERROR_GEN_FAILURE;
-    GetExitCodeProcess(execute.hProcess, &exitCode);
-    CloseHandle(execute.hProcess);
-    if (exitCode != ERROR_SUCCESS) {
-        error = exitCode == ERROR_ACCESS_DISABLED_BY_POLICY
-            ? L"An existing OneDrive policy prevents CloudNav from automatically disabling backup."
-            : L"Disabling OneDrive backup failed (code " +
-              std::to_wstring(exitCode) + L").";
-        return false;
-    }
-    return true;
-}
-
 bool OneDriveFolderBackupActive() {
     HKEY accounts = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kOneDriveAccountsKey, 0,
@@ -406,16 +294,7 @@ void PumpDialogMessages(HWND dialog) {
     }
 }
 
-bool WaitForOneDriveBackupRelease(HWND dialog) {
-    for (int attempt = 0; attempt < 120; ++attempt) {
-        if (!OneDriveFolderBackupActive()) {
-            return true;
-        }
-        MsgWaitForMultipleObjects(0, nullptr, FALSE, 500, QS_ALLINPUT);
-        PumpDialogMessages(dialog);
-    }
-    return !OneDriveFolderBackupActive();
-}
+
 
 bool ContainsInsensitive(const std::wstring& text, const std::wstring& fragment) {
     if (fragment.empty() || fragment.size() > text.size()) {
@@ -756,7 +635,7 @@ void LoadRows(HWND dialog, DialogContext& context) {
             row.redirectable = IsRedirectable(*row.spec->id);
         }
         if ((context.demoMode && context.providers.preloadDemoPlan && index == 1) ||
-            (context.providers.oneDriveToGoogleVerified &&
+            (context.providers.copyCompleted &&
              PathIsWithin(row.currentPath, context.providers.oneDriveRoot))) {
             row.choice = TargetChoice::GoogleDrive;
         }
@@ -800,7 +679,7 @@ PlanProfile AnalyzePlan(const DialogContext& context) {
             continue;
         }
         profile.hasChanges = true;
-        const bool mirroredCloudChange = IsVerifiedCloudTransition(context.providers.oneDriveToGoogleVerified,
+        const bool mirroredCloudChange = IsVerifiedCloudTransition(context.providers.copyCompleted,
             row.currentPath, target,
                                       context.providers.oneDriveRoot,
                                       context.providers.googleDriveRoot);
@@ -814,8 +693,9 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
     const PlanProfile profile = AnalyzePlan(context);
     HWND combo = GetDlgItem(dialog, IDC_FOLDER_TRANSFER_MODE);
     const TransferChoice recommended = profile.hasMirroredCloudChanges ? TransferChoice::Repoint : TransferChoice::Copy;
-    if (selectRecommendation || !profile.hasChanges)
+    if (context.pendingPlan.empty() && (selectRecommendation || !profile.hasChanges))
         SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(recommended), 0);
+    if (!context.pendingPlan.empty()) SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(TransferChoice::Repoint), 0);
     const TransferChoice selected = ReadTransferChoice(dialog);
     context.selectedChanges = 0;
     context.sideEffects = 0;
@@ -830,7 +710,7 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
         context.backupReleaseRequired |= backupActive && NeedsOneDriveBackupDisable(index <= 2,
             row.currentPath, target, context.providers.oneDriveRoot, context.providers.googleDriveRoot);
     }
-    context.backupWillDisable = context.backupReleaseRequired && selected == TransferChoice::Repoint;
+    context.backupWillDisable = false; // Only selected folders are released by the user in OneDrive settings.
     for (size_t index = 0; index < context.rows.size(); ++index) {
         const FolderRow& row = context.rows[index];
         if (FolderReturnsLocalAfterBackupRelease(context.backupWillDisable, index <= 2,
@@ -840,24 +720,27 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
     const std::wstring summary = std::to_wstring(context.selectedChanges) + L" selected change(s)" +
         (context.sideEffects ? L" + " + std::to_wstring(context.sideEffects) + L" return(s) to local storage" : L"");
     SetDlgItemTextW(dialog, IDC_FOLDER_SUMMARY, summary.c_str());
-    EnableWindow(GetDlgItem(dialog, IDOK), profile.hasChanges && !(profile.hasMirroredCloudChanges && profile.hasOtherChanges));
-    if (!profile.hasChanges) {
+    SetDlgItemTextW(dialog, IDOK, context.pendingPlan.empty() ? L"Review…" : L"Continue setup…");
+    EnableWindow(GetDlgItem(dialog, IDOK), (!context.pendingPlan.empty() || profile.hasChanges) && !context.savedPlanInvalid && !(profile.hasMirroredCloudChanges && profile.hasOtherChanges));
+    for (const auto& row : context.rows) EnableWindow(GetDlgItem(dialog, row.spec->targetControl), context.pendingPlan.empty());
+    if (!profile.hasChanges && context.pendingPlan.empty()) {
         EnableWindow(combo, FALSE);
         SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(TransferChoice::Copy), 0);
         context.guidanceIsWarning = false;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            context.providers.oneDriveToGoogleVerified ? L"OneDrive → Google Drive migration verified in this session. Choose folders to set up."
+            context.providers.copyCompleted ? L"OneDrive → Google Drive copy finished; selected folders will be checked. Choose folders to set up."
                 : context.providers.rootMirrorTaskDetected ? L"External synchronization detected. Its status and files have not been checked."
                 : L"Choose a destination to prepare a change.");
         InvalidateRect(GetDlgItem(dialog, IDC_FOLDER_WARNING), nullptr, TRUE);
         return;
     }
 
-    EnableWindow(combo, TRUE);
+    EnableWindow(combo, context.pendingPlan.empty());
+    for (const auto& row : context.rows) EnableWindow(GetDlgItem(dialog, row.spec->targetControl), context.pendingPlan.empty());
     if (context.backupReleaseRequired && selected != TransferChoice::Repoint) {
         context.guidanceIsWarning = true;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            L"OneDrive backup is active: transfer and check the files before changing these locations.");
+            L"Already copied? Choose Redirect only to check the existing destination, then stop backup for the selected folders.");
         InvalidateRect(GetDlgItem(dialog, IDC_FOLDER_WARNING), nullptr, TRUE);
         return;
     }
@@ -869,12 +752,23 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
         return;
     }
 
+    if (!context.pendingPlan.empty()) {
+        SetDlgItemTextW(dialog, IDC_FOLDER_WARNING, L"Saved setup: Continue setup rechecks files and resumes only the approved folders. Refresh discards the plan.");
+        context.guidanceIsWarning = false;
+        return;
+    }
+    if (selected == TransferChoice::Repoint && profile.hasChanges) {
+        context.guidanceIsWarning = false;
+        SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
+            L"Cloud folders will be checked before redirection. Keep files idle and pause external synchronization during this step.");
+        return;
+    }
     context.guidanceIsWarning = selected != recommended;
     if (profile.hasMirroredCloudChanges) {
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
             selected == recommended
-                ? L"Migration verified: redirect only to the matching Google Drive folders. No file transfer."
-                : L"Migration verified: Redirect only is sufficient for this OneDrive → Google Drive change.");
+                ? L"Copy finished: redirect only to the matching Google Drive folders. CloudNav will check the selected folders first."
+                : L"Copy finished: choose Redirect only to check the existing copy for this OneDrive → Google Drive change.");
     } else {
         context.guidanceIsWarning = context.providers.rootMirrorTaskDetected || selected != recommended;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
@@ -982,93 +876,233 @@ bool RefreshCurrentPaths(HWND dialog, DialogContext& context, std::wstring& erro
     return true;
 }
 
+std::string FolderUtf8(const std::wstring& value) {
+    const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (length <= 0) return {};
+    std::string text(static_cast<size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
+        text.data(), length, nullptr, nullptr);
+    return text;
+}
+
+std::wstring FolderWide(const std::string& value) {
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (length <= 0) return {};
+    std::wstring text(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), text.data(), length);
+    return text;
+}
+
+std::string FolderSetupIdentity(const DialogContext& context) {
+    if (context.demoMode) return "demo-profile-and-accounts";
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return {};
+    DWORD needed = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
+    std::vector<BYTE> buffer(needed);
+    const bool read = GetTokenInformation(token, TokenUser, buffer.data(), needed, &needed) != FALSE;
+    CloseHandle(token);
+    LPWSTR sid = nullptr;
+    if (!read || !ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid, &sid)) return {};
+    std::string identity = FolderUtf8(sid) + ":" + CurrentCloudAccountBinding();
+    LocalFree(sid);
+    for (const auto& path : {context.providers.oneDriveRoot, context.providers.googleDriveRoot}) {
+        HANDLE directory = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (directory == INVALID_HANDLE_VALUE) return {};
+        BY_HANDLE_FILE_INFORMATION info{};
+        const bool found = GetFileInformationByHandle(directory, &info) != FALSE;
+        CloseHandle(directory);
+        if (!found) return {};
+        identity += ":" + FolderUtf8(path) + ":" + std::to_string(info.dwVolumeSerialNumber) + ":" +
+            std::to_string(info.nFileIndexHigh) + ":" + std::to_string(info.nFileIndexLow);
+    }
+    return identity;
+}
+
+constexpr wchar_t kFolderRecoveryKey[] = L"Software\\CloudNav\\FolderSetup";
+
+bool SaveFolderRecovery(const DialogContext& context) {
+    if (context.demoMode) return true;
+    nlohmann::json plan = nlohmann::json::array();
+    for (const auto& item : context.pendingPlan) plan.push_back({{"row", item.rowIndex},
+        {"source", FolderUtf8(item.source)}, {"target", FolderUtf8(item.target)}});
+    const auto text = FolderWide(nlohmann::json({{"version", 1}, {"identity", context.pendingIdentity},
+        {"release", context.pendingNeedsRelease}, {"plan", plan}}).dump());
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kFolderRecoveryKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return false;
+    const auto status = RegSetValueExW(key, L"Pending", 0, REG_SZ, reinterpret_cast<const BYTE*>(text.c_str()),
+        static_cast<DWORD>((text.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(key);
+    return status == ERROR_SUCCESS;
+}
+
+void ClearFolderRecovery(DialogContext& context) {
+    if (!context.demoMode) RegDeleteKeyValueW(HKEY_CURRENT_USER, kFolderRecoveryKey, L"Pending");
+    context.pendingPlan.clear();
+    context.pendingIdentity.clear();
+    context.savedPlanInvalid = false;
+    context.pendingNeedsRelease = false;
+}
+
+void LoadFolderRecovery(HWND dialog, DialogContext& context) {
+    if (context.demoMode) return;
+    std::wstring text;
+    if (!ReadRegistryString(HKEY_CURRENT_USER, kFolderRecoveryKey, L"Pending", text)) return;
+    try {
+        const auto document = nlohmann::json::parse(FolderUtf8(text));
+        std::vector<FolderOperation> plan;
+        if (document.at("version") != 1 || document.at("plan").size() > 6) throw std::runtime_error("Invalid plan");
+        for (const auto& item : document.at("plan")) plan.push_back({item.at("row").get<size_t>(),
+            FolderWide(item.at("source")), FolderWide(item.at("target"))});
+        const auto identity = document.at("identity").get<std::string>();
+        if (!FolderRecoveryMatches(identity, FolderSetupIdentity(context), plan,
+            context.providers.oneDriveRoot, context.providers.googleDriveRoot)) throw std::runtime_error("Changed identity");
+        context.pendingPlan = plan;
+        context.pendingIdentity = identity;
+        context.pendingNeedsRelease = document.at("release").get<bool>();
+        for (auto& row : context.rows) row.choice = TargetChoice::Keep;
+        for (const auto& item : plan) {
+            auto& row = context.rows[item.rowIndex];
+            if (!PathEquals(row.currentPath, item.target)) { row.choice = TargetChoice::Custom; row.customPath = item.target; }
+            FillTargetCombo(dialog, context, row);
+            UpdateRowPreview(dialog, context, row);
+        }
+        SendDlgItemMessageW(dialog, IDC_FOLDER_TRANSFER_MODE, CB_SETCURSEL, static_cast<WPARAM>(TransferChoice::Repoint), 0);
+        SetStatus(dialog, L"Saved setup restored. Review the current locations, then Continue setup to recheck and continue.");
+    } catch (...) {
+        context.savedPlanInvalid = true;
+        SetStatus(dialog, L"Saved setup cannot be used: accounts, mounted roots, or plan changed. Reconnect the original accounts, or Refresh to discard it.", true);
+    }
+}
+
+bool CheckFolderPair(HWND dialog, DialogContext& context, const std::wstring& source,
+                     const std::wstring& target, std::wstring& error) {
+    if (context.demoMode) return true;
+    context.busy = true;
+    context.cancelled = false;
+    for (int control : {IDOK, IDC_FOLDER_REFRESH, IDC_FOLDER_TRANSFER_MODE}) EnableWindow(GetDlgItem(dialog, control), FALSE);
+    for (const auto& row : context.rows) EnableWindow(GetDlgItem(dialog, row.spec->targetControl), FALSE);
+    SetDlgItemTextW(dialog, IDCANCEL, L"Cancel check");
+    auto task = std::async(std::launch::async, [&] { return VerifyFolderCopy(source, target, context.cancelled, error); });
+    const auto start = GetTickCount64();
+    while (task.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+        SetStatus(dialog, L"Checking existing files — " + std::to_wstring((GetTickCount64() - start) / 1000) + L"s. You can cancel this check.");
+        PumpDialogMessages(dialog);
+    }
+    const bool passed = task.get();
+    context.busy = false;
+    SetDlgItemTextW(dialog, IDCANCEL, L"Close");
+    EnableWindow(GetDlgItem(dialog, IDC_FOLDER_REFRESH), TRUE);
+    UpdateTransferGuidance(dialog, context, false);
+    return passed;
+}
+
 bool PrepareOneDriveBackupForGoogle(HWND dialog, DialogContext& context,
                                     std::vector<FolderOperation>& operations) {
-    if (!PlanNeedsOneDriveBackupDisable(context, operations) ||
-        !IsOneDriveBackupActive(context)) {
-        return true;
+    std::wstring error;
+    if (context.savedPlanInvalid) {
+        SetStatus(dialog, L"Resolve or discard the saved setup before applying another plan.", true);
+        return false;
     }
-
-    // Backup release changes sources, never the destinations or rows the user approved.
-    const std::vector<FolderOperation> approvedPlan = operations;
-
-    if (context.demoMode) {
-        context.providers.simulateOneDriveBackupActive = false;
-        for (size_t index = 0; index < context.rows.size() && index <= 2; ++index) {
-            FolderRow& row = context.rows[index];
-            if (!context.providers.oneDriveRoot.empty() &&
-                PathIsWithin(row.currentPath, context.providers.oneDriveRoot)) {
-                row.currentPath = row.defaultPath;
-                UpdateRowPreview(dialog, context, row);
-            }
-        }
-        std::wstring error;
-        operations.clear();
-        if (!BuildOperations(context, operations, error, &approvedPlan)) {
-            SetStatus(dialog, error, true);
+    const auto identity = FolderSetupIdentity(context);
+    const bool starting = context.pendingPlan.empty();
+    auto plan = starting ? operations : context.pendingPlan;
+    if (starting) {
+        const bool cloudPlan = std::any_of(plan.begin(), plan.end(), [&](const FolderOperation& item) {
+            return PathIsWithin(item.source, context.providers.oneDriveRoot) && PathIsWithin(item.target, context.providers.googleDriveRoot);
+        });
+        if (!cloudPlan) return true;
+        if (!FolderRecoveryMatches(identity, identity, plan, context.providers.oneDriveRoot, context.providers.googleDriveRoot)) {
+            SetStatus(dialog, L"Select only matching OneDrive to Google Drive folders for this step. Check that both drives are available.", true);
             return false;
         }
-        context.changed = true;
-        SetStatus(dialog, L"Test mode: OneDrive backup automatically disabled.");
-        return true;
-    }
-
-    SetStatus(dialog, L"Disabling OneDrive folder backup…");
-    std::wstring error;
-    if (!RunElevatedOneDriveBackupDisable(dialog, error)) {
-        SetStatus(dialog, L"Failed: OneDrive backup is still active.", true);
-        MessageBoxW(dialog, error.c_str(), L"CloudNav", MB_OK | MB_ICONERROR);
+    } else if (!FolderRecoveryMatches(context.pendingIdentity, identity, plan,
+        context.providers.oneDriveRoot, context.providers.googleDriveRoot)) {
+        SetStatus(dialog, L"Accounts or mounted folders changed. No redirection performed. Reopen this window after reconnecting.", true);
         return false;
     }
-
-    const std::wstring oneDriveExecutable = FindOneDriveExecutable();
-    if (oneDriveExecutable.empty()) {
-        const std::wstring message =
-            L"CloudNav has blocked automatic OneDrive backup but cannot find "
-            L"OneDrive.exe to finish releasing the folders. No folders were redirected.";
-        SetStatus(dialog, L"OneDrive.exe not found: no folders redirected.", true);
-        MessageBoxW(dialog, message.c_str(), L"CloudNav", MB_OK | MB_ICONERROR);
+    // Every attempt rechecks the original source and the actual selected mount.
+    // A prior transfer, cached receipt, timestamp, or different destination is insufficient.
+    for (const auto& item : plan) {
+        if (!CheckFolderPair(dialog, context, item.source, item.target, error)) {
+            SetStatus(dialog, error, true);
+            MessageBoxW(dialog, error.c_str(), L"CloudNav — check existing copy", MB_OK | MB_ICONINFORMATION);
+            return false;
+        }
+    }
+    if (FolderSetupIdentity(context) != identity) {
+        SetStatus(dialog, L"Accounts or mounted folders changed during the check. No redirection performed.", true);
         return false;
     }
-
-    std::wstring processError;
-    LaunchOneDriveCommand(oneDriveExecutable, L"/shutdown", true, processError);
-    if (!LaunchOneDriveCommand(oneDriveExecutable, L"", false, processError)) {
-        const std::wstring message =
-            L"Automatic OneDrive backup is now blocked, but the "
-            L"OneDrive client did not restart:\n\n" + processError +
-            L"\n\nNo folders were redirected.";
-        SetStatus(dialog, L"OneDrive did not restart: no folders redirected.", true);
-        MessageBoxW(dialog, message.c_str(), L"CloudNav", MB_OK | MB_ICONERROR);
+    if (starting) {
+        context.pendingPlan = plan;
+        context.pendingIdentity = identity;
+        context.pendingNeedsRelease = PlanNeedsOneDriveBackupDisable(context, operations) && IsOneDriveBackupActive(context);
+        if (!SaveFolderRecovery(context)) {
+            context.pendingPlan.clear();
+            SetStatus(dialog, L"Unable to save the recovery plan. No redirection performed.", true);
+            return false;
+        }
+    }
+    for (const auto& item : context.pendingPlan) {
+        auto& row = context.rows[item.rowIndex];
+        row.choice = TargetChoice::Custom;
+        row.customPath = item.target;
+        FillTargetCombo(dialog, context, row);
+    }
+    // The demo simulates the user releasing only the selected folders.
+    if (context.demoMode && context.pendingNeedsRelease) {
+        for (const auto& item : plan) if (item.rowIndex <= 2)
+            context.rows[item.rowIndex].currentPath = context.rows[item.rowIndex].defaultPath;
+    } else if (!context.demoMode && !RefreshCurrentPaths(dialog, context, error)) {
+        SetStatus(dialog, error, true);
         return false;
     }
-
-    SetStatus(dialog, L"OneDrive is releasing Documents and Pictures…");
-    if (!WaitForOneDriveBackupRelease(dialog)) {
-        const std::wstring message =
-            L"CloudNav disabled automatic OneDrive backup, but OneDrive did not "
-            L"confirm the folders were released within the time limit. No folders were redirected.\n\n"
-            L"Try again after OneDrive finishes synchronizing.";
-        SetStatus(dialog, L"OneDrive did not release the folders: no redirection.", true);
-        MessageBoxW(dialog, message.c_str(), L"CloudNav", MB_OK | MB_ICONERROR);
-        return false;
-    }
-
-    if (!RefreshCurrentPaths(dialog, context, error)) {
-        SetStatus(dialog, L"OneDrive backup stopped; refresh the locations.", true);
-        MessageBoxW(dialog, error.c_str(), L"CloudNav", MB_OK | MB_ICONERROR);
-        context.changed = true;
-        return false;
-    }
-
+    std::wstring waiting;
     operations.clear();
-    if (!BuildOperations(context, operations, error, &approvedPlan)) {
-        SetStatus(dialog, L"OneDrive backup stopped; refresh the plan.", true);
-        MessageBoxW(dialog, error.c_str(), L"CloudNav", MB_OK | MB_ICONERROR);
-        context.changed = true;
+    for (const auto& item : plan) {
+        const auto& row = context.rows[item.rowIndex];
+        const auto state = FolderRecoveryPosition(item, row.currentPath, row.defaultPath);
+        if (state == FolderRecoveryState::Complete) continue;
+        if (state == FolderRecoveryState::ChangedElsewhere) {
+            SetStatus(dialog, std::wstring(row.spec->label) + L" changed to an unexpected location. Saved plan kept; Refresh to review or discard it.", true);
+            return false;
+        }
+        if (context.pendingNeedsRelease && item.rowIndex <= 2 && state == FolderRecoveryState::WaitingForRelease)
+            waiting += std::wstring(row.spec->label) + L"\n";
+        // Catch files newly saved to the local folder after OneDrive released it.
+        if (state == FolderRecoveryState::Ready && PathIsDirectory(row.currentPath) &&
+            !CheckFolderPair(dialog, context, row.currentPath, item.target, error)) {
+            SetStatus(dialog, L"The released local folder contains unchecked files. Saved plan kept.", true);
+            MessageBoxW(dialog, (L"Check the new local files in " + row.currentPath + L" before continuing.\n\n" + error).c_str(), L"CloudNav", MB_OK | MB_ICONINFORMATION);
+            return false;
+        }
+        operations.push_back({item.rowIndex, row.currentPath, item.target});
+    }
+    if (!waiting.empty()) {
+        SetStatus(dialog, L"Setup saved. Stop backup for the selected folders in OneDrive settings, then Continue setup to recheck and continue.");
+        const bool policy = RegistryPolicyValueEnabled(HKEY_LOCAL_MACHINE, L"KFMBlockOptOut") ||
+            RegistryPolicyValueEnabled(HKEY_CURRENT_USER, L"KFMBlockOptOut");
+        const std::wstring message = L"The existing destination files passed the check. Your setup is saved.\n\n"
+            L"In OneDrive: Settings → Sync and backup → Manage backup. Stop backup only for:\n\n" + waiting +
+            L"\nChoose to keep files in OneDrive. Leave other folders enabled. Then return here and click Continue setup; "
+            L"CloudNav will recheck the files and Windows locations before redirecting.\n\n" +
+            (policy ? L"An administrator policy blocks stopping backup. Ask your administrator to release these folders. CloudNav has not changed the policy." :
+            L"If OneDrive is still syncing or Stop backup is unavailable, finish synchronization or follow OneDrive's displayed instruction first. CloudNav has not changed any policy.");
+        MessageBoxW(dialog, message.c_str(), L"CloudNav — finish OneDrive backup setup", MB_OK | MB_ICONINFORMATION);
+        if (!policy) {
+            const auto executable = FindOneDriveExecutable();
+            if (!executable.empty()) LaunchOneDriveCommand(executable, L"/settings", false, error);
+        }
         return false;
     }
-    context.changed = true;
+    if (FolderSetupIdentity(context) != identity) {
+        SetStatus(dialog, L"Accounts or mounted folders changed. Saved plan kept; no redirection performed.", true);
+        return false;
+    }
     return true;
 }
 
@@ -1123,23 +1157,15 @@ bool ConfirmOperations(HWND dialog, const DialogContext& context,
         review.action = L"Move and apply";
         break;
     case TransferChoice::Repoint:
-        message = L"No file transfer. The destinations must already contain the data.";
+        message = L"CloudNav checks the selected cloud folders before redirecting. Reading cloud files may download them. Original files are kept.";
         review.action = L"Confirm redirection";
         break;
     }
 
     if (PlanNeedsOneDriveBackupDisable(context, operations) &&
         IsOneDriveBackupActive(context)) {
-        review.effects = L"OneDrive backup will be disabled for all protected folders.\r\n";
-        for (size_t index = 0; index < context.rows.size(); ++index) {
-            const FolderRow& row = context.rows[index];
-            if (FolderReturnsLocalAfterBackupRelease(true, index <= 2, row.choice == TargetChoice::Keep,
-                row.currentPath, context.providers.oneDriveRoot)) {
-                review.effects += std::wstring(row.spec->label) + L" — also returns to local storage\r\n    Current: " +
-                    row.currentPath + L"\r\n    Planned: " + row.defaultPath + L"\r\n";
-            }
-        }
-        review.effects += L"Files remain in OneDrive. Administrator approval may be requested.";
+        review.effects = L"After the check, stop backup for only the selected folders in OneDrive settings. "
+            L"Keep files in OneDrive. Other folders and administrator policies remain unchanged.";
     } else {
         review.effects = L"No other folders will change. OneDrive backup will remain unchanged.";
     }
@@ -1293,7 +1319,7 @@ bool ApplyRepointOperations(HWND dialog, DialogContext& context,
             std::wstring message = L"Windows refused to redirect " +
                 std::wstring(row.spec->label) + L".\n\n" + FriendlyRedirectError(error);
             if (restored) {
-                message += L"\n\nCloudNav restored the previous locations: nothing changed.";
+                message += L"\n\nCloudNav restored the locations used at the start of this redirection. Any OneDrive backup changes you made remain in effect. The saved setup can be resumed.";
                 SetStatus(dialog, L"Failed: no locations were changed.", true);
             } else {
                 message += L"\n\nRollback is incomplete. Click Refresh before taking any further action.";
@@ -1469,10 +1495,15 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
         SendMessageW(dialog, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(
             LoadImageW(instance, MAKEINTRESOURCEW(IDI_CLOUDNAV),
                        IMAGE_ICON, 16, 16, LR_SHARED)));
+        if (context->providers.copyCompleted && !context->demoMode &&
+            (context->providers.copyAccountBinding.empty() || context->providers.copyAccountBinding != CurrentCloudAccountBinding()))
+            context->providers.copyCompleted = false;
         FillTransferCombo(dialog);
         LoadRows(dialog, *context);
         UpdateTransferGuidance(dialog, *context, true);
         SetStatus(dialog, context->demoMode ? L"Test mode: no system changes." : L"Ready.");
+        LoadFolderRecovery(dialog, *context);
+        if (!context->pendingPlan.empty()) UpdateTransferGuidance(dialog, *context, false);
         return TRUE;
     }
     case WM_COMMAND: {
@@ -1481,6 +1512,10 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
             return FALSE;
         }
         const int controlId = LOWORD(wParam);
+        if (context->busy) {
+            if (controlId == IDCANCEL) context->cancelled = true;
+            return TRUE;
+        }
         if (HIWORD(wParam) == CBN_SELCHANGE) {
             if (controlId == IDC_FOLDER_TRANSFER_MODE) {
                 UpdateTransferGuidance(dialog, *context, false);
@@ -1510,17 +1545,17 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
                 MessageBoxW(dialog, error.c_str(), L"CloudNav", MB_OK | MB_ICONERROR);
                 return TRUE;
             }
-            if (operations.empty()) {
+            if (operations.empty() && context->pendingPlan.empty()) {
                 SetStatus(dialog, L"No locations changed.");
                 return TRUE;
             }
             const TransferChoice transfer = ReadTransferChoice(dialog);
             if (PlanNeedsOneDriveBackupDisable(*context, operations) && IsOneDriveBackupActive(*context) &&
                 transfer != TransferChoice::Repoint) {
-                SetStatus(dialog, L"Copy required: open Transfer or sync files from the main window.", true);
+                SetStatus(dialog, L"Already copied? Choose Redirect only to check the existing copy.", true);
                 MessageBoxW(dialog,
-                    L"OneDrive backup protects these folders. To keep all files, open Transfer or sync files "
-                    L"from the main window, then copy and check the data before redirecting folders. No locations were changed.",
+                    L"OneDrive backup protects these folders. If you already copied them, choose Redirect only: "
+                    L"CloudNav will check the existing destination before setup. Otherwise use Transfer or sync files first. No locations were changed.",
                     L"CloudNav — copy before redirecting", MB_OK | MB_ICONINFORMATION);
                 return TRUE;
             }
@@ -1530,17 +1565,22 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
             }
             EnableWindow(GetDlgItem(dialog, IDOK), FALSE);
             SetStatus(dialog, L"Checking and applying…");
-            if (PrepareOneDriveBackupForGoogle(dialog, *context, operations)) {
+            if (transfer != TransferChoice::Repoint || PrepareOneDriveBackupForGoogle(dialog, *context, operations)) {
                 if (operations.empty()) {
-                    SetStatus(dialog, L"OneDrive backup disabled; locations are already up to date.");
+                    ClearFolderRecovery(*context);
+                    SetStatus(dialog, L"Windows locations checked: setup already complete.");
                 } else {
-                    ApplyOperations(dialog, *context, operations, transfer);
+                    if (ApplyOperations(dialog, *context, operations, transfer)) ClearFolderRecovery(*context);
                 }
             }
             UpdateTransferGuidance(dialog, *context, false);
             return TRUE;
         }
         case IDC_FOLDER_REFRESH:
+            if ((!context->pendingPlan.empty() || context->savedPlanInvalid) && MessageBoxW(dialog,
+                L"Discard the saved setup plan and read the current Windows locations? Files and locations will not be changed.",
+                L"CloudNav — discard saved setup", MB_OKCANCEL | MB_DEFBUTTON2 | MB_ICONQUESTION) != IDOK) return TRUE;
+            ClearFolderRecovery(*context);
             LoadRows(dialog, *context);
             UpdateTransferGuidance(dialog, *context, true);
             SetStatus(dialog, L"Emplacements relus depuis Windows.");
@@ -1555,6 +1595,7 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
     }
     case WM_CLOSE: {
         DialogContext* context = GetContext(dialog);
+        if (context && context->busy) { context->cancelled = true; return TRUE; }
         EndDialog(dialog, context && context->changed ? IDOK : IDCANCEL);
         return TRUE;
     }
@@ -1612,10 +1653,6 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
 }
 
 }  // namespace
-
-int RunDisableOneDriveFolderBackupHelper() {
-    return ConfigureOneDriveFolderBackupPolicy();
-}
 
 int RunFolderRedirectionSelfTest(const std::wstring& resultPath) {
     bool managerRedirected = false;
@@ -1711,13 +1748,62 @@ int RunFolderRedirectionSelfTest(const std::wstring& resultPath) {
             PathEquals(observedLocalDocuments, originalLocalDocuments);
     }
 
+    DialogContext wrongDestination;
+    wrongDestination.demoMode = true;
+    wrongDestination.providers.oneDriveRoot = downloadsTarget;
+    wrongDestination.providers.googleDriveRoot = documentsTarget;
+    std::vector<FolderOperation> mismatchedPlan{{1, downloadsTarget + L"\\Documents", documentsTarget + L"\\Other"}};
+    const bool wrongDestinationRejected = !PrepareOneDriveBackupForGoogle(nullptr, wrongDestination, mismatchedPlan);
+    bool recoveryPassed = false;
+    const auto recoveryKey = L"Software\\CloudNav-Recovery-Test-" + std::to_wstring(GetCurrentProcessId());
+    HKEY firstUser = nullptr, secondUser = nullptr;
+    const bool fixtures = RegCreateKeyExW(HKEY_CURRENT_USER, (recoveryKey + L"\\Alice").c_str(), 0, nullptr, 0,
+        KEY_ALL_ACCESS, nullptr, &firstUser, nullptr) == ERROR_SUCCESS &&
+        RegCreateKeyExW(HKEY_CURRENT_USER, (recoveryKey + L"\\Bob").c_str(), 0, nullptr, 0,
+        KEY_ALL_ACCESS, nullptr, &secondUser, nullptr) == ERROR_SUCCESS;
+    if (fixtures) {
+        try {
+            DialogContext saved;
+            saved.providers.oneDriveRoot = downloadsTarget;
+            saved.providers.googleDriveRoot = documentsTarget;
+            saved.pendingPlan = {{1, downloadsTarget + L"\\Documents", documentsTarget + L"\\Documents"}};
+            saved.pendingNeedsRelease = true;
+            saved.pendingIdentity = FolderSetupIdentity(saved);
+            const auto load = [&] {
+                auto restored = std::make_unique<DialogContext>();
+                restored->providers = saved.providers;
+                for (const auto& spec : kFolderSpecs) { FolderRow row; row.spec = &spec; restored->rows.push_back(row); }
+                LoadFolderRecovery(nullptr, *restored);
+                return restored;
+            };
+            recoveryPassed = RegOverridePredefKey(HKEY_CURRENT_USER, firstUser) == ERROR_SUCCESS && SaveFolderRecovery(saved);
+            auto restored = load();
+            recoveryPassed = recoveryPassed && !restored->savedPlanInvalid && restored->pendingNeedsRelease &&
+                restored->pendingPlan.size() == 1 && restored->pendingPlan.front().target == saved.pendingPlan.front().target;
+            recoveryPassed = RegOverridePredefKey(HKEY_CURRENT_USER, secondUser) == ERROR_SUCCESS && recoveryPassed;
+            restored = load();
+            recoveryPassed = recoveryPassed && restored->pendingPlan.empty() && !restored->savedPlanInvalid;
+            recoveryPassed = RegOverridePredefKey(HKEY_CURRENT_USER, firstUser) == ERROR_SUCCESS && recoveryPassed;
+            saved.pendingIdentity += ":different-account-or-user";
+            recoveryPassed = SaveFolderRecovery(saved) && recoveryPassed;
+            restored = load();
+            recoveryPassed = recoveryPassed && restored->savedPlanInvalid && restored->pendingPlan.empty();
+        } catch (...) { recoveryPassed = false; }
+    }
+    RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+    if (firstUser) RegCloseKey(firstUser);
+    if (secondUser) RegCloseKey(secondUser);
+    RegDeleteTreeW(HKEY_CURRENT_USER, recoveryKey.c_str());
+
     RemoveDirectoryW(downloadsTarget.c_str());
     RemoveDirectoryW(documentsTarget.c_str());
     const bool passed = readDownloads && readDocuments && readLocalDocuments &&
         downloadsTargetReady && documentsTargetReady && managerRedirected &&
-        managerRestored && directRedirected && directRestored && localAliasRestored;
+        managerRestored && directRedirected && directRestored && localAliasRestored && recoveryPassed && wrongDestinationRejected;
     const auto jsonBool = [](bool value) { return value ? "true" : "false"; };
     const std::string json = std::string("{\"passed\":") + jsonBool(passed) +
+        ",\"recoveryAndUserIsolation\":" + jsonBool(recoveryPassed) +
+        ",\"wrongDestinationRejected\":" + jsonBool(wrongDestinationRejected) +
         ",\"managerRedirected\":" + jsonBool(managerRedirected) +
         ",\"managerRestored\":" + jsonBool(managerRestored) +
         ",\"directRedirected\":" + jsonBool(directRedirected) +

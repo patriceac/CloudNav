@@ -1,5 +1,6 @@
 #include <windows.h>
 #include "resource.h"
+#include "version.h"
 
 #pragma code_page(65001)
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
@@ -132,8 +133,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,4,2,0
- PRODUCTVERSION 1,4,2,0
+ FILEVERSION CLOUDNAV_VERSION_NUMBERS
+ PRODUCTVERSION CLOUDNAV_VERSION_NUMBERS
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -150,12 +151,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "CloudNav\0"
       VALUE "FileDescription", "CloudNav - Windows cloud navigation\0"
-      VALUE "FileVersion", "1.4.2\0"
+      VALUE "FileVersion", CLOUDNAV_VERSION
       VALUE "InternalName", "CloudNav\0"
       VALUE "LegalCopyright", "Copyright (c) 2026 CloudNav contributors\0"
       VALUE "OriginalFilename", "CloudNav.exe\0"
       VALUE "ProductName", "CloudNav\0"
-      VALUE "ProductVersion", "1.4.2\0"
+      VALUE "ProductVersion", CLOUDNAV_VERSION
     END
   END
   BLOCK "VarFileInfo"

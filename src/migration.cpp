@@ -26,9 +26,11 @@
 #include "migration_logic.h"
 #include "migration_report.h"
 #include "sync_logic.h"
+#include "transfer_progress.h"
 #include "auth_logic.h"
 #include "google_oauth_config.h"
 #include "resource.h"
+#include "version.h"
 #include "ui.h"
 
 #pragma comment(lib, "bcrypt.lib")
@@ -100,6 +102,7 @@ struct DialogContext {
     AnalysisReport report;
     SyncAnalysis sync;
     SyncMode mode = SyncMode::ToGoogle;
+    TransferProgress transferProgress;
     ui::DialogTheme theme;
     std::atomic<unsigned> statisticsUpdates = 0;
     std::atomic<unsigned> inventoryReads = 0;
@@ -120,6 +123,7 @@ struct DialogContext {
     std::vector<HANDLE> childProcesses;
     CRITICAL_SECTION processLock = {};
     std::atomic<bool> cancelRequested = false;
+    std::atomic<bool>* externalCancellation = nullptr;
 };
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -205,6 +209,15 @@ void PostProgress(DialogContext& context, int percent, MigrationStage stage,
     if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
 }
 
+double ProgressTime() { return static_cast<double>(GetTickCount64()) / 1000.0; }
+
+void PostTransferProgress(DialogContext& context, TransferProgress& progress, double now) {
+    const auto display = progress.Format(now);
+    if (!context.dialog) return;
+    auto* update = new ProgressUpdate{display.percent, MigrationStage::Copying, display.text, display.details};
+    if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
+}
+
 void PostListingProgress(DialogContext& context, bool oneDrive, MigrationStage stage, const std::wstring& text) {
     if (!context.parallelListing) { PostProgress(context, -1, stage, text); return; }
     EnterCriticalSection(&context.processLock);
@@ -218,7 +231,7 @@ void PostListingProgress(DialogContext& context, bool oneDrive, MigrationStage s
 
 bool RunProcess(DialogContext& context, const std::vector<std::wstring>& arguments,
                 MigrationStage stage, std::wstring& error, DWORD* processExitCode = nullptr, AnalysisReport* report = nullptr,
-                std::string* captured = nullptr, bool privateOutput = false) {
+                std::string* captured = nullptr, bool privateOutput = false, TransferProgress* transferProgress = nullptr) {
     if (context.cancelRequested || (captured && !privateOutput && context.listingFailed)) return false;
     // Serialize only process creation, so concurrent children cannot inherit
     // each other's temporary inheritable pipe handles.
@@ -231,6 +244,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
     std::wstring command = QuoteArgument(context.runtimePath);
     for (const auto& argument : arguments) command += L" " + QuoteArgument(argument);
+    if (transferProgress) command += L" --log-level INFO";
     const std::wstring combinedPath = context.logPath + L".analysis-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
     if (report) command += L" --combined " + QuoteArgument(combinedPath);
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
@@ -274,6 +288,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     const ULONGLONG listingStarted = GetTickCount64();
     if (privateOutput) PostProgress(context, -1, stage, L"Connecting account — complete browser sign-in if it opens.");
     else if (captured) PostListingProgress(context, listingOneDrive, stage, SyncListingProgress(listingOneDrive, 0, 0));
+    else if (transferProgress) PostTransferProgress(context, *transferProgress, ProgressTime());
     else PostProgress(context, -1, stage, stage == MigrationStage::Copying
         ? L"Preparing copy — opening selected files…"
         : L"Reading accounts — waiting for initial statistics…");
@@ -285,6 +300,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     HANDLE log = (captured || privateOutput) ? INVALID_HANDLE_VALUE : CreateFileW(context.logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     for (;;) {
+        if (context.externalCancellation && context.externalCancellation->load()) context.cancelRequested = true;
         if (context.cancelRequested || (captured && !privateOutput && context.listingFailed)) TerminateProcess(process.hProcess, ERROR_CANCELLED);
         // A blocking pipe read freezes progress during provider enumeration.
         // Poll availability so even a silent listing gets an honest heartbeat.
@@ -295,6 +311,10 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
         if (captured && !privateOutput && now - lastInventoryUpdate >= 1000) {
             PostListingProgress(context, listingOneDrive, stage, SyncListingProgress(listingOneDrive, receivedFiles, (now - listingStarted) / 1000));
             ++context.listingProgressUpdates;
+            lastInventoryUpdate = now;
+        }
+        if (transferProgress && now - lastInventoryUpdate >= 1000) {
+            PostTransferProgress(context, *transferProgress, static_cast<double>(now) / 1000.0);
             lastInventoryUpdate = now;
         }
         DWORD available = 0;
@@ -327,19 +347,27 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
                 if (row.is_object() && row.contains("Path") && row.contains("IsDir") && row["IsDir"] == false) ++receivedFiles;
             }
             if (report) report->Log(line);
+            if (transferProgress) transferProgress->Log(line, ProgressTime());
             MigrationStatistics stats;
             if (ParseMigrationStatistics(line, stats)) {
                 ++context.statisticsUpdates;
-                const auto progress = FormatMigrationProgress(stage, stats);
-                PostProgress(context, progress.percent, stage, progress.text);
+                if (!transferProgress) {
+                    const auto progress = FormatMigrationProgress(stage, stats);
+                    PostProgress(context, progress.percent, stage, progress.text);
+                }
             }
         }
     }
+    if (transferProgress && !pending.empty()) transferProgress->Log(pending, ProgressTime());
     if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
     CloseHandle(readPipe);
     WaitForSingleObject(process.hProcess, INFINITE);
     DWORD exitCode = ERROR_GEN_FAILURE;
     GetExitCodeProcess(process.hProcess, &exitCode);
+    if (transferProgress) {
+        transferProgress->EndBatch(exitCode == 0 && !context.cancelRequested, ProgressTime());
+        PostTransferProgress(context, *transferProgress, ProgressTime());
+    }
     if (processExitCode) *processExitCode = exitCode;
     EnterCriticalSection(&context.processLock);
     context.childProcesses.erase(std::remove(context.childProcesses.begin(), context.childProcesses.end(), process.hProcess), context.childProcesses.end());
@@ -424,16 +452,9 @@ bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) 
     std::wstring googleClientId;
     std::wstring googleClientSecret;
     if (!oneDrive) {
-        const auto configuredId = fields.find("client_id");
-        const auto configuredSecret = fields.find("client_secret");
-        if (configuredId != fields.end() && configuredSecret != fields.end() &&
-            !configuredId->second.empty() && !configuredSecret->second.empty()) {
-            googleClientId = Utf8ToWide(configuredId->second);
-            googleClientSecret = Utf8ToWide(configuredSecret->second);
-        } else {
-            googleClientId = kGoogleOAuthClientId;
-            googleClientSecret = kGoogleOAuthClientSecret;
-        }
+        const auto selected = SelectGoogleClient(fields, WideToUtf8(kGoogleOAuthClientId), WideToUtf8(kGoogleOAuthClientSecret));
+        googleClientId = Utf8ToWide(selected.first);
+        googleClientSecret = Utf8ToWide(selected.second);
         if (googleClientId.empty() || googleClientSecret.empty()) {
             error = L"This CloudNav build has no dedicated Google OAuth client.";
             return false;
@@ -445,6 +466,8 @@ bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) 
     struct Cleanup { std::wstring path; ~Cleanup() { DeleteFileW(path.c_str()); } } cleanup{staged};
     if (!WriteEvidence(staged, original)) { error = L"Unable to stage account configuration."; return false; }
     auto args = AuthenticationArguments(oneDrive, existing, remote, staged, googleClientId, googleClientSecret);
+    if (!oneDrive && (fields.find("client_id") == fields.end() || fields.at("client_id") != WideToUtf8(googleClientId)))
+        args.push_back(L"token="); // New application identity requires this user's new browser authorization.
     const bool complete = CompleteAuth([&](bool continuation, const std::string& state, const std::string& answer, std::string& output) {
         auto command = continuation ? AuthenticationContinuationArguments(oneDrive, remote, staged,
             Utf8ToWide(state), Utf8ToWide(answer),
@@ -635,6 +658,11 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         return std::vector<std::wstring>{command, source, destination, L"--config", context.configPath,
             L"--use-json-log", L"--stats", L"1s", L"--stats-log-level", L"NOTICE", L"--drive-skip-gdocs"};
     };
+    const auto batches = PrepareTransferProgress(context.sync, context.mode, context.transferProgress);
+    const auto runTransfer = [&](const std::vector<std::wstring>& args, size_t batch) {
+        context.transferProgress.BeginBatch(batch, ProgressTime());
+        return RunProcess(context, args, MigrationStage::Copying, error, nullptr, nullptr, nullptr, false, &context.transferProgress);
+    };
     const auto transfer = [&](SyncAction action, const std::wstring& source, const std::wstring& destination, bool remove) {
         const auto list = SyncFileList(rows, action);
         if (list.empty()) return true;
@@ -646,7 +674,7 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
             if (context.mode == SyncMode::Bidirectional) args.insert(args.end(), {L"--ignore-times", L"--backup-dir", backup(destination)});
             else args.push_back(L"--update");
         }
-        const bool ok = RunProcess(context, args, MigrationStage::Copying, error);
+        const bool ok = runTransfer(args, batches.actions.at(action));
         DeleteFileW(path.c_str());
         return ok;
     };
@@ -657,14 +685,16 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         const auto path = Utf8ToWide(row.path);
         const auto suffix = L".conflict-Google-" + stamp;
         const auto alternate = path + suffix;
+        const auto& conflictBatches = batches.conflicts.at(row.path);
+        size_t conflictBatch = 0;
         for (const auto& destination : {od + alternate, gd + alternate}) {
             auto args = baseArgs(L"copyto", gd + path, destination);
             args.push_back(L"--immutable");
-            if (!RunProcess(context, args, MigrationStage::Copying, error)) return false;
+            if (!runTransfer(args, conflictBatches[conflictBatch++])) return false;
         }
         auto args = baseArgs(L"copyto", od + path, gd + path);
         args.insert(args.end(), {L"--ignore-times", L"--backup-dir", backup(gd)});
-        if (!RunProcess(context, args, MigrationStage::Copying, error)) return false;
+        if (!runTransfer(args, conflictBatches[2])) return false;
     }
     if (!transfer(SyncAction::ToGoogle, od, gd, false) || !transfer(SyncAction::ToOneDrive, gd, od, false) ||
         !transfer(SyncAction::DeleteGoogle, gd, gd, true) || !transfer(SyncAction::DeleteOneDrive, od, od, true)) return false;
@@ -718,6 +748,14 @@ DWORD WINAPI WorkerProc(void* parameter) {
         context.parallelListing = stage == MigrationStage::Analyzing;
         context.listingStatus[0] = SyncListingProgress(true, 0, 0);
         context.listingStatus[1] = SyncListingProgress(false, 0, 0);
+        TransferProgress demoProgress;
+        std::vector<TransferProgress::File> demoFiles;
+        if (stage == MigrationStage::Copying) {
+            for (const auto& row : context.sync.Plan(context.mode))
+                if (row.action != SyncAction::None && row.action != SyncAction::Ignored && row.action != SyncAction::Blocked)
+                    demoFiles.push_back({row.path, row.bytes});
+            demoProgress.BeginBatch(demoProgress.AddBatch(demoFiles), 0);
+        }
         for (int percent = 0; percent <= 100 && !context.cancelRequested; percent += 2) {
             MigrationStatistics stats;
             stats.totalBytes = 8ULL * 1024 * 1024 * 1024;
@@ -731,7 +769,20 @@ DWORD WINAPI WorkerProc(void* parameter) {
             if (context.parallelListing) {
                 PostListingProgress(context, true, stage, SyncListingProgress(true, stats.listed, percent / 20));
                 PostListingProgress(context, false, stage, SyncListingProgress(false, stats.listed / 2, percent / 20));
+            } else if (stage == MigrationStage::Copying) {
+                const double now = percent * 3.0;
+                if (percent == 20 && !demoFiles.empty()) demoProgress.Log(SyncJson{{"level", "error"},
+                    {"object", demoFiles.front().path}, {"msg", "googleapi: 403 RATE_LIMIT_EXCEEDED"}}.dump(), now);
+                SyncJson active = SyncJson::array();
+                for (const auto& file : demoFiles) active.push_back({{"name", file.path},
+                    {"bytes", file.bytes * static_cast<unsigned>(percent < 20 ? (std::min)(percent, 8) : percent) / 100}});
+                demoProgress.Log(SyncJson{{"stats", {{"bytes", stats.bytes * 3}, {"totalBytes", stats.totalBytes * 4},
+                    {"eta", 9223372036ULL}, {"errors", percent >= 20 && percent < 60 ? 1 : 0}, {"transferring", active}}}}.dump(), now);
+                if (percent >= 60) for (const auto& file : demoFiles)
+                    demoProgress.Log(SyncJson{{"level", "info"}, {"object", file.path}, {"msg", "Copied (new)"}}.dump(), now);
+                PostTransferProgress(context, demoProgress, now);
             } else PostProgress(context, progress.percent, stage, progress.text);
+            if (stage == MigrationStage::Copying && (percent == 16 || percent == 24)) Sleep(2000);
             Sleep(100);
         }
         context.parallelListing = false;
@@ -792,15 +843,15 @@ std::wstring CurrentPlanDetails(const DialogContext& context) {
     if (!context.report.available) return L"Analyze both accounts to see the proposed actions.";
     const auto rows = context.sync.Plan(context.mode);
     size_t toGoogle = 0, toOneDrive = 0;
-    std::uint64_t bytes = 0;
+    TransferProgress planned;
+    PrepareTransferProgress(context.sync, context.mode, planned);
     for (const auto& row : rows) {
         toGoogle += row.action == SyncAction::ToGoogle || row.action == SyncAction::KeepBoth;
         toOneDrive += row.action == SyncAction::ToOneDrive || row.action == SyncAction::KeepBoth;
-        if (bytes <= (std::numeric_limits<std::uint64_t>::max)() - row.bytes) bytes += row.bytes;
     }
     return std::wstring(!context.analyzed && context.sync.complete && !context.running ? L"Previous plan — new analysis required.\r\n" : L"") +
         L"→ Google Drive : " + std::to_wstring(toGoogle) + L"    → OneDrive : " + std::to_wstring(toOneDrive) +
-        L"    Estimated size: " + FormatBytes(bytes) + L"\r\n" +
+        L"    Planned data: " + FormatBytes(planned.TotalBytes()) + L"\r\n" +
         (context.mode != SyncMode::Bidirectional ? L"Copy missing/newer source files directly; no archiving. Extra destination files are kept." :
         context.sync.recovery ? L"Recovery: merge without removals. New history will be created after success." :
         context.sync.hasBaseline ? L"History available: deletions are propagated with archiving." :
@@ -1028,6 +1079,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         ComboBox_SetCurSel(GetDlgItem(dialog, IDC_MIGRATION_MODE), static_cast<int>(context->mode));
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETRANGE32, 0, 100);
         context->configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
+        SetWindowTextW(dialog, CLOUDNAV_TITLE L" — cloud sync");
         context->logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\migration.log";
         EnsureParentDirectory(context->configPath);
         const auto savedConfig = ReadSyncFile(context->configPath);
@@ -1038,6 +1090,11 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         if (context->oneDriveReady && context->googleReady)
             SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS,
                 L"Analysis checks account access and estimates the copy. No files are transferred.");
+        if (!context->demoMode && !context->googleReady && !AuthFields(savedConfig, "cloudnav-gdrive").empty()) {
+            SetDlgItemTextW(dialog, IDC_MIGRATION_GOOGLE_STATUS, L"Reconnect after upgrade");
+            SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS,
+                L"Reconnect Google Drive once to update this connection. Sign in to your own Google account.");
+        }
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PHASE, WM_SETFONT, reinterpret_cast<WPARAM>(context->theme.bold), TRUE);
         RefreshPlan(*context);
         return TRUE;
@@ -1120,6 +1177,10 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 update->statistics.find(L'%') == std::wstring::npos && update->statistics.find(L"ETA") == std::wstring::npos;
             WriteMilestone(*context, L"analysis-progress.json", context->sawAnalyzeProgress);
         }
+        if (update->stage == MigrationStage::Copying && update->details.find(L"Waiting for transfer progress") == 0)
+            WriteMilestone(*context, L"copy-waiting.json", consistent && update->details.find(L"ETA unavailable") != std::wstring::npos);
+        if (update->stage == MigrationStage::Copying && update->details.find(L"Retrying after a Google Drive quota") == 0)
+            WriteMilestone(*context, L"copy-retrying.json", consistent && update->statistics.find(L"files processed") != std::wstring::npos);
         if (update->stage == MigrationStage::Copying && update->percent >= 30 && !context->sawCopyProgress) {
             context->sawCopyProgress = true;
             WriteMilestone(*context, L"copy-progress.json", consistent);
@@ -1220,7 +1281,8 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
 }  // namespace
 
 MigrationResult ShowMigrationDialog(HWND owner, HINSTANCE instance, bool demoMode,
-                                    const std::wstring& demoResultPath) {
+                                    const std::wstring& demoResultPath, CloudFolderHandoff* handoff) {
+    if (handoff) *handoff = {};
     DialogContext context;
     context.instance = instance;
     context.demoMode = demoMode;
@@ -1230,7 +1292,48 @@ MigrationResult ShowMigrationDialog(HWND owner, HINSTANCE instance, bool demoMod
                                            MigrationDialogProc, reinterpret_cast<LPARAM>(&context));
     if (context.worker) { CancelTask(context); WaitForSingleObject(context.worker, 5000); CloseHandle(context.worker); }
     DeleteCriticalSection(&context.processLock);
+    if (handoff && result == 2 && context.copied && context.mode == SyncMode::ToGoogle) {
+        handoff->copyCompleted = true;
+        try {
+            handoff->accountBinding = context.demoMode ? "demo" : context.sync.binding;
+            handoff->copyCompleted = context.demoMode || (!handoff->accountBinding.empty() && handoff->accountBinding == SyncBinding(context));
+        }
+        catch (...) { handoff->copyCompleted = false; }
+    }
     return result == 2 ? MigrationResult::ConfigureFolders : MigrationResult::Closed;
+}
+
+std::string CurrentCloudAccountBinding() {
+    DialogContext context;
+    context.configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
+    try { return SyncBinding(context); } catch (...) { return {}; }
+}
+
+bool VerifyFolderCopy(const std::wstring& source, const std::wstring& destination,
+                      std::atomic<bool>& cancelled, std::wstring& error) {
+    DialogContext context;
+    context.instance = GetModuleHandleW(nullptr);
+    context.externalCancellation = &cancelled;
+    context.configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
+    context.logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\folder-check.log";
+    InitializeCriticalSection(&context.processLock);
+    bool passed = false;
+    try {
+        // Compare the actual mounted destination, including content, not a timestamp
+        // or a successful transfer to an unrelated cloud account. Never write data.
+        passed = std::filesystem::is_directory(source) && std::filesystem::is_directory(destination) &&
+            !PathsOverlap(source, destination) && EnsureParentDirectory(context.logPath) &&
+            ExtractRclone(context.instance, context.runtimePath, error) &&
+            RunProcess(context, {L"check", source, destination, L"--download", L"--one-way", L"--links",
+                L"--config", context.configPath, L"--checkers", L"4", L"--retries", L"1",
+                L"--low-level-retries", L"2", L"--contimeout", L"10s", L"--timeout", L"30s"},
+                MigrationStage::Verifying, error);
+    } catch (...) { passed = false; }
+    DeleteCriticalSection(&context.processLock);
+    if (!passed) error = cancelled ? L"Check cancelled. No redirection performed." :
+        L"The destination could not be verified. It may contain missing or different files, or a cloud file may be unavailable. "
+        L"Check the selected account and folders, finish synchronization, and resolve the differences before redirecting. Details: " + context.logPath;
+    return passed;
 }
 
 int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath) {
@@ -1270,6 +1373,25 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 for (const auto& entry : std::filesystem::directory_iterator(root))
                     if (entry.path().filename().wstring().find(L".auth-") != std::wstring::npos) passed = false;
                 if (!passed) break;
+            }
+            for (const auto* client : {"fresh", "", "202264815644.apps.googleusercontent.com", "custom-client"}) {
+                if (!passed) break;
+                step = "googleFreshAndLegacyUpgrade";
+                for (const bool rootFailure : {false, true}) {
+                    const std::string original = std::string(rootFailure ? "# root-failure\n" : "# success\n") +
+                        "[unrelated]\ntype=local\n" + (std::string(client) == "fresh" ? std::string() :
+                        std::string("[cloudnav-gdrive]\ntype=drive\nclient_id=") + client +
+                        "\nclient_secret=custom-secret\ntoken={\"access_token\":\"OLD-USER-TOKEN\"}\n");
+                    passed = passed && WriteEvidence(context.configPath, original);
+                    const bool connected = passed && ConnectAccount(context, false, error);
+                    const auto updated = ReadSyncFile(context.configPath);
+                    const auto fields = AuthFields(updated, "cloudnav-gdrive");
+                    passed = passed && connected == !rootFailure && (rootFailure ? updated == original :
+                        AuthReady(updated, "cloudnav-gdrive", false) && fields.at("client_id") ==
+                        (std::string(client) == "custom-client" ? client : WideToUtf8(kGoogleOAuthClientId)) &&
+                        fields.at("token").find("SYNTHETIC-NEW-USER-TOKEN") != std::string::npos) &&
+                        ReadSyncFile(context.logPath) == previousLog;
+                }
             }
             context.runtimePath = runtime;
             error.clear();
@@ -1386,6 +1508,27 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
 
         }
         if (passed) {
+            step = "readOnlyFolderContentVerification";
+            const auto folderSource = root + L"\\verify-source";
+            const auto folderTarget = root + L"\\verify-target";
+            std::atomic<bool> cancelled = false;
+            passed = WriteEvidence(folderSource + L"\\nested\\same.txt", "content A") &&
+                WriteEvidence(folderTarget + L"\\nested\\same.txt", "content A") &&
+                WriteEvidence(folderTarget + L"\\extra.txt", "keep extra");
+            const auto beforeSource = snapshot(folderSource), beforeTarget = snapshot(folderTarget);
+            passed = passed && VerifyFolderCopy(folderSource, folderTarget, cancelled, error) &&
+                snapshot(folderSource) == beforeSource && snapshot(folderTarget) == beforeTarget;
+            // Equal sizes and timestamps must not hide different contents.
+            passed = passed && WriteEvidence(folderTarget + L"\\nested\\same.txt", "content B");
+            std::filesystem::last_write_time(folderTarget + L"\\nested\\same.txt",
+                std::filesystem::last_write_time(folderSource + L"\\nested\\same.txt"));
+            passed = passed && !VerifyFolderCopy(folderSource, folderTarget, cancelled, error);
+            passed = passed && DeleteFileW((folderTarget + L"\\nested\\same.txt").c_str()) &&
+                !VerifyFolderCopy(folderSource, folderTarget, cancelled, error);
+            cancelled = true;
+            passed = passed && !VerifyFolderCopy(folderSource, folderTarget, cancelled, error);
+        }
+        if (passed) {
             step = "sharedSyncAnalysis";
             context.oneDrivePath = root + L"\\sync-one\\";
             context.googlePath = root + L"\\sync-google\\";
@@ -1416,6 +1559,8 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 const auto reads = context.inventoryReads.load();
                 passed = WriteEvidence(context.googlePath + L"late-file.txt", "outside reviewed plan") &&
                     ExecuteSyncPlan(context, error) && context.inventoryReads == reads &&
+                    context.transferProgress.CopiedFiles() == 2 && context.transferProgress.SkippedFiles() == 0 &&
+                    context.transferProgress.CompletedBytes() == context.transferProgress.TotalBytes() &&
                     !std::filesystem::exists(context.oneDrivePath + L"late-file.txt") &&
                     read(context.oneDrivePath + L"both.txt") == "Google version" &&
                     read(context.oneDrivePath + L"google.txt") == "google only" && read(context.oneDrivePath + L"one.txt") == "one only" &&
@@ -1438,7 +1583,8 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                     passed = WriteEvidence(context.googlePath + L"oneway.txt", "destination edited since analysis");
                     std::filesystem::last_write_time(context.googlePath + L"oneway.txt", now);
                     passed = passed && ExecuteSyncPlan(context, error) &&
-                        read(context.googlePath + L"oneway.txt") == "destination edited since analysis";
+                        read(context.googlePath + L"oneway.txt") == "destination edited since analysis" &&
+                        context.transferProgress.SkippedFiles() > 0;
                 }
             }
             if (passed) {

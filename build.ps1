@@ -44,6 +44,9 @@ if ($GoogleOAuthConfigPath) {
 if ($Configuration -eq 'Release' -and (-not $googleClientId -or -not $googleClientSecret)) {
     throw 'Release builds require -GoogleOAuthConfigPath with a dedicated Google Drive desktop client.'
 }
+if ($googleClientId -match '^202264815644[.-]') {
+    throw 'The shared rclone Google application cannot be used for a CloudNav build.'
+}
 if ($googleClientId -and ($googleClientId -notmatch '^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$' -or
     $googleClientSecret -notmatch '^[A-Za-z0-9_-]+$')) {
     throw 'The Google OAuth configuration contains an invalid desktop client.'

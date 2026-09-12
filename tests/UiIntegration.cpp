@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include "../src/resource.h"
+#include "../src/version.h"
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -165,7 +166,7 @@ public:
     PROCESS_INFORMATION process = {};
     HWND main = nullptr;
     explicit App(const std::wstring& executable, const wchar_t* args,
-                 const wchar_t* title = L"CloudNav — visual test") {
+                 const wchar_t* title = CLOUDNAV_TITLE L" — visual test") {
         std::wstring command = L"\"" + executable + L"\" " + args;
         std::vector<wchar_t> buffer(command.begin(), command.end());
         buffer.push_back(0);
@@ -225,9 +226,9 @@ void Run(const std::wstring& executable) {
     Require(Text(folders, IDC_FOLDER_DOCUMENTS_PATH) == originalDocuments, "backup guard changed the folder");
 
     Select(folders, IDC_FOLDER_TRANSFER_MODE, 2);
-    Require(Wait([&] { return Text(folders, IDC_FOLDER_PICTURES_PATH + 2) == L"C:\\Users\\Example\\Pictures"; }),
-            "implicit return to local is missing from preview");
-    Require(Text(folders, IDC_FOLDER_SUMMARY).find(L"+ 1 return") != std::wstring::npos, "side-effect count is missing");
+    Require(Wait([&] { return Text(folders, IDC_FOLDER_PICTURES_PATH + 2) == L"Same as current location"; }),
+            "unselected Pictures must remain in OneDrive");
+    Require(Text(folders, IDC_FOLDER_SUMMARY).find(L"return") == std::wstring::npos, "unselected folders would change");
     Require(Text(folders, IDC_FOLDER_STATUS).find(L"Transfer mode updated") != std::wstring::npos,
             "changing transfer mode leaves a stale error");
     Capture(folders, L"ui-folder-preview.png");
@@ -235,9 +236,8 @@ void Run(const std::wstring& executable) {
     HWND review = Window(app.process.dwProcessId, L"CloudNav — review changes");
     CheckBounds(review);
     Require(Text(review, IDC_REVIEW_PLAN).find(originalDocuments) != std::wstring::npos, "review omits full source path");
-    Require(Text(review, IDC_REVIEW_EFFECTS).find(originalPictures) != std::wstring::npos, "review omits affected Pictures path");
-    Require(Text(review, IDC_REVIEW_EFFECTS).find(L"C:\\Users\\Example\\Pictures") != std::wstring::npos,
-            "review omits Pictures final destination");
+    Require(Text(review, IDC_REVIEW_EFFECTS).find(L"only the selected folders") != std::wstring::npos,
+            "review must limit backup release to selected folders");
     Require(LOWORD(SendMessageW(review, DM_GETDEFID, 0, 0)) == IDCANCEL, "confirmation default is not safe");
     Require(Text(review, IDOK) == L"Confirm redirection", "confirmation action is ambiguous");
     Capture(review, L"ui-folder-confirm.png");
@@ -251,7 +251,7 @@ void Run(const std::wstring& executable) {
     Require(Wait([&] { return !IsWindow(review) && !IsWindowEnabled(GetDlgItem(folders, IDOK)); }),
             "completed plan was not reset");
     Require(Text(folders, IDC_FOLDER_DOCUMENTS_PATH) == L"C:\\Users\\Example\\My Drive\\Documents" &&
-            Text(folders, IDC_FOLDER_PICTURES_PATH) == L"C:\\Users\\Example\\Pictures",
+            Text(folders, IDC_FOLDER_PICTURES_PATH) == originalPictures,
             "applied results differ from the explicit preview");
     Capture(folders, L"ui-folder-applied.png");
     Click(folders, IDCANCEL);
@@ -366,7 +366,7 @@ void RunSyncDirectionPersistence(const std::wstring& executable) {
     int expected = 0;
     for (int selection : {1, 2, 0, 0}) {
         App app(executable, L"--demo-migration");
-        HWND dialog = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+        HWND dialog = Window(app.process.dwProcessId, CLOUDNAV_TITLE L" — cloud sync");
         Require(SendDlgItemMessageW(dialog, IDC_MIGRATION_MODE, CB_GETCURSEL, 0, 0) == expected,
             "sync direction was not restored after process restart");
         Require(!IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_COPY)), "restoring a preference bypassed analysis");
@@ -380,7 +380,7 @@ void RunSyncDirectionPersistence(const std::wstring& executable) {
         Click(dialog, IDCANCEL);
         Require(Wait([&] { return !IsWindow(dialog); }), "sync dialog did not close");
         Click(app.main, 1010);
-        dialog = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+        dialog = Window(app.process.dwProcessId, CLOUDNAV_TITLE L" — cloud sync");
         Require(SendDlgItemMessageW(dialog, IDC_MIGRATION_MODE, CB_GETCURSEL, 0, 0) == selection,
             "sync direction was not restored when reopening dialog");
         Click(dialog, IDCANCEL);
@@ -391,7 +391,7 @@ void RunSyncDirectionPersistence(const std::wstring& executable) {
 
 void RunAuth(const std::wstring& executable) {
     App app(executable, L"--demo-migration");
-    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+    const HWND migration = Window(app.process.dwProcessId, CLOUDNAV_TITLE L" — cloud sync");
     Require(Text(migration, IDC_DIALOG_HEADING) == L"Transfer or sync cloud files",
         "cloud transfer dialog heading is mislabeled");
     Click(migration, IDC_MIGRATION_ONEDRIVE_CONNECT);
@@ -438,7 +438,7 @@ void RunAuth(const std::wstring& executable) {
 void RunMigrationReport(const std::wstring& executable) {
     RunSyncDirectionPersistence(executable);
     App app(executable, L"--demo-migration");
-    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+    const HWND migration = Window(app.process.dwProcessId, CLOUDNAV_TITLE L" — cloud sync");
     RECT compareBounds{}, compareClient{};
     GetWindowRect(migration, &compareBounds);
     GetClientRect(migration, &compareClient);
@@ -516,9 +516,9 @@ void RunMigrationReport(const std::wstring& executable) {
 }
 
 void RunHostGoogleReconnect(const std::wstring& executable) {
-    App app(executable, L"", L"CloudNav");
+    App app(executable, L"", CLOUDNAV_TITLE);
     Click(app.main, 1010);
-    const HWND migration = Window(app.process.dwProcessId, L"CloudNav — cloud sync");
+    const HWND migration = Window(app.process.dwProcessId, CLOUDNAV_TITLE L" — cloud sync");
     Require(Text(migration, IDC_MIGRATION_GOOGLE_STATUS) == L"Connection saved",
         "dedicated Google connection was not loaded");
     Click(migration, IDC_MIGRATION_GOOGLE_CONNECT);
@@ -565,7 +565,7 @@ int wmain(int argc, wchar_t** argv) {
     try { if (hostGoogleReconnect) RunHostGoogleReconnect(executable); else if (auth) RunAuth(executable); else if (clients) RunClients(executable); else if (migrationReport) RunMigrationReport(executable); else Run(executable); } catch (const std::exception& exception) { error = exception.what(); }
     Gdiplus::GdiplusShutdown(token);
     const std::string json = error.empty() && hostGoogleReconnect ? "{\"passed\":true,\"host\":true,\"googleReconnect\":true,\"analysis\":true,\"copyStarted\":false}" : error.empty() && auth ? "{\"passed\":true,\"dialogFreeSetup\":true,\"singleAttemptGuard\":true,\"focusRestored\":true,\"cancelSetup\":true,\"simulated\":true}" : error.empty()
-        ? (clients ? "{\"passed\":true,\"clientControls\":true,\"cancelPreservesState\":true,\"folderGuards\":true,\"downloadFailure\":true,\"simulated\":true}" : migrationReport ? "{\"passed\":true,\"summary\":true,\"filters\":true,\"partialResults\":true,\"staleReportCleared\":true,\"bounds\":true}" : "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"collateralPreview\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}")
+        ? (clients ? "{\"passed\":true,\"clientControls\":true,\"cancelPreservesState\":true,\"folderGuards\":true,\"downloadFailure\":true,\"simulated\":true}" : migrationReport ? "{\"passed\":true,\"summary\":true,\"filters\":true,\"partialResults\":true,\"staleReportCleared\":true,\"bounds\":true}" : "{\"passed\":true,\"visibility\":true,\"providerLabels\":true,\"unverifiedCopyDefault\":true,\"backupCopyGuard\":true,\"fullPaths\":true,\"selectedFoldersOnly\":true,\"safeConfirmation\":true,\"cancelPreservesPaths\":true,\"bounds\":true}")
         : "{\"passed\":false,\"error\":\"" + error + "\"}";
     HANDLE file = CreateFileW(argv[1], GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 3;

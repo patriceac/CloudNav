@@ -23,6 +23,16 @@ inline void TestAuthLogic() {
     assert(AuthReady(google + "client_id=own-client\nclient_secret=own-secret\n", "cloudnav-gdrive", false));
     assert(!AuthReady(google + "client_id=own-client\nclient_secret=\n", "cloudnav-gdrive", false));
     assert(!AuthReady(google + "client_id=\nclient_secret=own-secret\n", "cloudnav-gdrive", false));
+    const std::string shared = "202264815644.apps.googleusercontent.com";
+    assert(!AuthReady(google + "client_id=" + shared + "\nclient_secret=legacy\n", "cloudnav-gdrive", false));
+    assert(LegacyGoogleClient("202264815644-legacy.apps.googleusercontent.com"));
+    for (const auto& oldId : {std::string(), shared}) {
+        const auto selected = SelectGoogleClient({{"client_id", oldId}, {"client_secret", "legacy"}}, "app-client", "app-secret");
+        assert(selected.first == "app-client" && selected.second == "app-secret");
+    }
+    const auto custom = SelectGoogleClient({{"client_id", "own-client"}, {"client_secret", "own-secret"}}, "app", "app-secret");
+    assert(custom.first == "own-client" && custom.second == "own-secret");
+    assert(SelectGoogleClient({}, shared, "secret").first.empty());
     assert(!AuthReady(partial + "[other]\ndrive_id=x\ndrive_type=personal", "cloudnav-onedrive", true));
     assert(AuthResponse("notice before response\n{\n\t\"State\": \"\",\n\t\"Option\": null\n}\n")["State"] == "");
     assert(AuthResponse("{\"level\":\"notice\",\"msg\":\"shared {client}\"}\n"

@@ -2,10 +2,20 @@
 
 #include <cwctype>
 #include <string>
+#include <vector>
 
 namespace cloudnav {
 
 constexpr unsigned long kAllDriveBits = 0x03FFFFFFUL;
+
+inline std::wstring SelectMyDriveTarget(const std::wstring& registered, const std::wstring& saved,
+    const std::vector<std::wstring>& detected) {
+    // An established target survives disconnection, drive-letter changes and
+    // visibility toggles. Never silently select another mounted account.
+    if (!registered.empty()) return registered;
+    if (!saved.empty()) return saved;
+    return detected.size() == 1 ? detected.front() : std::wstring();
+}
 
 inline bool IsCloudNavigationAvailable(bool clientInstalled, bool clientDetectionComplete,
                                        bool accountRegistered, bool folderAvailable) {

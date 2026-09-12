@@ -1,0 +1,1 @@
+[{"type":"wait_result_file","path":"{OUTDIR}\\folders-result.json","timeoutMs":60000},{"type":"wait_process_exit","expectedExitCode":0,"timeoutMs":15000}]

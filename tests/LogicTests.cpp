@@ -8,14 +8,22 @@
 #include "SyncLogicTests.h"
 #include "ClientLogicTests.h"
 #include "AuthLogicTests.h"
+#include "TransferProgressTests.h"
+#include "FolderRecoveryTests.h"
 
 int wmain() {
+    assert(cloudnav::SelectMyDriveTarget(L"A:\\owned", L"B:\\saved", {L"C:\\detected"}) == L"A:\\owned");
+    assert(cloudnav::SelectMyDriveTarget({}, L"B:\\saved", {L"C:\\detected"}) == L"B:\\saved");
+    assert(cloudnav::SelectMyDriveTarget({}, {}, {L"A:\\Drive", L"B:\\Drive"}).empty());
+    assert(cloudnav::SelectMyDriveTarget({}, {}, {L"A:\\Drive"}) == L"A:\\Drive");
     for (int state = 0; state < 16; ++state)
         assert(cloudnav::IsCloudNavigationAvailable((state & 1) != 0, (state & 2) != 0, (state & 4) != 0, (state & 8) != 0) == (state == 15));
     assert(!cloudnav::CanChangeNavigationVisibility(false, false));
     assert(cloudnav::CanChangeNavigationVisibility(false, true));
     assert(cloudnav::CanChangeNavigationVisibility(true, false));
     RunSyncLogicTests();
+    TestTransferProgress();
+    TestFolderRecovery();
     TestClientManagementLogic();
     TestAuthLogic();
     using cloudnav::DriveBit;

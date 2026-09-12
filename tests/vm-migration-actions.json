@@ -43,6 +43,24 @@
   },
   {
     "type": "wait_result_file",
+    "path": "{OUTDIR}\\copy-waiting.json",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "screenshot",
+    "name": "migration-copy-waiting.png"
+  },
+  {
+    "type": "wait_result_file",
+    "path": "{OUTDIR}\\copy-retrying.json",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "screenshot",
+    "name": "migration-copy-retrying.png"
+  },
+  {
+    "type": "wait_result_file",
     "path": "{OUTDIR}\\copy-progress.json",
     "timeoutMs": 30000
   },
@@ -65,7 +83,7 @@
   },
   {
     "type": "click_control",
-    "name": "Set up folders…",
+    "name": "Set up folders\u2026",
     "timeoutMs": 10000
   },
   {

@@ -19,11 +19,14 @@
 #include <vector>
 #include <thread>
 #include <memory>
+#include <filesystem>
+#include <fstream>
 
 #include "logic.h"
 #include "folder_manager.h"
 #include "migration.h"
 #include "resource.h"
+#include "version.h"
 #include "ui.h"
 #include "client_management.h"
 
@@ -452,31 +455,28 @@ std::wstring DetectGoogleDriveRoot(wchar_t& letter) {
 }
 
 std::wstring DetectMyDrivePath() {
-    wchar_t driveLetter = 0;
-    const std::wstring driveRoot = DetectGoogleDriveRoot(driveLetter);
-    if (!driveRoot.empty()) {
-        const std::wstring direct = driveRoot + L"My Drive";
-        if (PathIsDirectory(direct)) {
-            return direct;
-        }
-        const std::wstring resolved = ResolveShortcut(driveRoot + L"My Drive.lnk");
-        if (PathIsDirectory(resolved)) {
-            return resolved;
-        }
-    }
-    const std::wstring profile = GetUserProfilePath();
-    const std::vector<std::wstring> localCandidates = {
-        profile + L"\\My Drive",
-        profile + L"\\Google Drive\\My Drive",
-        profile + L"\\Google Drive"
+    std::wstring registered, saved;
+    ReadRegistryString(HKEY_CURRENT_USER, L"Software\\Classes\\CLSID\\" + std::wstring(kMyDriveClsid) +
+        L"\\Instance\\InitPropertyBag", L"TargetFolderPath", registered);
+    ReadRegistryString(HKEY_CURRENT_USER, kSettingsKey, L"MyDrivePath", saved);
+    if (!registered.empty() || !saved.empty()) return cloudnav::SelectMyDriveTarget(registered, saved, {});
+    std::vector<std::wstring> candidates;
+    const auto add = [&](const std::wstring& path) {
+        if (PathIsDirectory(path) && std::none_of(candidates.begin(), candidates.end(),
+            [&](const auto& existing) { return cloudnav::PathEquals(existing, path); })) candidates.push_back(path);
     };
-    for (const auto& path : localCandidates) {
-        if (PathIsDirectory(path)) {
-            return path;
+    const DWORD needed = GetLogicalDriveStringsW(0, nullptr);
+    std::vector<wchar_t> drives(needed + 2, L'\0');
+    if (needed && GetLogicalDriveStringsW(needed + 1, drives.data()))
+        for (const wchar_t* root = drives.data(); *root; root += std::wcslen(root) + 1) {
+            add(std::wstring(root) + L"My Drive");
+            add(ResolveShortcut(std::wstring(root) + L"My Drive.lnk"));
         }
-    }
-
-    return {};
+    const auto profile = GetUserProfilePath();
+    add(profile + L"\\My Drive");
+    add(profile + L"\\Google Drive\\My Drive");
+    if (!PathIsDirectory(profile + L"\\Google Drive\\My Drive")) add(profile + L"\\Google Drive");
+    return cloudnav::SelectMyDriveTarget({}, {}, candidates);
 }
 
 bool ReadPinned(const std::wstring& clsid, bool defaultValue = true) {
@@ -700,11 +700,11 @@ AppState DetectState() {
     state.myDrivePath = DetectMyDrivePath();
     const std::wstring classKey = L"Software\\Classes\\CLSID\\" + std::wstring(kMyDriveClsid);
     DWORD pinned = 0;
-    ReadRegistryDword(HKEY_LOCAL_MACHINE, classKey, L"System.IsPinnedToNameSpaceTree", pinned);
-    ReadRegistryDword(HKEY_LOCAL_MACHINE, classKey, L"SortOrderIndex", state.myDriveSort);
+    ReadRegistryDword(HKEY_CURRENT_USER, classKey, L"System.IsPinnedToNameSpaceTree", pinned);
+    ReadRegistryDword(HKEY_CURRENT_USER, classKey, L"SortOrderIndex", state.myDriveSort);
     const std::wstring namespaceKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\" +
                                       std::wstring(kMyDriveClsid);
-    state.myDriveVisible = pinned != 0 && RegistryKeyExists(HKEY_LOCAL_MACHINE, namespaceKey);
+    state.myDriveVisible = pinned != 0 && RegistryKeyExists(HKEY_CURRENT_USER, namespaceKey);
     state.oneDrive = DetectOneDrive();
     state.oneDriveFolderAvailable = PathIsDirectory(state.oneDrive.path);
     DetectOneDriveClientState(state);
@@ -769,7 +769,7 @@ std::wstring JoinFolderNames(const std::vector<std::wstring>& names) {
 void UpdateControlsFromState() {
     g_chosenMyDrivePath = g_state.myDrivePath;
     const std::wstring myDetail = g_state.myDrivePath.empty()
-        ? L"My Drive folder not detected. Start Google Drive, then Refresh."
+        ? L"My Drive is unavailable or ambiguous. Connect one Drive account, then Refresh."
         : g_state.myDrivePath;
     SetWindowTextW(g_myDriveDetail, myDetail.c_str());
     SetWindowTextW(g_myDrive, g_state.googleClient.installed ? L"Google Drive — My Drive folder" : L"My Drive — local folder");
@@ -1063,17 +1063,6 @@ void UninstallOneDrive() {
 bool WriteMyDriveClass(const std::wstring& classRoot, bool show, const std::wstring& path,
                        std::wstring& error) {
     const std::wstring classKey = classRoot + L"\\" + kMyDriveClsid;
-    if (!show) {
-        if (RegistryKeyExists(HKEY_LOCAL_MACHINE, classKey)) {
-            const LSTATUS status = WriteRegistryDword(HKEY_LOCAL_MACHINE, classKey,
-                                                      L"System.IsPinnedToNameSpaceTree", 0);
-            if (status != ERROR_SUCCESS) {
-                error = FormatWindowsError(status);
-                return false;
-            }
-        }
-        return true;
-    }
 
     std::wstring icon = L"C:\\Program Files\\Google\\Drive File Stream\\drive_fs.ico";
     if (GetFileAttributesW(icon.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -1089,7 +1078,7 @@ bool WriteMyDriveClass(const std::wstring& classRoot, bool show, const std::wstr
         {classKey + L"\\Instance\\InitPropertyBag", L"TargetFolderPath", path, REG_EXPAND_SZ}
     };
     for (const auto& item : strings) {
-        const LSTATUS status = WriteRegistryString(HKEY_LOCAL_MACHINE, item.key, item.name, item.value, item.type);
+        const LSTATUS status = WriteRegistryString(HKEY_USERS, item.key, item.name, item.value, item.type);
         if (status != ERROR_SUCCESS) {
             error = FormatWindowsError(status);
             return false;
@@ -1097,14 +1086,15 @@ bool WriteMyDriveClass(const std::wstring& classRoot, bool show, const std::wstr
     }
     struct DwordValue { std::wstring key; const wchar_t* name; DWORD value; };
     const std::vector<DwordValue> dwords = {
-        {classKey, L"System.IsPinnedToNameSpaceTree", 1},
+        {classKey, L"System.IsPinnedToNameSpaceTree", show ? 1UL : 0UL},
         {classKey, L"SortOrderIndex", kCloudSortOrder},
+        {classKey, L"CloudNav.UserRegistrationVersion", 1},
         {classKey + L"\\Instance\\InitPropertyBag", L"Attributes", 0x11},
         {classKey + L"\\ShellFolder", L"FolderValueFlags", 0x28},
-        {classKey + L"\\ShellFolder", L"Attributes", 0xF080004D}
+        {classKey + L"\\ShellFolder", L"Attributes", show ? 0xF080004DUL : 0xF090004DUL}
     };
     for (const auto& item : dwords) {
-        const LSTATUS status = WriteRegistryDword(HKEY_LOCAL_MACHINE, item.key, item.name, item.value);
+        const LSTATUS status = WriteRegistryDword(HKEY_USERS, item.key, item.name, item.value);
         if (status != ERROR_SUCCESS) {
             error = FormatWindowsError(status);
             return false;
@@ -1113,33 +1103,59 @@ bool WriteMyDriveClass(const std::wstring& classRoot, bool show, const std::wstr
     return true;
 }
 
-bool ConfigureMyDriveMachine(bool show, const std::wstring& path, std::wstring& error) {
+bool ConfigureMyDriveForUser(const std::wstring& userSid, bool show, const std::wstring& requestedPath, std::wstring& error) {
+    if (userSid.empty()) { error = L"Unable to identify the Windows user."; return false; }
+    std::wstring registered, saved;
+    ReadRegistryString(HKEY_USERS, userSid + L"\\Software\\Classes\\CLSID\\" + kMyDriveClsid +
+        L"\\Instance\\InitPropertyBag", L"TargetFolderPath", registered);
+    ReadRegistryString(HKEY_USERS, userSid + L"\\Software\\CloudNav", L"MyDrivePath", saved);
+    const auto path = cloudnav::SelectMyDriveTarget(registered, saved,
+        requestedPath.empty() ? std::vector<std::wstring>{} : std::vector<std::wstring>{requestedPath});
     if (show && !PathIsDirectory(path)) {
         error = L"The selected My Drive folder does not exist.";
         return false;
     }
-    if (!WriteMyDriveClass(L"Software\\Classes\\CLSID", show, path, error) ||
-        !WriteMyDriveClass(L"Software\\Classes\\Wow6432Node\\CLSID", show, path, error)) {
+    if (!WriteMyDriveClass(userSid + L"\\Software\\Classes\\CLSID", show, path, error) ||
+        !WriteMyDriveClass(userSid + L"\\Software\\Classes\\Wow6432Node\\CLSID", show, path, error)) {
         return false;
     }
 
     const std::wstring namespaceKey =
-        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\" +
+        userSid + L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\" +
         std::wstring(kMyDriveClsid);
     if (show) {
-        const LSTATUS status = WriteRegistryString(HKEY_LOCAL_MACHINE, namespaceKey, nullptr, L"My Drive");
+        const LSTATUS status = WriteRegistryString(HKEY_USERS, namespaceKey, nullptr, L"My Drive");
         if (status != ERROR_SUCCESS) {
             error = FormatWindowsError(status);
             return false;
         }
     } else {
-        const LSTATUS status = RegDeleteTreeW(HKEY_LOCAL_MACHINE, namespaceKey.c_str());
+        const LSTATUS status = RegDeleteTreeW(HKEY_USERS, namespaceKey.c_str());
         if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND) {
             error = FormatWindowsError(status);
             return false;
         }
     }
+    if (!path.empty()) {
+        const auto status = WriteRegistryString(HKEY_USERS, userSid + L"\\Software\\CloudNav", L"MyDrivePath", path);
+        if (status != ERROR_SUCCESS) { error = FormatWindowsError(status); return false; }
+    }
     return true;
+}
+
+bool MigrateMyDriveForUser(const std::wstring& userSid, std::wstring& error) {
+    const auto relative = L"Software\\Classes\\CLSID\\" + std::wstring(kMyDriveClsid);
+    if (!RegistryKeyExists(HKEY_LOCAL_MACHINE, relative) &&
+        !RegistryKeyExists(HKEY_LOCAL_MACHINE, L"Software\\Classes\\Wow6432Node\\CLSID\\" + std::wstring(kMyDriveClsid))) return true;
+    DWORD version = 0;
+    if (ReadRegistryDword(HKEY_USERS, userSid + L"\\" + relative, L"CloudNav.UserRegistrationVersion", version) && version == 1) return true;
+    std::wstring ownedPath;
+    ReadRegistryString(HKEY_USERS, userSid + L"\\" + relative + L"\\Instance\\InitPropertyBag", L"TargetFolderPath", ownedPath);
+    if (ownedPath.empty()) ReadRegistryString(HKEY_USERS, userSid + L"\\Software\\CloudNav", L"MyDrivePath", ownedPath);
+    // Mask the inherited machine registration in THIS user's merged classes.
+    // Never import its target: it may point into a different Windows profile.
+    // Other users keep their own registrations and migrate at their next launch.
+    return ConfigureMyDriveForUser(userSid, false, ownedPath, error);
 }
 
 bool IsAdministrator() {
@@ -1248,18 +1264,6 @@ bool SetGoogleDriveVisibleForUser(const std::wstring& userSid, wchar_t letter, b
         return false;
     }
 
-    const std::wstring machinePolicyKey =
-        L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer";
-    DWORD machineCurrent = 0;
-    ReadRegistryDword(HKEY_LOCAL_MACHINE, machinePolicyKey, L"NoDrives", machineCurrent);
-    const DWORD machineUpdated = cloudnav::SetDriveVisible(machineCurrent, letter, visible);
-    status = machineUpdated == 0
-        ? DeleteRegistryValue(HKEY_LOCAL_MACHINE, machinePolicyKey, L"NoDrives")
-        : WriteRegistryDword(HKEY_LOCAL_MACHINE, machinePolicyKey, L"NoDrives", machineUpdated);
-    if (status != ERROR_SUCCESS) {
-        error = FormatWindowsError(status);
-        return false;
-    }
     return true;
 }
 
@@ -1267,11 +1271,8 @@ bool ConfigureAllElevated(bool showMyDrive, const std::wstring& myDrivePath,
                           bool showOneDrive, const std::wstring& oneDriveClsid,
                           bool showGoogleDrive, wchar_t googleDriveLetter,
                           const std::wstring& userSid, std::wstring& error) {
-    if (!ConfigureMyDriveMachine(showMyDrive, myDrivePath, error)) {
+    if (!ConfigureMyDriveForUser(userSid, showMyDrive, myDrivePath, error)) {
         return false;
-    }
-    if (!myDrivePath.empty()) {
-        WriteRegistryString(HKEY_USERS, userSid + L"\\Software\\CloudNav", L"MyDrivePath", myDrivePath);
     }
     const std::wstring hideDesktopKey = userSid +
         L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel";
@@ -1693,14 +1694,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         case IDC_MIGRATE_CLOUD: {
+            CloudFolderHandoff handoff;
             const cloudnav::MigrationResult result = cloudnav::ShowMigrationDialog(
-                window, g_instance, g_demoMode, g_demoMigrationResult);
+                window, g_instance, g_demoMode, g_demoMigrationResult, &handoff);
             if (result == cloudnav::MigrationResult::ConfigureFolders) {
+                if (!g_demoMode) g_state = DetectState();
                 cloudnav::FolderProviders providers;
                 providers.oneDriveLabel = g_state.oneDrive.label;
                 providers.oneDriveRoot = g_state.oneDrive.path;
                 providers.googleDriveRoot = g_state.myDrivePath;
-                providers.oneDriveToGoogleVerified = false;
+                providers.copyCompleted = handoff.copyCompleted;
+                providers.copyAccountBinding = handoff.accountBinding;
                 providers.preloadDemoPlan = g_demoMode;
                 cloudnav::ShowFolderManagerDialog(window, g_instance, providers, g_demoMode);
                 if (!g_demoMode) { g_state = DetectState(); UpdateControlsFromState(); }
@@ -1893,6 +1897,8 @@ int RunElevatedHelper(int argumentCount, wchar_t** arguments) {
         : ERROR_WRITE_FAULT;
 }
 
+#include "../tests/UserNavigationScenario.h"
+
 }  // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
@@ -1903,6 +1909,12 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
 
     int argumentCount = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (arguments && argumentCount == 3 && EqualsInsensitive(arguments[1], L"--self-test-user-navigation")) {
+        const int result = RunUserNavigationScenario(arguments[2]);
+        LocalFree(arguments);
+        CoUninitialize();
+        return result;
+    }
     if (arguments && argumentCount == 3 &&
         EqualsInsensitive(arguments[1], L"--self-test-known-folders")) {
         const int result = cloudnav::RunFolderRedirectionSelfTest(arguments[2]);
@@ -1913,13 +1925,6 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
     if (arguments && argumentCount == 3 &&
         EqualsInsensitive(arguments[1], L"--self-test-embedded-rclone")) {
         const int result = cloudnav::RunEmbeddedRcloneSelfTest(instance, arguments[2]);
-        LocalFree(arguments);
-        CoUninitialize();
-        return result;
-    }
-    if (arguments && argumentCount == 2 &&
-        EqualsInsensitive(arguments[1], L"--elevated-disable-onedrive-backup")) {
-        const int result = cloudnav::RunDisableOneDriveFolderBackupHelper();
         LocalFree(arguments);
         CoUninitialize();
         return result;
@@ -1961,6 +1966,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
     INITCOMMONCONTROLSEX controls = {sizeof(controls), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS};
     InitCommonControlsEx(&controls);
     g_backgroundBrush = CreateSolidBrush(RGB(248, 250, 252));
+    std::wstring migrationError;
+    if (!g_demoMode) MigrateMyDriveForUser(GetCurrentUserSid(), migrationError);
     g_state = DetectState();
 
     WNDCLASSEXW windowClass = {sizeof(windowClass)};
@@ -1984,7 +1991,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
                        FALSE, 0);
     g_window = CreateWindowExW(
         0, windowClass.lpszClassName,
-        g_demoMode ? L"CloudNav — visual test" : L"CloudNav",
+        g_demoMode ? CLOUDNAV_TITLE L" — visual test" : CLOUDNAV_TITLE,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, dimensions.right - dimensions.left, dimensions.bottom - dimensions.top,
         nullptr, nullptr, instance, nullptr);
@@ -2000,6 +2007,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
     }
     ResizeMainWindowForDpi(g_window, g_uiDpi, nullptr);
     RestoreWindowPosition(g_window);
+    if (!migrationError.empty()) ShowStatus(L"My Drive upgrade failed: " + migrationError, true);
     ShowWindow(g_window, showCommand);
     UpdateWindow(g_window);
 

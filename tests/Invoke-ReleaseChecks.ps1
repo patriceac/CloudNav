@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Auth', 'Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime')]
-    [string[]]$Scenario = @('Auth', 'Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime'),
+    [ValidateSet('Auth', 'Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'UserNavigation', 'KnownFolders', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime')]
+    [string[]]$Scenario = @('Auth', 'Ui', 'Migration', 'MigrationResume', 'MigrationEngine', 'UserNavigation', 'KnownFolders', 'MigrationReport', 'OneDrive', 'Failure', 'WindowPosition', 'Clients', 'ClientRuntime'),
     [switch]$SkipBuild,
     [string]$GoogleOAuthConfigPath = $env:CLOUDNAV_GOOGLE_OAUTH_CONFIG_PATH,
     [string]$GoogleOAuthRemote = 'gdrive',
@@ -24,8 +24,10 @@ $cases = @{
     Clients = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json" --clients'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('clients-protected.png','clients-unknown.png','clients-missing.png','clients-install-google.png','clients-install-onedrive.png','clients-uninstall-google.png','clients-uninstall-onedrive.png','clients-download-failure.png') }
     ClientRuntime = @{ Exe = 'CloudNavClientTests.exe'; Args = '"{OUTDIR}\client-result.json"'; Actions = 'vm-client-runtime-actions.json'; Result = 'client-result.json'; Images = @() }
     Ui = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json"'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('ui-main.png','ui-unverified.png','ui-folder-preview.png','ui-folder-confirm.png','ui-folder-applied.png') }
-    Migration = @{ Exe = 'CloudNav.exe'; Args = '--demo-migration "{OUTDIR}\migration-result.json"'; Actions = 'vm-migration-actions.json'; Result = 'migration-result.json'; Images = @('migration-analysis-progress.png','migration-analysis-complete.png','migration-copy-progress.png','migration-verified.png','migration-cutover.png') }
+    Migration = @{ Exe = 'CloudNav.exe'; Args = '--demo-migration "{OUTDIR}\migration-result.json"'; Actions = 'vm-migration-actions.json'; Result = 'migration-result.json'; Images = @('migration-analysis-progress.png','migration-analysis-complete.png','migration-copy-progress.png','migration-copy-waiting.png','migration-copy-retrying.png','migration-verified.png','migration-cutover.png') }
     MigrationResume = @{ Exe = 'CloudNav.exe'; Args = '--demo-migration "{OUTDIR}\migration-result.json"'; Actions = 'vm-migration-resume-actions.json'; Result = 'migration-result.json'; Images = @('migration-cancelled.png','migration-resumed-verified.png') }
+    KnownFolders = @{ Exe = 'CloudNav.exe'; Args = '--self-test-known-folders "{OUTDIR}\folders-result.json"'; Actions = 'vm-known-folders-actions.json'; Result = 'folders-result.json'; Images = @() }
+    UserNavigation = @{ Exe = 'CloudNav.exe'; Args = '--self-test-user-navigation "{OUTDIR}\navigation-result.json"'; Actions = 'vm-user-navigation-actions.json'; Result = 'navigation-result.json'; Images = @() }
     MigrationEngine = @{ Exe = 'CloudNav.exe'; Args = '--self-test-embedded-rclone "{OUTDIR}\rclone-result.json"'; Actions = 'vm-rclone-self-test-actions.json'; Result = 'rclone-result.json'; Images = @() }
     MigrationReport = @{ Exe = 'CloudNavUiTests.exe'; Args = '"{OUTDIR}\ui-result.json" --migration-report'; Actions = 'vm-ui-actions.json'; Result = 'ui-result.json'; Images = @('sync-direction-restored.png','report-summary.png','report-reverse.png','report-bidirectional.png','report-all.png','report-new.png','report-ignored.png','report-partial.png') }
     OneDrive = @{ Exe = 'CloudNav.exe'; Args = '--demo-safe-onedrive'; Actions = 'vm-onedrive-actions.json'; Images = @('cloudnav-onedrive-uninstall-confirm.png','cloudnav-onedrive-uninstall-simulated.png') }
