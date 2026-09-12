@@ -1325,6 +1325,10 @@ bool VerifyFolderCopy(const std::wstring& source, const std::wstring& destinatio
             !PathsOverlap(source, destination) && EnsureParentDirectory(context.logPath) &&
             ExtractRclone(context.instance, context.runtimePath, error) &&
             RunProcess(context, {L"check", source, destination, L"--download", L"--one-way", L"--links",
+                // Explorer display metadata is local to each folder and need not
+                // exist in the cloud copy. Match only this exact filename, at any
+                // depth and casing; keep user files inside similarly named folders.
+                L"--exclude", L"{{(?i:desktop\\.ini)}}",
                 L"--config", context.configPath, L"--checkers", L"4", L"--retries", L"1",
                 L"--low-level-retries", L"2", L"--contimeout", L"10s", L"--timeout", L"30s"},
                 MigrationStage::Verifying, error);
@@ -1454,10 +1458,21 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
             return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
         };
         const auto snapshot = [&](const std::wstring& path) {
-            std::map<std::wstring, std::pair<std::filesystem::file_time_type, std::string>> result;
+            std::map<std::wstring, std::pair<ULONGLONG, std::string>> result;
             for (const auto& entry : std::filesystem::recursive_directory_iterator(path)) {
+                // Directory enumeration can return cached timestamps for newly
+                // created descendants. Read the current timestamp from a handle
+                // so a later traversal cannot look like a write by the checker.
+                HANDLE file = CreateFileW(entry.path().c_str(), FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                FILETIME writeTime{};
+                const bool readTime = file != INVALID_HANDLE_VALUE && GetFileTime(file, nullptr, nullptr, &writeTime);
+                if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+                if (!readTime) throw std::runtime_error("fixture timestamp read failed");
+                const ULONGLONG ticks = (static_cast<ULONGLONG>(writeTime.dwHighDateTime) << 32) | writeTime.dwLowDateTime;
                 result[entry.path().lexically_relative(path).wstring()] = {
-                    entry.last_write_time(), entry.is_directory() ? "directory" : "file:" + read(entry.path())};
+                    ticks, entry.is_directory() ? "directory" : "file:" + read(entry.path())};
             }
             return result;
         };
@@ -1512,21 +1527,65 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
             const auto folderSource = root + L"\\verify-source";
             const auto folderTarget = root + L"\\verify-target";
             std::atomic<bool> cancelled = false;
+            const auto checkFolder = [&] {
+                const bool verified = VerifyFolderCopy(folderSource, folderTarget, cancelled, error);
+                WriteEvidence(resultPath + L".folder-check.log", ReadSyncFile(LocalAppDataPath() + L"\\CloudNav\\Migration\\folder-check.log"));
+                return verified;
+            };
             passed = WriteEvidence(folderSource + L"\\nested\\same.txt", "content A") &&
                 WriteEvidence(folderTarget + L"\\nested\\same.txt", "content A") &&
-                WriteEvidence(folderTarget + L"\\extra.txt", "keep extra");
+                WriteEvidence(folderTarget + L"\\extra.txt", "keep extra") &&
+                WriteEvidence(folderSource + L"\\desktop.ini", "[.ShellClassInfo]\nInfoTip=source") &&
+                WriteEvidence(folderSource + L"\\nested\\DeSkToP.InI", "source display settings") &&
+                WriteEvidence(folderTarget + L"\\nested\\DeSkToP.InI", "destination display settings") &&
+                WriteEvidence(folderSource + L"\\nested\\desktop.ini.backup", "user backup") &&
+                WriteEvidence(folderTarget + L"\\nested\\desktop.ini.backup", "user backup") &&
+                WriteEvidence(folderSource + L"\\nested\\settings.ini", "user configuration") &&
+                WriteEvidence(folderTarget + L"\\nested\\settings.ini", "user configuration") &&
+                WriteEvidence(folderSource + L"\\container\\desktop.ini\\report.txt", "user report") &&
+                WriteEvidence(folderTarget + L"\\container\\desktop.ini\\report.txt", "user report");
             const auto beforeSource = snapshot(folderSource), beforeTarget = snapshot(folderTarget);
-            passed = passed && VerifyFolderCopy(folderSource, folderTarget, cancelled, error) &&
-                snapshot(folderSource) == beforeSource && snapshot(folderTarget) == beforeTarget;
+            if (passed) {
+                step = "folderMetadataExclusion";
+                passed = checkFolder();
+            }
+            if (passed) {
+                step = "folderCheckPreservesFiles";
+                const auto afterSource = snapshot(folderSource), afterTarget = snapshot(folderTarget);
+                passed = afterSource == beforeSource && afterTarget == beforeTarget;
+                if (!passed) {
+                    error = L"Folder check modified fixture entries:";
+                    for (const auto& before : beforeSource) {
+                        const auto found = afterSource.find(before.first);
+                        if (found == afterSource.end() || found->second != before.second) error += L" source/" + before.first;
+                    }
+                    for (const auto& before : beforeTarget) {
+                        const auto found = afterTarget.find(before.first);
+                        if (found == afterTarget.end() || found->second != before.second) error += L" target/" + before.first;
+                    }
+                }
+            }
+            // Only Explorer's exact metadata filename is exempt. Other INI files,
+            // suffix lookalikes and contents of a desktop.ini directory still block.
+            for (const auto& relative : {L"\\nested\\desktop.ini.backup", L"\\nested\\settings.ini",
+                                        L"\\container\\desktop.ini\\report.txt"}) {
+                if (!passed) break;
+                step = "folderMetadataExclusionKeepsUserFiles:" + WideToUtf8(relative);
+                const auto file = folderTarget + relative;
+                const auto contents = read(file);
+                passed = DeleteFileW(file.c_str()) && !checkFolder() &&
+                    WriteEvidence(file, contents);
+            }
             // Equal sizes and timestamps must not hide different contents.
+            if (passed) step = "folderContentMismatchStillBlocks";
             passed = passed && WriteEvidence(folderTarget + L"\\nested\\same.txt", "content B");
             std::filesystem::last_write_time(folderTarget + L"\\nested\\same.txt",
                 std::filesystem::last_write_time(folderSource + L"\\nested\\same.txt"));
-            passed = passed && !VerifyFolderCopy(folderSource, folderTarget, cancelled, error);
+            passed = passed && !checkFolder();
             passed = passed && DeleteFileW((folderTarget + L"\\nested\\same.txt").c_str()) &&
-                !VerifyFolderCopy(folderSource, folderTarget, cancelled, error);
+                !checkFolder();
             cancelled = true;
-            passed = passed && !VerifyFolderCopy(folderSource, folderTarget, cancelled, error);
+            passed = passed && !checkFolder();
         }
         if (passed) {
             step = "sharedSyncAnalysis";

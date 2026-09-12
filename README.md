@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.3
+# CloudNav 1.4.4
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -10,7 +10,7 @@ CloudNav is a native, portable Windows 11 utility that brings together two setti
 
 One standalone `.exe`, with no installer or additional application runtime.
 
-Version 1.4.3 adds fixed transfer totals, stable ETA handling, account upgrade checks, per-user Explorer registration, and resumable folder setup. The title bar displays the running version.
+Version 1.4.4 fixes folder verification being blocked by missing or different Windows `desktop.ini` display metadata. It retains the fixed transfer totals, stable ETA handling, account upgrade checks, per-user Explorer registration, and resumable folder setup from 1.4.3. The title bar displays the running version.
 
 ## Features
 
@@ -37,7 +37,7 @@ The checkboxes in the main window only control visibility in the File Explorer n
 
 Personal-folder changes are shown in a separate review before anything is applied. Current and proposed paths can be selected and copied in full. CloudNav validates destinations, blocks nested paths, and attempts to restore previous locations if a redirect-only operation fails. Copy/move failures report any steps that already completed.
 
-After a OneDrive → Google Drive copy, **Set up folders** recommends **Redirect only** for corresponding folders. Completion is not treated as proof: before redirection CloudNav reads and compares every selected source file against the actual mounted destination using rclone `check --download --one-way --links`. This can download online-only files. Missing or different files, unreadable content, or changed accounts block redirection; extra destination files are retained. Pause editing and external synchronization while checking and applying.
+After a OneDrive → Google Drive copy, **Set up folders** recommends **Redirect only** for corresponding folders. Completion is not treated as proof: before redirection CloudNav reads and compares the selected source files against the actual mounted destination using rclone `check --download --one-way --links`. Windows `desktop.ini` folder display metadata is excluded by exact filename, ignoring case, at every depth; other INI files and user files inside similarly named directories remain checked. This can download online-only files. Missing or different user files, unreadable content, or changed accounts block redirection; extra destination files are retained. Pause editing and external synchronization while checking and applying.
 
 CloudNav saves the approved folder pairs in the current user's registry before setup. Recovery is bound to that Windows SID, the cloud account fingerprint and both mounted root identities. Every resume rechecks the original data and any files newly written to the released local folder. Completed paths are recognized, unapproved path changes are rejected, and failed redirection attempts restore their starting Windows locations where possible. A rollback does not undo a backup change already made in OneDrive; the saved plan remains available to continue or explicitly discard.
 
