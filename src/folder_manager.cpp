@@ -10,7 +10,6 @@
 #include <gdiplus.h>
 #include <sddl.h>
 #include <filesystem>
-#include <future>
 #include "../third_party/nlohmann/json.hpp"
 
 #include <algorithm>
@@ -95,8 +94,6 @@ struct DialogContext {
     bool backupReleaseRequired = false;
     size_t selectedChanges = 0;
     size_t sideEffects = 0;
-    bool busy = false;
-    std::atomic<bool> cancelled = false;
     std::vector<FolderOperation> pendingPlan;
     std::string pendingIdentity;
     bool savedPlanInvalid = false;
@@ -283,18 +280,6 @@ bool LaunchOneDriveCommand(const std::wstring& executable,
     CloseHandle(process.hProcess);
     return true;
 }
-
-void PumpDialogMessages(HWND dialog) {
-    MSG message = {};
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-        if (!IsDialogMessageW(dialog, &message)) {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-}
-
-
 
 bool ContainsInsensitive(const std::wstring& text, const std::wstring& fragment) {
     if (fragment.empty() || fragment.size() > text.size()) {
@@ -728,7 +713,7 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
         SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(TransferChoice::Copy), 0);
         context.guidanceIsWarning = false;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            context.providers.copyCompleted ? L"OneDrive → Google Drive copy finished; selected folders will be checked. Choose folders to set up."
+            context.providers.copyCompleted ? L"OneDrive → Google Drive copy finished. Choose folders to set up."
                 : context.providers.rootMirrorTaskDetected ? L"External synchronization detected. Its status and files have not been checked."
                 : L"Choose a destination to prepare a change.");
         InvalidateRect(GetDlgItem(dialog, IDC_FOLDER_WARNING), nullptr, TRUE);
@@ -740,7 +725,7 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
     if (context.backupReleaseRequired && selected != TransferChoice::Repoint) {
         context.guidanceIsWarning = true;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            L"Already copied? Choose Redirect only to check the existing destination, then stop backup for the selected folders.");
+            L"Already copied? Choose Redirect only to use the existing destination, then stop backup for the selected folders.");
         InvalidateRect(GetDlgItem(dialog, IDC_FOLDER_WARNING), nullptr, TRUE);
         return;
     }
@@ -753,22 +738,22 @@ void UpdateTransferGuidance(HWND dialog, DialogContext& context, bool selectReco
     }
 
     if (!context.pendingPlan.empty()) {
-        SetDlgItemTextW(dialog, IDC_FOLDER_WARNING, L"Saved setup: Continue setup rechecks files and resumes only the approved folders. Refresh discards the plan.");
+        SetDlgItemTextW(dialog, IDC_FOLDER_WARNING, L"Saved setup: Continue setup confirms Windows locations and resumes only the approved folders. Refresh discards the plan.");
         context.guidanceIsWarning = false;
         return;
     }
     if (selected == TransferChoice::Repoint && profile.hasChanges) {
         context.guidanceIsWarning = false;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
-            L"Cloud folders will be checked before redirection. Keep files idle and pause external synchronization during this step.");
+            L"Redirect only changes Windows folder locations. Files are not copied, downloaded, or checked.");
         return;
     }
     context.guidanceIsWarning = selected != recommended;
     if (profile.hasMirroredCloudChanges) {
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
             selected == recommended
-                ? L"Copy finished: redirect only to the matching Google Drive folders. CloudNav will check the selected folders first."
-                : L"Copy finished: choose Redirect only to check the existing copy for this OneDrive → Google Drive change.");
+                ? L"Copy finished: redirect only to the matching Google Drive folders without a file transfer."
+                : L"Copy finished: choose Redirect only to use the existing copy for this OneDrive → Google Drive change.");
     } else {
         context.guidanceIsWarning = context.providers.rootMirrorTaskDetected || selected != recommended;
         SetDlgItemTextW(dialog, IDC_FOLDER_WARNING,
@@ -971,33 +956,11 @@ void LoadFolderRecovery(HWND dialog, DialogContext& context) {
             UpdateRowPreview(dialog, context, row);
         }
         SendDlgItemMessageW(dialog, IDC_FOLDER_TRANSFER_MODE, CB_SETCURSEL, static_cast<WPARAM>(TransferChoice::Repoint), 0);
-        SetStatus(dialog, L"Saved setup restored. Review the current locations, then Continue setup to recheck and continue.");
+        SetStatus(dialog, L"Saved setup restored. Review the current locations, then Continue setup.");
     } catch (...) {
         context.savedPlanInvalid = true;
         SetStatus(dialog, L"Saved setup cannot be used: accounts, mounted roots, or plan changed. Reconnect the original accounts, or Refresh to discard it.", true);
     }
-}
-
-bool CheckFolderPair(HWND dialog, DialogContext& context, const std::wstring& source,
-                     const std::wstring& target, std::wstring& error) {
-    if (context.demoMode) return true;
-    context.busy = true;
-    context.cancelled = false;
-    for (int control : {IDOK, IDC_FOLDER_REFRESH, IDC_FOLDER_TRANSFER_MODE}) EnableWindow(GetDlgItem(dialog, control), FALSE);
-    for (const auto& row : context.rows) EnableWindow(GetDlgItem(dialog, row.spec->targetControl), FALSE);
-    SetDlgItemTextW(dialog, IDCANCEL, L"Cancel check");
-    auto task = std::async(std::launch::async, [&] { return VerifyFolderCopy(source, target, context.cancelled, error); });
-    const auto start = GetTickCount64();
-    while (task.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
-        SetStatus(dialog, L"Checking existing files — " + std::to_wstring((GetTickCount64() - start) / 1000) + L"s. You can cancel this check.");
-        PumpDialogMessages(dialog);
-    }
-    const bool passed = task.get();
-    context.busy = false;
-    SetDlgItemTextW(dialog, IDCANCEL, L"Close");
-    EnableWindow(GetDlgItem(dialog, IDC_FOLDER_REFRESH), TRUE);
-    UpdateTransferGuidance(dialog, context, false);
-    return passed;
 }
 
 bool PrepareOneDriveBackupForGoogle(HWND dialog, DialogContext& context,
@@ -1024,19 +987,8 @@ bool PrepareOneDriveBackupForGoogle(HWND dialog, DialogContext& context,
         SetStatus(dialog, L"Accounts or mounted folders changed. No redirection performed. Reopen this window after reconnecting.", true);
         return false;
     }
-    // Every attempt rechecks the original source and the actual selected mount.
-    // A prior transfer, cached receipt, timestamp, or different destination is insufficient.
-    for (const auto& item : plan) {
-        if (!CheckFolderPair(dialog, context, item.source, item.target, error)) {
-            SetStatus(dialog, error, true);
-            MessageBoxW(dialog, error.c_str(), L"CloudNav — check existing copy", MB_OK | MB_ICONINFORMATION);
-            return false;
-        }
-    }
-    if (FolderSetupIdentity(context) != identity) {
-        SetStatus(dialog, L"Accounts or mounted folders changed during the check. No redirection performed.", true);
-        return false;
-    }
+    // Redirect only changes Windows locations. Never enumerate or read folder
+    // contents here: opening online-only files would download them.
     if (starting) {
         context.pendingPlan = plan;
         context.pendingIdentity = identity;
@@ -1073,23 +1025,16 @@ bool PrepareOneDriveBackupForGoogle(HWND dialog, DialogContext& context,
         }
         if (context.pendingNeedsRelease && item.rowIndex <= 2 && state == FolderRecoveryState::WaitingForRelease)
             waiting += std::wstring(row.spec->label) + L"\n";
-        // Catch files newly saved to the local folder after OneDrive released it.
-        if (state == FolderRecoveryState::Ready && PathIsDirectory(row.currentPath) &&
-            !CheckFolderPair(dialog, context, row.currentPath, item.target, error)) {
-            SetStatus(dialog, L"The released local folder contains unchecked files. Saved plan kept.", true);
-            MessageBoxW(dialog, (L"Check the new local files in " + row.currentPath + L" before continuing.\n\n" + error).c_str(), L"CloudNav", MB_OK | MB_ICONINFORMATION);
-            return false;
-        }
         operations.push_back({item.rowIndex, row.currentPath, item.target});
     }
     if (!waiting.empty()) {
-        SetStatus(dialog, L"Setup saved. Stop backup for the selected folders in OneDrive settings, then Continue setup to recheck and continue.");
+        SetStatus(dialog, L"Setup saved. Stop backup for the selected folders in OneDrive settings, then Continue setup.");
         const bool policy = RegistryPolicyValueEnabled(HKEY_LOCAL_MACHINE, L"KFMBlockOptOut") ||
             RegistryPolicyValueEnabled(HKEY_CURRENT_USER, L"KFMBlockOptOut");
-        const std::wstring message = L"The existing destination files passed the check. Your setup is saved.\n\n"
+        const std::wstring message = L"Your setup is saved.\n\n"
             L"In OneDrive: Settings → Sync and backup → Manage backup. Stop backup only for:\n\n" + waiting +
             L"\nChoose to keep files in OneDrive. Leave other folders enabled. Then return here and click Continue setup; "
-            L"CloudNav will recheck the files and Windows locations before redirecting.\n\n" +
+            L"CloudNav will confirm the Windows locations before redirecting. No file contents will be read.\n\n" +
             (policy ? L"An administrator policy blocks stopping backup. Ask your administrator to release these folders. CloudNav has not changed the policy." :
             L"If OneDrive is still syncing or Stop backup is unavailable, finish synchronization or follow OneDrive's displayed instruction first. CloudNav has not changed any policy.");
         MessageBoxW(dialog, message.c_str(), L"CloudNav — finish OneDrive backup setup", MB_OK | MB_ICONINFORMATION);
@@ -1157,14 +1102,14 @@ bool ConfirmOperations(HWND dialog, const DialogContext& context,
         review.action = L"Move and apply";
         break;
     case TransferChoice::Repoint:
-        message = L"CloudNav checks the selected cloud folders before redirecting. Reading cloud files may download them. Original files are kept.";
+        message = L"Only Windows folder locations will change. Files will not be copied, downloaded, or checked. Original files are kept.";
         review.action = L"Confirm redirection";
         break;
     }
 
     if (PlanNeedsOneDriveBackupDisable(context, operations) &&
         IsOneDriveBackupActive(context)) {
-        review.effects = L"After the check, stop backup for only the selected folders in OneDrive settings. "
+        review.effects = L"Stop backup for only the selected folders in OneDrive settings. "
             L"Keep files in OneDrive. Other folders and administrator policies remain unchanged.";
     } else {
         review.effects = L"No other folders will change. OneDrive backup will remain unchanged.";
@@ -1512,10 +1457,6 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
             return FALSE;
         }
         const int controlId = LOWORD(wParam);
-        if (context->busy) {
-            if (controlId == IDCANCEL) context->cancelled = true;
-            return TRUE;
-        }
         if (HIWORD(wParam) == CBN_SELCHANGE) {
             if (controlId == IDC_FOLDER_TRANSFER_MODE) {
                 UpdateTransferGuidance(dialog, *context, false);
@@ -1552,10 +1493,10 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
             const TransferChoice transfer = ReadTransferChoice(dialog);
             if (PlanNeedsOneDriveBackupDisable(*context, operations) && IsOneDriveBackupActive(*context) &&
                 transfer != TransferChoice::Repoint) {
-                SetStatus(dialog, L"Already copied? Choose Redirect only to check the existing copy.", true);
+                SetStatus(dialog, L"Already copied? Choose Redirect only to use the existing copy.", true);
                 MessageBoxW(dialog,
                     L"OneDrive backup protects these folders. If you already copied them, choose Redirect only: "
-                    L"CloudNav will check the existing destination before setup. Otherwise use Transfer or sync files first. No locations were changed.",
+                    L"CloudNav will use the existing destination without reading file contents. Otherwise use Transfer or sync files first. No locations were changed.",
                     L"CloudNav — copy before redirecting", MB_OK | MB_ICONINFORMATION);
                 return TRUE;
             }
@@ -1564,7 +1505,7 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
                 return TRUE;
             }
             EnableWindow(GetDlgItem(dialog, IDOK), FALSE);
-            SetStatus(dialog, L"Checking and applying…");
+            SetStatus(dialog, L"Applying folder changes…");
             if (transfer != TransferChoice::Repoint || PrepareOneDriveBackupForGoogle(dialog, *context, operations)) {
                 if (operations.empty()) {
                     ClearFolderRecovery(*context);
@@ -1595,7 +1536,6 @@ INT_PTR CALLBACK FolderDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
     }
     case WM_CLOSE: {
         DialogContext* context = GetContext(dialog);
-        if (context && context->busy) { context->cancelled = true; return TRUE; }
         EndDialog(dialog, context && context->changed ? IDOK : IDCANCEL);
         return TRUE;
     }
@@ -1755,6 +1695,7 @@ int RunFolderRedirectionSelfTest(const std::wstring& resultPath) {
     std::vector<FolderOperation> mismatchedPlan{{1, downloadsTarget + L"\\Documents", documentsTarget + L"\\Other"}};
     const bool wrongDestinationRejected = !PrepareOneDriveBackupForGoogle(nullptr, wrongDestination, mismatchedPlan);
     bool recoveryPassed = false;
+    bool redirectWithoutContentAccess = false;
     const auto recoveryKey = L"Software\\CloudNav-Recovery-Test-" + std::to_wstring(GetCurrentProcessId());
     HKEY firstUser = nullptr, secondUser = nullptr;
     const bool fixtures = RegCreateKeyExW(HKEY_CURRENT_USER, (recoveryKey + L"\\Alice").c_str(), 0, nullptr, 0,
@@ -1788,6 +1729,67 @@ int RunFolderRedirectionSelfTest(const std::wstring& resultPath) {
             recoveryPassed = SaveFolderRecovery(saved) && recoveryPassed;
             restored = load();
             recoveryPassed = recoveryPassed && restored->savedPlanInvalid && restored->pendingPlan.empty();
+
+            // Exercise the production setup and resume paths with files that
+            // cannot be opened by a checker, and are absent from the destination.
+            const auto source = JoinPath(downloadsTarget, L"Downloads");
+            const auto target = JoinPath(documentsTarget, L"Downloads");
+            const auto released = JoinPath(outputDirectory, L"CloudNav-KnownFolder-Test-Local");
+            const auto sourceFile = JoinPath(source, L"unreadable.txt");
+            const auto releasedFile = JoinPath(released, L"unreadable.txt");
+            bool ready = EnsureTargetDirectory(nullptr, source, error) &&
+                EnsureTargetDirectory(nullptr, target, error) &&
+                EnsureTargetDirectory(nullptr, released, error);
+            HANDLE sourceHandle = CreateFileW(sourceFile.c_str(), GENERIC_READ | GENERIC_WRITE,
+                0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            HANDLE releasedHandle = CreateFileW(releasedFile.c_str(), GENERIC_READ | GENERIC_WRITE,
+                0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            const std::string contents = "Keep original fixture content";
+            for (HANDLE handle : {sourceHandle, releasedHandle}) {
+                DWORD written = 0;
+                ready = handle != INVALID_HANDLE_VALUE && WriteFile(handle, contents.data(),
+                    static_cast<DWORD>(contents.size()), &written, nullptr) && written == contents.size() && ready;
+            }
+            DialogContext redirect;
+            redirect.providers = saved.providers;
+            for (const auto& spec : kFolderSpecs) {
+                FolderRow row;
+                row.spec = &spec;
+                row.redirectable = true;
+                redirect.rows.push_back(row);
+            }
+            redirect.rows[3].defaultPath = released;
+            std::vector<FolderOperation> operations{{3, source, target}};
+            redirectWithoutContentAccess = ready && SetKnownFolderPathAndVerify(FOLDERID_Downloads, source, error) &&
+                PrepareOneDriveBackupForGoogle(nullptr, redirect, operations) && operations.size() == 1 &&
+                !redirect.pendingPlan.empty() &&
+                PrepareOneDriveBackupForGoogle(nullptr, redirect, operations) && operations.size() == 1;
+            // Resume after release must also leave newly created local files alone.
+            redirect.pendingNeedsRelease = true;
+            redirectWithoutContentAccess = redirectWithoutContentAccess &&
+                SetKnownFolderPathAndVerify(FOLDERID_Downloads, released, error) &&
+                PrepareOneDriveBackupForGoogle(nullptr, redirect, operations) && operations.size() == 1 &&
+                PathEquals(operations.front().source, released) &&
+                ApplyRepointOperations(nullptr, redirect, operations);
+            for (HANDLE handle : {sourceHandle, releasedHandle}) {
+                std::string observed(contents.size(), '\0');
+                DWORD read = 0;
+                const bool unchanged = handle != INVALID_HANDLE_VALUE &&
+                    SetFilePointer(handle, 0, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+                    ReadFile(handle, observed.data(), static_cast<DWORD>(observed.size()), &read, nullptr) &&
+                    read == contents.size() && observed == contents;
+                redirectWithoutContentAccess = unchanged && redirectWithoutContentAccess;
+                if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+            }
+            redirectWithoutContentAccess =
+                GetFileAttributesW(JoinPath(target, L"unreadable.txt").c_str()) == INVALID_FILE_ATTRIBUTES &&
+                SetKnownFolderPathAndVerify(FOLDERID_Downloads, originalDownloads, error) && redirectWithoutContentAccess;
+            ClearFolderRecovery(redirect);
+            DeleteFileW(sourceFile.c_str());
+            DeleteFileW(releasedFile.c_str());
+            RemoveDirectoryW(source.c_str());
+            RemoveDirectoryW(target.c_str());
+            RemoveDirectoryW(released.c_str());
         } catch (...) { recoveryPassed = false; }
     }
     RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
@@ -1799,11 +1801,13 @@ int RunFolderRedirectionSelfTest(const std::wstring& resultPath) {
     RemoveDirectoryW(documentsTarget.c_str());
     const bool passed = readDownloads && readDocuments && readLocalDocuments &&
         downloadsTargetReady && documentsTargetReady && managerRedirected &&
-        managerRestored && directRedirected && directRestored && localAliasRestored && recoveryPassed && wrongDestinationRejected;
+        managerRestored && directRedirected && directRestored && localAliasRestored && recoveryPassed &&
+        wrongDestinationRejected && redirectWithoutContentAccess;
     const auto jsonBool = [](bool value) { return value ? "true" : "false"; };
     const std::string json = std::string("{\"passed\":") + jsonBool(passed) +
         ",\"recoveryAndUserIsolation\":" + jsonBool(recoveryPassed) +
         ",\"wrongDestinationRejected\":" + jsonBool(wrongDestinationRejected) +
+        ",\"redirectWithoutContentAccess\":" + jsonBool(redirectWithoutContentAccess) +
         ",\"managerRedirected\":" + jsonBool(managerRedirected) +
         ",\"managerRestored\":" + jsonBool(managerRestored) +
         ",\"directRedirected\":" + jsonBool(directRedirected) +

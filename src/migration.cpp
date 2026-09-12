@@ -123,7 +123,6 @@ struct DialogContext {
     std::vector<HANDLE> childProcesses;
     CRITICAL_SECTION processLock = {};
     std::atomic<bool> cancelRequested = false;
-    std::atomic<bool>* externalCancellation = nullptr;
 };
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -300,7 +299,6 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     HANDLE log = (captured || privateOutput) ? INVALID_HANDLE_VALUE : CreateFileW(context.logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     for (;;) {
-        if (context.externalCancellation && context.externalCancellation->load()) context.cancelRequested = true;
         if (context.cancelRequested || (captured && !privateOutput && context.listingFailed)) TerminateProcess(process.hProcess, ERROR_CANCELLED);
         // A blocking pipe read freezes progress during provider enumeration.
         // Poll availability so even a silent listing gets an honest heartbeat.
@@ -1309,37 +1307,6 @@ std::string CurrentCloudAccountBinding() {
     try { return SyncBinding(context); } catch (...) { return {}; }
 }
 
-bool VerifyFolderCopy(const std::wstring& source, const std::wstring& destination,
-                      std::atomic<bool>& cancelled, std::wstring& error) {
-    DialogContext context;
-    context.instance = GetModuleHandleW(nullptr);
-    context.externalCancellation = &cancelled;
-    context.configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
-    context.logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\folder-check.log";
-    InitializeCriticalSection(&context.processLock);
-    bool passed = false;
-    try {
-        // Compare the actual mounted destination, including content, not a timestamp
-        // or a successful transfer to an unrelated cloud account. Never write data.
-        passed = std::filesystem::is_directory(source) && std::filesystem::is_directory(destination) &&
-            !PathsOverlap(source, destination) && EnsureParentDirectory(context.logPath) &&
-            ExtractRclone(context.instance, context.runtimePath, error) &&
-            RunProcess(context, {L"check", source, destination, L"--download", L"--one-way", L"--links",
-                // Explorer display metadata is local to each folder and need not
-                // exist in the cloud copy. Match only this exact filename, at any
-                // depth and casing; keep user files inside similarly named folders.
-                L"--exclude", L"{{(?i:desktop\\.ini)}}",
-                L"--config", context.configPath, L"--checkers", L"4", L"--retries", L"1",
-                L"--low-level-retries", L"2", L"--contimeout", L"10s", L"--timeout", L"30s"},
-                MigrationStage::Verifying, error);
-    } catch (...) { passed = false; }
-    DeleteCriticalSection(&context.processLock);
-    if (!passed) error = cancelled ? L"Check cancelled. No redirection performed." :
-        L"The destination could not be verified. It may contain missing or different files, or a cloud file may be unavailable. "
-        L"Check the selected account and folders, finish synchronization, and resolve the differences before redirecting. Details: " + context.logPath;
-    return passed;
-}
-
 int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath) {
     std::wstring runtime;
     std::wstring error;
@@ -1521,71 +1488,6 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                     !std::filesystem::exists(destination + L"\\Personal Vault");
             }
 
-        }
-        if (passed) {
-            step = "readOnlyFolderContentVerification";
-            const auto folderSource = root + L"\\verify-source";
-            const auto folderTarget = root + L"\\verify-target";
-            std::atomic<bool> cancelled = false;
-            const auto checkFolder = [&] {
-                const bool verified = VerifyFolderCopy(folderSource, folderTarget, cancelled, error);
-                WriteEvidence(resultPath + L".folder-check.log", ReadSyncFile(LocalAppDataPath() + L"\\CloudNav\\Migration\\folder-check.log"));
-                return verified;
-            };
-            passed = WriteEvidence(folderSource + L"\\nested\\same.txt", "content A") &&
-                WriteEvidence(folderTarget + L"\\nested\\same.txt", "content A") &&
-                WriteEvidence(folderTarget + L"\\extra.txt", "keep extra") &&
-                WriteEvidence(folderSource + L"\\desktop.ini", "[.ShellClassInfo]\nInfoTip=source") &&
-                WriteEvidence(folderSource + L"\\nested\\DeSkToP.InI", "source display settings") &&
-                WriteEvidence(folderTarget + L"\\nested\\DeSkToP.InI", "destination display settings") &&
-                WriteEvidence(folderSource + L"\\nested\\desktop.ini.backup", "user backup") &&
-                WriteEvidence(folderTarget + L"\\nested\\desktop.ini.backup", "user backup") &&
-                WriteEvidence(folderSource + L"\\nested\\settings.ini", "user configuration") &&
-                WriteEvidence(folderTarget + L"\\nested\\settings.ini", "user configuration") &&
-                WriteEvidence(folderSource + L"\\container\\desktop.ini\\report.txt", "user report") &&
-                WriteEvidence(folderTarget + L"\\container\\desktop.ini\\report.txt", "user report");
-            const auto beforeSource = snapshot(folderSource), beforeTarget = snapshot(folderTarget);
-            if (passed) {
-                step = "folderMetadataExclusion";
-                passed = checkFolder();
-            }
-            if (passed) {
-                step = "folderCheckPreservesFiles";
-                const auto afterSource = snapshot(folderSource), afterTarget = snapshot(folderTarget);
-                passed = afterSource == beforeSource && afterTarget == beforeTarget;
-                if (!passed) {
-                    error = L"Folder check modified fixture entries:";
-                    for (const auto& before : beforeSource) {
-                        const auto found = afterSource.find(before.first);
-                        if (found == afterSource.end() || found->second != before.second) error += L" source/" + before.first;
-                    }
-                    for (const auto& before : beforeTarget) {
-                        const auto found = afterTarget.find(before.first);
-                        if (found == afterTarget.end() || found->second != before.second) error += L" target/" + before.first;
-                    }
-                }
-            }
-            // Only Explorer's exact metadata filename is exempt. Other INI files,
-            // suffix lookalikes and contents of a desktop.ini directory still block.
-            for (const auto& relative : {L"\\nested\\desktop.ini.backup", L"\\nested\\settings.ini",
-                                        L"\\container\\desktop.ini\\report.txt"}) {
-                if (!passed) break;
-                step = "folderMetadataExclusionKeepsUserFiles:" + WideToUtf8(relative);
-                const auto file = folderTarget + relative;
-                const auto contents = read(file);
-                passed = DeleteFileW(file.c_str()) && !checkFolder() &&
-                    WriteEvidence(file, contents);
-            }
-            // Equal sizes and timestamps must not hide different contents.
-            if (passed) step = "folderContentMismatchStillBlocks";
-            passed = passed && WriteEvidence(folderTarget + L"\\nested\\same.txt", "content B");
-            std::filesystem::last_write_time(folderTarget + L"\\nested\\same.txt",
-                std::filesystem::last_write_time(folderSource + L"\\nested\\same.txt"));
-            passed = passed && !checkFolder();
-            passed = passed && DeleteFileW((folderTarget + L"\\nested\\same.txt").c_str()) &&
-                !checkFolder();
-            cancelled = true;
-            passed = passed && !checkFolder();
         }
         if (passed) {
             step = "sharedSyncAnalysis";

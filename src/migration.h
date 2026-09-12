@@ -2,7 +2,6 @@
 
 #include <windows.h>
 #include <string>
-#include <atomic>
 
 struct CloudFolderHandoff {
     bool copyCompleted = false;
@@ -17,8 +16,6 @@ MigrationResult ShowMigrationDialog(HWND owner, HINSTANCE instance, bool demoMod
                                     const std::wstring& demoResultPath = {},
                                     CloudFolderHandoff* handoff = nullptr);
 std::string CurrentCloudAccountBinding();
-bool VerifyFolderCopy(const std::wstring& source, const std::wstring& destination,
-                      std::atomic<bool>& cancelled, std::wstring& error);
 int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath);
 
 }  // namespace cloudnav
