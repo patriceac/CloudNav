@@ -238,6 +238,8 @@ void Run(const std::wstring& executable) {
     Require(Text(review, IDC_REVIEW_PLAN).find(originalDocuments) != std::wstring::npos, "review omits full source path");
     Require(Text(review, IDC_REVIEW_EFFECTS).find(L"only the selected folders") != std::wstring::npos,
             "review must limit backup release to selected folders");
+    Require(Text(review, IDC_REVIEW_EFFECTS).find(L"opens OneDrive backup settings") != std::wstring::npos,
+            "review must describe the user-controlled backup step");
     Require(Text(review, IDC_REVIEW_NOTES).find(L"not be copied, downloaded, or checked") != std::wstring::npos,
             "redirect-only review must describe location changes without file access");
     Require(LOWORD(SendMessageW(review, DM_GETDEFID, 0, 0)) == IDCANCEL, "confirmation default is not safe");

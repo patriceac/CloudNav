@@ -1,3 +1,4 @@
+#include "../src/onedrive_backup.h"
 #include <cassert>
 #include <iostream>
 #include <string>
@@ -281,6 +282,21 @@ int wmain() {
         assert(continuedHas(L"client_id=cloudnav-client") == !oneDrive);
         assert(continuedHas(L"client_secret=cloudnav-secret") == !oneDrive);
     }
+    using cloudnav::BackupState;
+    using cloudnav::BackupReadiness;
+    cloudnav::BackupStates backupStates{BackupState::On, BackupState::On, BackupState::Off,
+        BackupState::Unknown, BackupState::Off, BackupState::On};
+    const auto originalStates = backupStates;
+    assert(cloudnav::SelectedBackupReadiness(backupStates, 7) == BackupReadiness::Active);
+    assert(backupStates == originalStates); // Reading settings never changes any backup choice.
+    backupStates[0] = backupStates[1] = BackupState::Off; // User stopped these backups in OneDrive.
+    assert(cloudnav::SelectedBackupReadiness(backupStates, 7) == BackupReadiness::Released);
+    assert(backupStates[5] == BackupState::On); // Unselected Videos does not block the saved plan.
+    backupStates[1] = BackupState::Unknown;
+    assert(cloudnav::SelectedBackupReadiness(backupStates, 7) == BackupReadiness::Unknown);
+    assert(cloudnav::SelectedBackupReadiness(backupStates, 8) == BackupReadiness::Unknown);
+    assert(cloudnav::SelectedBackupReadiness(backupStates, 0) == BackupReadiness::Unknown);
+
     std::wcout << L"CloudNav logic tests: OK\n";
     return 0;
 }

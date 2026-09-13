@@ -106,7 +106,7 @@ $authFixtureOutput = Join-Path $outputRoot 'CloudNavAuthFixture.exe'
 
 $commands = @(
     "rc.exe /nologo /fo `"$resourceOutput`" `"$(Join-Path $sourceRoot 'CloudNav.rc')`"",
-    "cl.exe $compileOptions /Fe:`"$executableOutput`" `"$(Join-Path $sourceRoot 'CloudNav.cpp')`" `"$(Join-Path $sourceRoot 'folder_manager.cpp')`" `"$(Join-Path $sourceRoot 'migration.cpp')`" `"$(Join-Path $sourceRoot 'client_management.cpp')`" `"$resourceOutput`" $linkOptions",
+    "cl.exe $compileOptions /Fe:`"$executableOutput`" `"$(Join-Path $sourceRoot 'CloudNav.cpp')`" `"$(Join-Path $sourceRoot 'folder_manager.cpp')`" `"$(Join-Path $sourceRoot 'onedrive_backup.cpp')`" `"$(Join-Path $sourceRoot 'migration.cpp')`" `"$(Join-Path $sourceRoot 'client_management.cpp')`" `"$resourceOutput`" $linkOptions",
     "cl.exe $testCompileOptions /Fe:`"$testOutput`" `"$(Join-Path $testRoot 'LogicTests.cpp')`" /link /SUBSYSTEM:CONSOLE",
     "cl.exe $testCompileOptions /Fe:`"$windowPositionTestOutput`" `"$(Join-Path $testRoot 'WindowPositionIntegration.cpp')`" advapi32.lib user32.lib /link /SUBSYSTEM:CONSOLE",
     "cl.exe $testCompileOptions /Fe:`"$uiTestOutput`" `"$(Join-Path $testRoot 'UiIntegration.cpp')`" user32.lib /link /SUBSYSTEM:CONSOLE",
