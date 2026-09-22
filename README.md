@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.8
+# CloudNav 1.4.10
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -10,7 +10,7 @@ CloudNav is a native, portable Windows 11 utility that brings together two setti
 
 One standalone `.exe`, with no installer or additional application runtime.
 
-Version 1.4.8 reads OneDrive and Google Drive changes after the first complete inventory, with live API progress and a full-scan fallback. Version 1.4.7 moved discovery and Explorer updates off the UI thread, reused reviewed plans, reduced parsing work, and batched transfers.
+Version 1.4.10 improves large inventory and history reads. Version 1.4.9 adds shared cloud sync history, guarded scheduled runs and concurrent OneDrive shared-folder scans. Both providers use incremental inventories after the first complete scan, with live API progress and a full-scan fallback.
 
 Version 1.4.6 opens the matching OneDrive backup dialog when a personal-folder change needs it. The user stops the selected backups, then clicks Continue setup in CloudNav to apply the saved locations. Redirect only never reads, compares, copies, or downloads personal file contents. The title bar displays the running version.
 

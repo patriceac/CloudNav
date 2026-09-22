@@ -262,7 +262,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     SECURITY_ATTRIBUTES security = {sizeof(security), nullptr, TRUE};
     HANDLE readPipe = nullptr;
     HANDLE writePipe = nullptr;
-    if (!CreatePipe(&readPipe, &writePipe, &security, 0)) { error = L"Unable to read progress."; return false; }
+    if (!CreatePipe(&readPipe, &writePipe, &security, 64 * 1024)) { error = L"Unable to read progress."; return false; }
     SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
     std::wstring command = QuoteArgument(context.runtimePath);
     for (const auto& argument : arguments) command += L" " + QuoteArgument(argument);
@@ -324,7 +324,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     std::string pending;
     size_t receivedFiles = 0;
     ULONGLONG lastInventoryUpdate = GetTickCount64();
-    char buffer[8192];
+    char buffer[64 * 1024];
     DWORD read = 0;
     HANDLE log = (captured || privateOutput) ? INVALID_HANDLE_VALUE : CreateFileW(context.logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -352,7 +352,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
         DWORD available = 0;
         if (!PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr)) break;
         if (!available) {
-            if (WaitForSingleObject(process.hProcess, 100) == WAIT_OBJECT_0) {
+            if (WaitForSingleObject(process.hProcess, 10) == WAIT_OBJECT_0) {
                 // Drain final bytes written just before the process exited.
                 if (!PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr) || !available) break;
             } else continue;
