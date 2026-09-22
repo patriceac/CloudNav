@@ -27,6 +27,15 @@
   },
   {
     "type": "wait_result_file",
+    "path": "{OUTDIR}\\history-progress.json",
+    "timeoutMs": 30000
+  },
+  {
+    "type": "screenshot",
+    "name": "migration-history-progress.png"
+  },
+  {
+    "type": "wait_result_file",
     "path": "{OUTDIR}\\analysis-ready.json",
     "timeoutMs": 30000
   },

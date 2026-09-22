@@ -21,6 +21,8 @@ type Snapshot[T any] struct {
 	Identity string
 	Cursor   string
 	Items    map[string]T
+	// Independent feeds (for example shared folders) commit with the root catalog.
+	Scopes map[string]Snapshot[T] `json:",omitempty"`
 }
 
 // The checksum also rejects syntactically valid but incomplete cache files.

@@ -13,7 +13,7 @@
 namespace cloudnav {
 
 enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, Copy };
-enum class MigrationStage { Preparing, Connecting, Analyzing, Copying, Verifying };
+enum class MigrationStage { Preparing, Connecting, Analyzing, Copying, Verifying, History };
 
 inline std::vector<std::wstring> AuthenticationArguments(bool oneDrive, bool existing,
     const std::wstring& remote, const std::wstring& configPath,
@@ -80,6 +80,7 @@ inline const wchar_t* MigrationStageTitle(MigrationStage stage) {
     case MigrationStage::Analyzing: return L"1 / 2 — Analyzing differences";
     case MigrationStage::Copying: return L"2 / 2 — Applying the selected plan";
     case MigrationStage::Verifying: return L"3 / 3 — Checking copied files";
+    case MigrationStage::History: return L"Checking sync history…";
     default: return L"Preparing operation…";
     }
 }

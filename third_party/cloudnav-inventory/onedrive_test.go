@@ -36,28 +36,6 @@ func TestCloudNavOneDriveChanges(t *testing.T) {
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		base := server.URL + "/v2.0/drives/d/root/delta"
 		w.Header().Set("Content-Type", "application/json")
-		if phase == 7 && r.URL.Query().Get("token") != "" {
-			w.WriteHeader(400)
-			_, _ = w.Write([]byte(`{"error":{"code":"invalidRequest"}}`))
-			return
-		}
-		if phase >= 5 {
-			if strings.Contains(r.URL.Path, "/children") {
-				name := "shared.txt"
-				if phase >= 6 {
-					name = "shared-changed.txt"
-				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"value": []any{item("shared-file", name, "shared-folder", false)}})
-			} else {
-				if r.URL.Query().Get("token") == "" {
-					fullRequests++
-				}
-				shared := item("alias", "shared", "root", true)
-				shared["remoteItem"] = map[string]any{"id": "shared-folder", "name": "shared", "folder": map[string]any{}, "parentReference": map[string]string{"driveId": "d", "id": "remote-root"}}
-				_ = json.NewEncoder(w).Encode(map[string]any{"value": []any{shared}, "@odata.deltaLink": base + "?token=shared"})
-			}
-			return
-		}
 		if phase == 3 {
 			w.WriteHeader(403)
 			_, _ = w.Write([]byte(`{"error":{"code":"accessDenied"}}`))
@@ -141,17 +119,153 @@ func TestCloudNavOneDriveChanges(t *testing.T) {
 	if fullRequests != 3 {
 		t.Fatal("verification reused delta")
 	}
-	phase = 5
-	read([]string{"shared", "shared/shared.txt"})
-	f.opt.CloudNavFull = false
-	phase = 6
-	read([]string{"shared", "shared/shared-changed.txt"})
-	if fullRequests != 4 {
-		t.Fatal("shared target caused another full root scan")
+}
+
+func TestCloudNavSharedDelta(t *testing.T) {
+	ctx, config := fs.AddConfig(context.Background())
+	phase, rootFull, sharedFull, sharedCalls := 0, 0, 0, 0
+	item := func(drive, id, name, parent string, folder bool) map[string]any {
+		// Real shared-folder feeds capitalize the drive ID differently from the shortcut.
+		if drive == "s" {
+			drive = "S"
+		}
+		v := map[string]any{"id": id, "name": name, "size": 1, "lastModifiedDateTime": "2026-09-22T00:00:00Z", "parentReference": map[string]string{"driveId": drive, "id": parent}}
+		if folder {
+			v["folder"] = map[string]any{}
+		} else {
+			v["file"] = map[string]any{}
+		}
+		return v
 	}
+	alias := func(id, name string) any {
+		v := item("d", id, name, "root", true)
+		v["remoteItem"] = map[string]any{"id": "target", "name": "owners-name", "folder": map[string]any{}, "parentReference": map[string]string{"driveId": "s", "id": "outside"}}
+		return v
+	}
+	deleted := func(id string) any { return map[string]any{"id": id, "deleted": map[string]any{}} }
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		base := server.URL + r.URL.Path
+		values := []any{}
+		full := r.URL.Query().Get("token") == ""
+		switch r.URL.Path {
+		case "/v2.0/drives/d/root/delta":
+			if full {
+				rootFull++
+				values = []any{alias("a", "Shared"), alias("b", "Copy")}
+			}
+			if phase == 6 {
+				values = []any{deleted("a")}
+			}
+			if phase == 7 {
+				values = []any{deleted("b")}
+			}
+		case "/v2.0/drives/s/items/target/delta":
+			sharedCalls++
+			if phase == 4 || (phase == 5 && r.URL.Query().Get("page") == "2") {
+				w.WriteHeader(403)
+				_, _ = w.Write([]byte(`{"error":{"code":"accessDenied"}}`))
+				return
+			}
+			if (phase == 3 || phase == 9) && !full {
+				code := 410
+				if phase == 9 {
+					code = 400
+				}
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte(`{"error":{"code":"resyncRequired"}}`))
+				return
+			}
+			if full {
+				sharedFull++
+				values = []any{item("s", "folder", "before", "target", true), item("s", "kept", "kept.txt", "folder", false), item("s", "gone", "gone.txt", "target", false)}
+			}
+			if phase == 1 || (full && phase > 1) {
+				values = []any{item("s", "folder", "renamed", "target", true), item("s", "kept", "kept.txt", "target", false), deleted("gone"), item("s", "new", "new.txt", "folder", false)}
+			}
+			if phase == 5 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"value": []any{deleted("kept")}, "@odata.nextLink": base + "?token=shared&page=2"})
+				return
+			}
+		default:
+			t.Errorf("unexpected request (shared folders must use delta): %s", r.URL.Path)
+			w.WriteHeader(400)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": values, "@odata.deltaLink": base + "?token=saved"})
+	}))
+	defer server.Close()
+	f := &Fs{ci: config, driveID: "d", driveType: "personal", opt: Options{TenantURL: server.URL, ListChunk: 1000, CloudNavCache: filepath.Join(t.TempDir(), "inventory.json")}, srv: rest.NewClient(server.Client()), pacer: fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(time.Millisecond)))}
+	f.dirCache = dircache.New("", "d#root", f)
+	f.features = &fs.Features{}
+	read := func(prefixes, children []string) {
+		t.Helper()
+		var got, want []string
+		for _, prefix := range prefixes {
+			want = append(want, prefix)
+			for _, child := range children {
+				want = append(want, prefix+"/"+child)
+			}
+		}
+		if err := f.ListR(ctx, "", func(entries fs.DirEntries) error {
+			for _, e := range entries {
+				got = append(got, e.Remote())
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("phase %d: got %v; want %v", phase, got, want)
+		}
+	}
+	read([]string{"Shared", "Copy"}, []string{"before", "before/kept.txt", "gone.txt"})
+	if rootFull != 1 || sharedFull != 1 || sharedCalls != 1 {
+		t.Fatal("aliases must share a single target feed")
+	}
+	changed := []string{"renamed", "kept.txt", "renamed/new.txt"}
+	for phase = 1; phase <= 3; phase++ {
+		read([]string{"Shared", "Copy"}, changed)
+	}
+	if rootFull != 1 || sharedFull != 2 || sharedCalls != 5 {
+		t.Fatal("warm checks or expired-token recovery rescanned unrelated folders")
+	}
+	before, _ := os.ReadFile(f.opt.CloudNavCache)
+	for _, p := range []int{4, 5} {
+		phase = p
+		if f.ListR(ctx, "", func(fs.DirEntries) error { return nil }) == nil {
+			t.Fatal("failed shared refresh accepted")
+		}
+		after, _ := os.ReadFile(f.opt.CloudNavCache)
+		if string(before) != string(after) {
+			t.Fatal("partial shared refresh advanced the catalog")
+		}
+	}
+	phase = 6
+	read([]string{"Copy"}, changed)
+	calls := sharedCalls
 	phase = 7
-	read([]string{"shared", "shared/shared-changed.txt"})
-	if fullRequests != 5 {
-		t.Fatal("invalid cursor did not cause one full scan")
+	read(nil, nil)
+	if sharedCalls != calls {
+		t.Fatal("removed shared folder was still queried")
+	}
+	data, _ := os.ReadFile(f.opt.CloudNavCache)
+	if strings.Contains(string(data), `"Scopes"`) {
+		t.Fatal("removed shared catalog retained")
+	}
+	phase = 8
+	f.opt.CloudNavFull = true
+	read([]string{"Shared", "Copy"}, changed)
+	if rootFull != 2 || sharedFull != 3 {
+		t.Fatal("independent verification reused a shared cursor")
+	}
+	phase = 9
+	f.opt.CloudNavFull = false
+	read([]string{"Shared", "Copy"}, changed)
+	if rootFull != 2 || sharedFull != 4 {
+		t.Fatal("invalid shared token did not reset only its own feed")
 	}
 }

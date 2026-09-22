@@ -12,7 +12,6 @@ import (
 	"github.com/rclone/rclone/backend/onedrive/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/list"
-	"github.com/rclone/rclone/fs/walk"
 	inventory "github.com/rclone/rclone/lib/cloudnavinventory"
 )
 
@@ -21,74 +20,62 @@ func (f *Fs) cloudNavList(ctx context.Context, dir string, callback fs.ListRCall
 	if err != nil {
 		return err
 	}
-	identity := "onedrive:" + f.driveID + ":" + root
+	// v2 keys shortcuts by their local ID, independently of the shared target.
+	identity := "onedrive-v2:" + f.driveID + ":" + root
 	state := inventory.Load[*api.Item](f.opt.CloudNavCache, identity)
-	if f.opt.CloudNavFull {
-		state.Cursor = ""
+	progress := inventory.NewProgress(ctx, f.opt.CloudNavCache, "changes")
+	if err := f.cloudNavRefresh(ctx, root, true, &state, progress); err != nil {
+		return err
 	}
-	for attempt := 0; attempt < 2; attempt++ {
-		full := state.Cursor == ""
-		mode := "changes"
-		if full {
-			mode = "full"
-			state.Items = make(map[string]*api.Item)
+	cached := state.Scopes
+	state.Scopes = make(map[string]inventory.Snapshot[*api.Item])
+	out := list.NewHelper(callback)
+	active := make(map[string]bool)
+	var emit func(string, string, inventory.Snapshot[*api.Item]) error
+	emit = func(root, prefix string, scope inventory.Snapshot[*api.Item]) error {
+		if active[root] {
+			return errors.New("cyclic OneDrive shared folders")
 		}
-		progress := inventory.NewProgress(ctx, f.opt.CloudNavCache, mode)
-		err = f.cloudNavDelta(ctx, &state, progress)
-		if errors.Is(err, inventory.ErrRescan) && !full {
-			state.Cursor = ""
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		nodes := make(map[string]inventory.Node, len(state.Items))
-		for id, item := range state.Items {
+		active[root] = true
+		defer delete(active, root)
+		_, drive, _ := f.parseNormalizedID(root)
+		nodes := make(map[string]inventory.Node, len(scope.Items))
+		for id, item := range scope.Items {
 			if item == nil {
 				return errors.New("incomplete OneDrive inventory")
 			}
 			if id == root {
 				continue
 			}
-			parent := item.GetParentReference()
+			parent := item.ParentReference
 			if parent == nil {
 				return errors.New("OneDrive inventory item has no parent")
 			}
-			nodes[id] = inventory.Node{Parent: parent.GetID(), Name: f.opt.Enc.ToStandardName(item.GetName()), Directory: item.GetFolder() != nil}
+			// Graph can change a shared drive ID's casing between its shortcut and
+			// its delta response. Use the feed's drive ID for both keys and parents.
+			parentID, _, _ := f.parseNormalizedID(parent.GetID())
+			nodes[id] = inventory.Node{Parent: drive + "#" + parentID, Name: f.opt.Enc.ToStandardName(item.Name), Directory: item.GetFolder() != nil}
 		}
 		entries, err := inventory.Paths(root, nodes)
 		if err != nil {
 			return err
 		}
-		out := list.NewHelper(callback)
-		// Shared targets have independent feeds. Refresh only those subtrees live.
-		shared := func(remote string) error {
-			started := time.Now()
-			walkContext, options := fs.AddConfig(ctx)
-			options.UseListR = false // Shared subtrees use bounded parallel List calls, not this root delta feed.
-			return walk.Walk(walkContext, f, remote, true, -1, func(_ string, children fs.DirEntries, err error) error {
-				if err != nil {
-					return err
-				}
-				progress.Mode = "scan"
-				progress.Page(len(children), started)
-				started = time.Now()
-				// Walk serializes callbacks while fetching sibling directories concurrently.
-				for _, child := range children {
-					if err := out.Add(child); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-		}
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			item := *state.Items[entry.ID]
+			item := *scope.Items[entry.ID]
 			item.Name = nodes[entry.ID].Name
-			parent := path.Dir(entry.Path)
+			if item.RemoteItem != nil {
+				if item.RemoteItem.ID == "" || item.RemoteItem.ParentReference == nil || item.RemoteItem.ParentReference.DriveID == "" {
+					return errors.New("OneDrive shared item has no target identity")
+				}
+				remote := *item.RemoteItem
+				remote.Name = item.Name // Preserve this shortcut's local name.
+				item.RemoteItem = &remote
+			}
+			remotePath := path.Join(prefix, entry.Path)
+			parent := path.Dir(remotePath)
 			if parent == "." {
 				parent = ""
 			}
@@ -97,7 +84,7 @@ func (f *Fs) cloudNavList(ctx context.Context, dir string, callback fs.ListRCall
 				return err
 			}
 			if item.RemoteItem != nil && item.GetFolder() == nil {
-				value, err = f.NewObject(ctx, entry.Path)
+				value, err = f.NewObject(ctx, remotePath)
 				if err != nil {
 					return err
 				}
@@ -106,15 +93,51 @@ func (f *Fs) cloudNavList(ctx context.Context, dir string, callback fs.ListRCall
 				return err
 			}
 			if item.RemoteItem != nil && item.GetFolder() != nil {
-				if err := shared(entry.Path); err != nil {
+				target := item.GetID()
+				shared, refreshed := state.Scopes[target]
+				if !refreshed {
+					shared = cached[target]
+					if shared.Identity != target || shared.Items == nil {
+						shared = inventory.Snapshot[*api.Item]{Identity: target}
+					}
+					if err := f.cloudNavRefresh(ctx, target, false, &shared, progress); err != nil {
+						return fmt.Errorf("refresh OneDrive shared folder: %w", err)
+					}
+					state.Scopes[target] = shared
+				}
+				if err := emit(target, remotePath, shared); err != nil {
 					return err
 				}
 			}
 		}
-		if err := out.Flush(); err != nil {
-			return err
+		return nil
+	}
+	if err := emit(root, "", state); err != nil {
+		return err
+	}
+	if err := out.Flush(); err != nil {
+		return err
+	}
+	return inventory.Save(ctx, f.opt.CloudNavCache, state)
+}
+
+func (f *Fs) cloudNavRefresh(ctx context.Context, root string, main bool, state *inventory.Snapshot[*api.Item], progress *inventory.Progress) error {
+	if f.opt.CloudNavFull {
+		state.Cursor = ""
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		full := state.Cursor == ""
+		progress.Mode = "changes"
+		if full {
+			progress.Mode = "full"
+			state.Items = make(map[string]*api.Item)
 		}
-		return inventory.Save(ctx, f.opt.CloudNavCache, state)
+		err := f.cloudNavDelta(ctx, root, main, state, progress)
+		if errors.Is(err, inventory.ErrRescan) && !full {
+			state.Cursor = ""
+			continue
+		}
+		return err
 	}
 	return inventory.ErrRescan
 }
@@ -124,9 +147,13 @@ func (f *Fs) cloudNavConventional(ctx context.Context, dir string, callback fs.L
 	return f.listRFull(ctx, dir, func(entries fs.DirEntries) error { p.Page(len(entries), time.Now()); return callback(entries) })
 }
 
-func (f *Fs) cloudNavDelta(ctx context.Context, state *inventory.Snapshot[*api.Item], progress *inventory.Progress) error {
-	opts := f.buildDriveDeltaOpts("")
-	allowed := opts.RootURL + "/" + f.driveID + "/"
+func (f *Fs) cloudNavDelta(ctx context.Context, root string, main bool, state *inventory.Snapshot[*api.Item], progress *inventory.Progress) error {
+	opts := f.newOptsCall(root, "GET", "/delta")
+	if main {
+		opts = f.buildDriveDeltaOpts("")
+	}
+	_, drive, _ := f.parseNormalizedID(root)
+	allowed := opts.RootURL + "/" + drive + "/"
 	opts.Parameters = map[string][]string{"$top": {fmt.Sprint(f.opt.ListChunk)}}
 	if state.Cursor != "" {
 		if !strings.HasPrefix(state.Cursor, allowed) {
@@ -152,12 +179,12 @@ func (f *Fs) cloudNavDelta(ctx context.Context, state *inventory.Snapshot[*api.I
 		progress.Page(len(result.Value), started)
 		for i := range result.Value {
 			item := &result.Value[i]
-			id := item.GetID()
+			id := item.ID // The feed's local ID also identifies shortcut deletions.
 			if id == "" {
 				return errors.New("OneDrive change has no ID")
 			}
 			if !strings.Contains(id, "#") {
-				id = f.driveID + "#" + id
+				id = drive + "#" + id
 			}
 			if item.Deleted != nil {
 				delete(state.Items, id)
