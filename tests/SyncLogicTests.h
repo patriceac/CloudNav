@@ -1,5 +1,6 @@
 #pragma once
 #include "../src/sync_logic.h"
+#include "../src/sync_state.h"
 
 inline void RunSyncLogicTests() {
     using namespace cloudnav;
@@ -159,6 +160,24 @@ inline void RunSyncLogicTests() {
     auto mismatch = state;
     mismatch["google"] = SyncJson::array();
     assert(!LoadSyncBaseline(mismatch.dump(), "account-pair", loaded));
+    const auto shared = SharedSyncState(state, "run-one", false);
+    assert(LoadSharedSyncState(shared, shared, "account-pair", loaded) && loaded.hasBaseline && !loaded.recovery);
+    for (const auto& broken : {std::string(), std::string("{bad"), SharedSyncState(state, "run-two", false),
+        SharedSyncState(state, "run-one", true)}) {
+        assert(!LoadSharedSyncState(shared, broken, "account-pair", loaded) && !loaded.hasBaseline && loaded.recovery);
+    }
+    auto corruptShared = SyncJson::parse(shared);
+    corruptShared["data"]["generation"] = "tampered";
+    assert(!LoadSharedSyncState(corruptShared.dump(), corruptShared.dump(), "account-pair", loaded));
+    assert(!LoadSharedSyncState(shared, shared, "another-root", loaded));
+    SyncAnalysis scheduled;
+    scheduled.complete = scheduled.hasBaseline = true;
+    for (int i = 0; i < 10; ++i) scheduled.oneDrive[std::to_string(i)] = original;
+    assert(UnattendedSyncBlocker(scheduled, {{"0", '+', SyncAction::DeleteOneDrive}}, 10).empty());
+    assert(!UnattendedSyncBlocker(scheduled, {{"0", '+', SyncAction::DeleteOneDrive}, {"1", '+', SyncAction::DeleteOneDrive}}, 10).empty());
+    assert(!UnattendedSyncBlocker(scheduled, {{"0", '*', SyncAction::KeepBoth}}, 10).empty());
+    scheduled.recovery = true;
+    assert(!UnattendedSyncBlocker(scheduled, {}, 10).empty());
     assert(SyncEquivalent(original, original) && !SyncEquivalent(original, changed));
     auto sameSizeTime = original;
     sameSizeTime.hashes["md5"] = "different";

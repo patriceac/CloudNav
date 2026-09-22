@@ -12,6 +12,7 @@ import (
 	"github.com/rclone/rclone/backend/onedrive/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/list"
+	"github.com/rclone/rclone/fs/walk"
 	inventory "github.com/rclone/rclone/lib/cloudnavinventory"
 )
 
@@ -61,26 +62,25 @@ func (f *Fs) cloudNavList(ctx context.Context, dir string, callback fs.ListRCall
 		}
 		out := list.NewHelper(callback)
 		// Shared targets have independent feeds. Refresh only those subtrees live.
-		var shared func(string) error
-		shared = func(remote string) error {
+		shared := func(remote string) error {
 			started := time.Now()
-			children, err := f.List(ctx, remote)
-			if err != nil {
-				return err
-			}
-			progress.Mode = "scan"
-			progress.Page(len(children), started)
-			for _, child := range children {
-				if err := out.Add(child); err != nil {
+			walkContext, options := fs.AddConfig(ctx)
+			options.UseListR = false // Shared subtrees use bounded parallel List calls, not this root delta feed.
+			return walk.Walk(walkContext, f, remote, true, -1, func(_ string, children fs.DirEntries, err error) error {
+				if err != nil {
 					return err
 				}
-				if _, isDir := child.(fs.Directory); isDir {
-					if err := shared(child.Remote()); err != nil {
+				progress.Mode = "scan"
+				progress.Page(len(children), started)
+				started = time.Now()
+				// Walk serializes callbacks while fetching sibling directories concurrently.
+				for _, child := range children {
+					if err := out.Add(child); err != nil {
 						return err
 					}
 				}
-			}
-			return nil
+				return nil
+			})
 		}
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {

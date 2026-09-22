@@ -89,6 +89,7 @@ func TestCloudNavOneDriveChanges(t *testing.T) {
 	defer server.Close()
 	f := &Fs{ci: config, driveID: "d", driveType: "personal", opt: Options{TenantURL: server.URL, ListChunk: 1000, CloudNavCache: filepath.Join(t.TempDir(), "inventory.json")}, srv: rest.NewClient(server.Client()), pacer: fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(time.Millisecond)))}
 	f.dirCache = dircache.New("", "d#root", f)
+	f.features = &fs.Features{}
 	read := func(want []string) {
 		t.Helper()
 		var paths []string

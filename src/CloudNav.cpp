@@ -1942,6 +1942,12 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
 
     int argumentCount = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (arguments && argumentCount > 1 && EqualsInsensitive(arguments[1], L"--sync")) {
+        const int result = cloudnav::RunScheduledCloudSync(instance, argumentCount, arguments);
+        LocalFree(arguments);
+        CoUninitialize();
+        return result;
+    }
     if (arguments && argumentCount == 3 && EqualsInsensitive(arguments[1], L"--self-test-user-navigation")) {
         const int result = RunUserNavigationScenario(arguments[2]);
         LocalFree(arguments);

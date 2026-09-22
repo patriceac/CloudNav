@@ -322,6 +322,8 @@ struct SyncAnalysis {
     std::string binding;
     std::string error;
     std::string baselineDocument;
+    std::string sharedDocument;
+    std::string historyBinding;
 
     std::vector<SyncRow> Plan(SyncMode mode) const {
         std::set<std::string> paths;
@@ -414,7 +416,8 @@ inline std::vector<std::wstring> SyncInventoryArguments(const std::wstring& conf
     const std::wstring& log, const std::wstring& cache = {}, bool full = false) {
     std::vector<std::wstring> args = {L"lsjson", remote, L"--config", config, L"--recursive", L"--hash", L"--fast-list",
         L"--onedrive-delta", L"--drive-skip-gdocs", L"--exclude", L"/Personal Vault/**", L"--exclude",
-        L"/.CloudNav-history/**", L"--use-json-log", L"--log-file", log};
+        L"/.CloudNav-history/**", L"--exclude", L"**/desktop.ini", L"--exclude", L"/.849C9593-D756-4E56-8D6E-42412F2A707B",
+        L"--exclude", L"/Personal Vault.lnk", L"--use-json-log", L"--log-file", log};
     if (!cache.empty()) {
         args.insert(args.end(), {L"--onedrive-cloudnav-cache", cache, L"--drive-cloudnav-cache", cache});
         if (full) args.insert(args.end(), {L"--onedrive-cloudnav-full", L"--drive-cloudnav-full"});

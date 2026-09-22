@@ -26,6 +26,7 @@
 #include "migration_logic.h"
 #include "migration_report.h"
 #include "sync_logic.h"
+#include "sync_state.h"
 #include "transfer_progress.h"
 #include "auth_logic.h"
 #include "google_oauth_config.h"
@@ -127,6 +128,18 @@ struct DialogContext {
     std::vector<HANDLE> childProcesses;
     CRITICAL_SECTION processLock = {};
     std::atomic<bool> cancelRequested = false;
+    std::string historyBinding;
+    std::wstring cloudLockId;
+    HANDLE job = nullptr;
+    DialogContext() {
+        job = CreateJobObjectW(nullptr, nullptr);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (job && !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+            CloseHandle(job); job = nullptr;
+        }
+    }
+    ~DialogContext() { if (job) CloseHandle(job); }
 };
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -181,7 +194,7 @@ bool ResourceMatchesFile(HINSTANCE instance, const std::wstring& path) {
 
 bool ExtractRclone(HINSTANCE instance, std::wstring& path, std::wstring& error) {
     const std::wstring root = LocalAppDataPath() + L"\\CloudNav\\Runtime";
-    path = root + L"\\rclone-v1.75.0-cloudnav.4.exe";
+    path = root + L"\\rclone-v1.75.0-cloudnav.5.exe";
     if (ResourceMatchesFile(instance, path)) return true;
     HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(IDR_RCLONE_EXE), RT_RCDATA);
     if (!resource) { error = L"The embedded rclone resource was not found."; return false; }
@@ -239,6 +252,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
                 std::string* captured = nullptr, bool privateOutput = false, TransferProgress* transferProgress = nullptr,
                 const std::wstring& inventoryCache = {}) {
     if (context.cancelRequested || (captured && !privateOutput && context.listingFailed)) return false;
+    if (!context.job) { error = L"Unable to contain the transfer processes."; return false; }
     const auto inventoryProgress = inventoryCache.empty() ? L"" : inventoryCache + L".progress-" + std::to_wstring(GetCurrentProcessId());
     if (!inventoryProgress.empty()) DeleteFileW(inventoryProgress.c_str());
     // Serialize only process creation, so concurrent children cannot inherit
@@ -279,10 +293,16 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     environment.push_back(0);
     if (environment.size() == 1) environment.push_back(0);
     const BOOL created = CreateProcessW(context.runtimePath.c_str(), mutableCommand.data(), nullptr, nullptr,
-                                        TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment.data(), nullptr, &startup, &process);
+                                        TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, environment.data(), nullptr, &startup, &process);
     if (nullInput != INVALID_HANDLE_VALUE) CloseHandle(nullInput);
     CloseHandle(writePipe);
     if (!created) { CloseHandle(readPipe); error = L"Unable to start the transfer engine."; return false; }
+    if (!AssignProcessToJobObject(context.job, process.hProcess)) {
+        TerminateProcess(process.hProcess, ERROR_CANCELLED);
+        CloseHandle(process.hThread); CloseHandle(process.hProcess); CloseHandle(readPipe);
+        error = L"Unable to contain the transfer engine."; return false;
+    }
+    ResumeThread(process.hThread);
     ++context.processStarts;
     CloseHandle(process.hThread);
     EnterCriticalSection(&context.processLock);
@@ -617,6 +637,117 @@ void LoadCurrentBaseline(DialogContext& context, SyncAnalysis& analysis) {
     }
 }
 
+bool SharedHistoryCommand(DialogContext& context, const std::vector<std::wstring>& command,
+    std::wstring& error, std::string* output = nullptr, DWORD* code = nullptr) {
+    auto args = command;
+    args.insert(args.end(), {L"--config", context.configPath, L"--retries", L"1", L"--low-level-retries", L"2",
+        L"--contimeout", L"15s", L"--timeout", L"30s", L"--log-file", context.logPath + L".history"});
+    return RunProcess(context, args, MigrationStage::Preparing, error, code, nullptr, output);
+}
+
+std::wstring SharedHistoryPath(const DialogContext& context, bool oneDrive) {
+    return (oneDrive ? context.oneDrivePath : context.googlePath) + L".CloudNav-history/.sync/" +
+        Utf8ToWide(context.historyBinding) + L"/state.json";
+}
+
+// Cloud roots, not login tokens, identify portable history. Fixture roots use the same state flow.
+bool PrepareSharedHistory(DialogContext& context, std::wstring& error) {
+    context.listingFailed = false;
+    std::string roots;
+    for (const auto& remote : {context.oneDrivePath, context.googlePath}) {
+        if (remote == L"cloudnav-onedrive:" || remote == L"cloudnav-gdrive:") {
+            std::string result;
+            if (!SharedHistoryCommand(context, {L"backend", L"cloudnav-identity", remote, L"--json"}, error, &result)) return false;
+            const auto identity = SyncJson::parse(result).get<std::string>();
+            if (identity.empty()) { error = L"Cloud account identity is missing."; return false; }
+            roots += identity + "\n";
+        } else roots += std::filesystem::path(remote).generic_u8string() + "\n";
+    }
+    context.historyBinding = SyncDigest(roots);
+    return true;
+}
+
+bool RefreshSharedHistory(DialogContext& context, SyncAnalysis& analysis, std::wstring& error) {
+    std::string documents[2];
+    bool missing[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        DWORD code = 0;
+        if (!SharedHistoryCommand(context, {L"cat", SharedHistoryPath(context, i == 0)}, error, &documents[i], &code)) {
+            if (code != 3 && code != 4) return false; // Not-found is distinct from unavailable.
+            missing[i] = true;
+            documents[i].clear(); error.clear();
+        }
+    }
+    analysis.historyBinding = context.historyBinding;
+    analysis.sharedDocument = SyncJson::array({documents[0], documents[1]}).dump();
+    LoadCurrentBaseline(context, analysis);
+    if (missing[0] && missing[1]) return true; // Upgrade an existing, locally validated baseline.
+    LoadSharedSyncState(documents[0], documents[1], context.historyBinding, analysis);
+    if (GetFileAttributesW((SyncStatePath(context) + L".pending").c_str()) != INVALID_FILE_ATTRIBUTES) {
+        analysis.hasBaseline = false; analysis.recovery = true;
+    }
+    return true;
+}
+
+bool SaveSharedHistory(DialogContext& context, const SyncJson& baseline, const std::string& generation,
+    bool pending, std::wstring& error) {
+    const auto document = SharedSyncState(baseline, generation, pending);
+    const auto path = SyncStatePath(context) + L".upload";
+    if (!WriteEvidence(path, document)) { error = L"Unable to prepare cloud sync history."; return false; }
+    for (bool oneDrive : {true, false}) {
+        if (!SharedHistoryCommand(context, {L"copyto", path, SharedHistoryPath(context, oneDrive), L"--ignore-times"}, error)) return false;
+        std::string actual;
+        if (!SharedHistoryCommand(context, {L"cat", SharedHistoryPath(context, oneDrive)}, error, &actual) || actual != document) {
+            error = L"Cloud sync history could not be verified. Review the next analysis."; return false;
+        }
+    }
+    DeleteFileW(path.c_str());
+    return true;
+}
+
+bool ReleaseCloudLock(DialogContext& context, std::wstring& error) {
+    if (context.cloudLockId.empty()) return true;
+    const bool cancelled = context.cancelRequested.exchange(false);
+    context.listingFailed = false;
+    bool ok = false;
+    if (context.oneDrivePath == L"cloudnav-onedrive:") {
+        ok = SharedHistoryCommand(context, {L"backend", L"cloudnav-unlock", context.oneDrivePath, context.cloudLockId}, error);
+    } else {
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(context.oneDrivePath) / L".CloudNav-history/.sync/active", ec);
+        ok = !ec;
+    }
+    context.cancelRequested = cancelled;
+    if (ok) { DeleteFileW((SyncStatePath(context) + L".lock").c_str()); context.cloudLockId.clear(); }
+    return ok;
+}
+
+bool AcquireCloudLock(DialogContext& context, std::wstring& error) {
+    const auto journal = SyncStatePath(context) + L".lock";
+    const auto previous = SyncJson::parse(ReadSyncFile(journal), nullptr, false);
+    // The local mutex and kill-on-close process job establish that this PC's previous writer has stopped.
+    if (previous.is_object() && previous.value("binding", "") == context.historyBinding) {
+        context.cloudLockId = Utf8ToWide(previous.at("id").get<std::string>());
+        if (!ReleaseCloudLock(context, error)) return false;
+    }
+    if (context.oneDrivePath == L"cloudnav-onedrive:") {
+        std::string id;
+        if (!SharedHistoryCommand(context, {L"backend", L"cloudnav-lock", context.oneDrivePath, L"--json"}, error, &id)) {
+            error = L"Another PC may be syncing these accounts, or its cloud lock needs recovery. No files changed. " + error;
+            return false;
+        }
+        context.cloudLockId = Utf8ToWide(SyncJson::parse(id).get<std::string>());
+    } else {
+        const auto folder = std::filesystem::path(context.oneDrivePath) / L".CloudNav-history/.sync/active";
+        std::filesystem::create_directories(folder.parent_path());
+        if (!std::filesystem::create_directory(folder)) { error = L"Another sync is running."; return false; }
+        context.cloudLockId = L"fixture-lock";
+    }
+    const SyncJson saved = {{"binding", context.historyBinding}, {"id", std::filesystem::path(context.cloudLockId).generic_u8string()}};
+    if (!WriteEvidence(journal, saved.dump())) { error = L"Unable to save cloud lock recovery state."; return false; }
+    return true;
+}
+
 AnalysisReport SyncReport(const SyncAnalysis& analysis, const std::vector<SyncRow>& rows) {
     AnalysisReport report;
     report.available = true;
@@ -638,23 +769,29 @@ AnalysisReport SyncReport(const SyncAnalysis& analysis, const std::vector<SyncRo
 }
 
 bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
+    if (context.cloudLockId.empty()) { error = L"The cloud sync lock is missing."; return false; }
     const auto& rows = context.plan;
     if (!context.sync.complete || std::any_of(rows.begin(), rows.end(), [](const auto& row) { return row.action == SyncAction::Blocked; })) {
         error = L"The plan contains blocked items. Fix them, then analyze again."; return false;
     }
     // Execute the reviewed inventories without listing either account again.
-    // Only local account identity and recovery history can invalidate this plan.
+    // Account identity and local or cloud recovery history can invalidate this plan.
     SyncAnalysis currentState;
     currentState.binding = SyncBinding(context);
-    LoadCurrentBaseline(context, currentState);
+    if (!RefreshSharedHistory(context, currentState, error)) return false;
     if (currentState.binding != context.sync.binding || currentState.baselineDocument != context.sync.baselineDocument ||
-        currentState.recovery != context.sync.recovery) {
-        error = L"Accounts or local history changed since analysis. No transfer started: analyze again to review the plan.";
+        currentState.recovery != context.sync.recovery || currentState.sharedDocument != context.sync.sharedDocument) {
+        error = L"Accounts or sync history changed since analysis. No transfer started: analyze again to review the plan.";
         return false;
     }
     if (context.mode != SyncMode::Bidirectional && std::all_of(rows.begin(), rows.end(),
         [](const auto& row) { return row.action == SyncAction::None || row.action == SyncAction::Ignored; })) return true;
-    const auto stamp = std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(GetCurrentProcessId());
+    GUID runId = {};
+    wchar_t runText[40] = {};
+    if (FAILED(CoCreateGuid(&runId)) || !StringFromGUID2(runId, runText, 40)) {
+        error = L"Unable to create a sync run identifier."; return false;
+    }
+    const std::wstring stamp = runText;
     const auto& od = context.oneDrivePath;
     const auto& gd = context.googlePath;
     const auto backup = [&](const std::wstring& remote) { return remote + L".CloudNav-history/" + stamp; };
@@ -665,6 +802,10 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     if (!WriteEvidence(state + L".pending", "{\"pending\":true}")) {
         error = L"Unable to save the recovery journal."; return false;
     }
+    const auto generation = std::filesystem::path(stamp).generic_u8string();
+    const SyncJson pendingBaseline = {{"version", 1}, {"binding", context.historyBinding},
+        {"oneDrive", SaveSyncInventory(context.sync.previousOneDrive)}, {"google", SaveSyncInventory(context.sync.previousGoogle)}};
+    if (!SaveSharedHistory(context, pendingBaseline, generation, true, error)) return false;
     const auto baseArgs = [&](const wchar_t* command, const std::wstring& source, const std::wstring& destination) {
         return std::vector<std::wstring>{command, source, destination, L"--config", context.configPath,
             L"--use-json-log", L"--stats", L"1s", L"--stats-log-level", L"NOTICE", L"--drive-skip-gdocs"};
@@ -725,14 +866,47 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
             error = L"Differences remain after transfer. Analyze again; the previous history has been kept."; return false;
         }
         const auto baselineOneDrive = SyncBaselineInventory(after.oneDrive, after.ignoredGooglePaths);
-        const SyncJson document = {{"version", 1}, {"binding", after.binding}, {"oneDrive", SaveSyncInventory(baselineOneDrive)},
+        const SyncJson document = {{"version", 1}, {"binding", context.historyBinding}, {"oneDrive", SaveSyncInventory(baselineOneDrive)},
             {"google", SaveSyncInventory(after.google)}};
+        if (!SaveSharedHistory(context, document, generation, false, error)) return false;
         if (!WriteEvidence(state, document.dump())) { error = L"History was not saved. A recovery analysis will be needed."; return false; }
         if (!DeleteFileW((state + L".pending").c_str())) { error = L"The recovery journal could not be finalized. Analyze again."; return false; }
     }
     // One-way copies intentionally leave the pair in merge/recovery mode:
     // they do not establish a successful bidirectional baseline.
     return true;
+}
+
+int RunUnattendedSync(DialogContext& context, bool preview, bool publishHistory,
+    const std::wstring& accessMarker, unsigned maxDeletePercent, std::wstring& error) {
+    context.mode = SyncMode::Bidirectional;
+    if (!ExtractRclone(context.instance, context.runtimePath, error) ||
+        !PrepareSharedHistory(context, error) || !AcquireCloudLock(context, error)) return 1;
+    context.sync.binding = SyncBinding(context);
+    if (publishHistory) {
+        if (!RefreshSharedHistory(context, context.sync, error)) return 1;
+        if (!context.sync.hasBaseline || context.sync.recovery) {
+            error = L"No verified sync history is available to publish. Run a two-way sync in CloudNav first."; return 3;
+        }
+        const SyncJson baseline = {{"version", 1}, {"binding", context.historyBinding},
+            {"oneDrive", SaveSyncInventory(context.sync.previousOneDrive)}, {"google", SaveSyncInventory(context.sync.previousGoogle)}};
+        if (!SaveSharedHistory(context, baseline, SyncDigest(baseline.dump()), false, error)) return 1;
+        if (!WriteEvidence(SyncStatePath(context), baseline.dump())) {
+            error = L"Cloud history was published, but local upgrade state could not be saved."; return 1;
+        }
+        return 0;
+    }
+    if (!ReadCurrentSync(context, context.sync, error) || !RefreshSharedHistory(context, context.sync, error)) return 1;
+    context.plan = context.sync.Plan(context.mode);
+    if (!accessMarker.empty()) {
+        const auto marker = std::filesystem::path(accessMarker).generic_u8string();
+        if (!context.sync.oneDrive.count(marker) || !context.sync.google.count(marker)) {
+            error = L"The scheduled sync access marker is missing from an account. No files changed."; return 3;
+        }
+    }
+    const auto blocker = UnattendedSyncBlocker(context.sync, context.plan, maxDeletePercent);
+    if (!blocker.empty()) { error = Utf8ToWide(blocker); return 3; }
+    return preview || ExecuteSyncPlan(context, error) ? 0 : 1;
 }
 
 DWORD WINAPI WorkerProc(void* parameter) {
@@ -742,7 +916,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
     AnalysisReport report;
     SyncAnalysis sync;
     std::vector<SyncRow> plan;
-    const HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\CloudNav.CloudSync");
+    const HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Global\\CloudNav.CloudSync");
     const DWORD lock = mutex ? WaitForSingleObject(mutex, 0) : WAIT_FAILED;
     const bool locked = lock == WAIT_OBJECT_0 || lock == WAIT_ABANDONED;
     try {
@@ -820,14 +994,16 @@ DWORD WINAPI WorkerProc(void* parameter) {
         const bool oneDrive = context.task == Task::AuthenticateOneDrive;
         success = ConnectAccount(context, oneDrive, error);
     } else if (context.task == Task::Analyze) {
-        success = ReadCurrentSync(context, sync, error);
-        if (success) LoadCurrentBaseline(context, sync);
+        success = PrepareSharedHistory(context, error) && AcquireCloudLock(context, error) &&
+            ReadCurrentSync(context, sync, error) && RefreshSharedHistory(context, sync, error);
         plan = sync.Plan(context.mode);
         report = SyncReport(sync, plan);
     } else if (context.task == Task::Copy) {
-        success = ExecuteSyncPlan(context, error);
+        success = PrepareSharedHistory(context, error) && AcquireCloudLock(context, error) && ExecuteSyncPlan(context, error);
     }
     } catch (const std::exception& e) { success = false; error = Utf8ToWide(e.what()); }
+    std::wstring unlockError;
+    if (!ReleaseCloudLock(context, unlockError)) { success = false; error += L" Cloud lock release failed. " + unlockError; }
     if (locked) ReleaseMutex(mutex);
     if (mutex) CloseHandle(mutex);
     auto* completion = new CompletionUpdate{context.task, success, context.cancelRequested.load(), error, std::move(report), std::move(sync), std::move(plan)};
@@ -1328,6 +1504,59 @@ std::string CurrentCloudAccountBinding() {
     try { return SyncBinding(context); } catch (...) { return {}; }
 }
 
+int RunScheduledCloudSync(HINSTANCE instance, int count, wchar_t** arguments) {
+    DialogContext context;
+    context.instance = instance;
+    context.configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
+    context.logPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\scheduled-sync.log";
+    std::wstring resultPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\scheduled-sync-result.json";
+    std::wstring accessMarker, error;
+    bool preview = false, publish = false;
+    unsigned maxDeletePercent = 10;
+    int result = 1;
+    InitializeCriticalSection(&context.processLock);
+    const HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Global\\CloudNav.CloudSync");
+    const auto lock = mutex ? WaitForSingleObject(mutex, 0) : WAIT_FAILED;
+    const bool locked = lock == WAIT_OBJECT_0 || lock == WAIT_ABANDONED;
+    const auto started = GetTickCount64();
+    try {
+        for (int i = 2; i < count; ++i) {
+            const std::wstring option = arguments[i];
+            if (option == L"--preview") preview = true;
+            else if (option == L"--publish-history") publish = true;
+            else if ((option == L"--result" || option == L"--config" || option == L"--check-access" ||
+                option == L"--max-delete-percent") && i + 1 < count) {
+                const std::wstring value = arguments[++i];
+                if (option == L"--result") resultPath = value;
+                else if (option == L"--config") context.configPath = value;
+                else if (option == L"--check-access") accessMarker = value;
+                else {
+                    size_t end = 0;
+                    maxDeletePercent = std::stoul(value, &end);
+                    if (end != value.size() || maxDeletePercent > 100) throw std::runtime_error("Invalid removal percentage");
+                }
+            } else throw std::runtime_error("Unknown or incomplete scheduled sync option");
+        }
+        if (preview && publish) throw std::runtime_error("Preview cannot publish history");
+        if (!locked) { error = L"Another CloudNav operation is running. This scheduled run was skipped."; result = 2; }
+        else {
+            EnsureParentDirectory(context.logPath);
+            result = RunUnattendedSync(context, preview, publish, accessMarker, maxDeletePercent, error);
+        }
+    } catch (const std::exception& e) { error = Utf8ToWide(e.what()); result = 1; }
+    std::wstring unlockError;
+    if (!ReleaseCloudLock(context, unlockError)) { error += L" Cloud lock release failed. " + unlockError; result = 1; }
+    const SyncJson report = {{"version", CLOUDNAV_VERSION}, {"exitCode", result}, {"success", result == 0},
+        {"preview", preview}, {"publishedHistory", publish && result == 0}, {"elapsedMs", GetTickCount64() - started},
+        {"oneDriveFiles", context.sync.oneDrive.size()}, {"googleDriveFiles", context.sync.google.size()},
+        {"message", WideToUtf8(error)}};
+    if (!WriteEvidence(resultPath, report.dump(2))) result = 1;
+    if (locked) ReleaseMutex(mutex);
+    if (mutex) CloseHandle(mutex);
+    DeleteCriticalSection(&context.processLock);
+    return result;
+}
+
 int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath) {
     std::wstring runtime;
     std::wstring error;
@@ -1544,11 +1773,12 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 std::filesystem::last_write_time(context.oneDrivePath + L"both.txt", now - std::chrono::hours(2));
                 std::filesystem::last_write_time(context.googlePath + L"both.txt", now - std::chrono::hours(1));
             }
+            passed = passed && PrepareSharedHistory(context, error) && AcquireCloudLock(context, error);
             const auto odBefore = snapshot(context.oneDrivePath), gdBefore = snapshot(context.googlePath);
             const auto analyzeSync = [&] {
                 context.sync = {};
                 if (!ReadCurrentSync(context, context.sync, error)) return false;
-                LoadCurrentBaseline(context, context.sync);
+                if (!RefreshSharedHistory(context, context.sync, error)) return false;
                 context.plan = context.sync.Plan(context.mode);
                 return true;
             };
@@ -1567,7 +1797,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                     !std::filesystem::exists(context.oneDrivePath + L"late-file.txt") &&
                     read(context.oneDrivePath + L"both.txt") == "Google version" &&
                     read(context.oneDrivePath + L"google.txt") == "google only" && read(context.oneDrivePath + L"one.txt") == "one only" &&
-                    !std::filesystem::exists(context.oneDrivePath + L".CloudNav-history");
+                    !std::filesystem::exists(context.oneDrivePath + L".CloudNav-history/both.txt");
                 passed = DeleteFileW((context.googlePath + L"late-file.txt").c_str()) && passed;
             }
             if (passed) {
@@ -1580,10 +1810,12 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 std::filesystem::last_write_time(context.googlePath + L"oneway.txt", now - std::chrono::hours(2));
                 passed = passed && analyzeSync() && ExecuteSyncPlan(context, error) &&
                     read(context.googlePath + L"oneway.txt") == "new source" &&
-                    !std::filesystem::exists(context.googlePath + L".CloudNav-history");
+                    !std::filesystem::exists(context.googlePath + L".CloudNav-history/oneway.txt");
                 if (passed) {
                     step = "preserveNewerDestination";
-                    passed = WriteEvidence(context.googlePath + L"oneway.txt", "destination edited since analysis");
+                    passed = WriteEvidence(context.googlePath + L"oneway.txt", "old destination");
+                    std::filesystem::last_write_time(context.googlePath + L"oneway.txt", now - std::chrono::hours(2));
+                    passed = passed && analyzeSync() && WriteEvidence(context.googlePath + L"oneway.txt", "destination edited since analysis");
                     std::filesystem::last_write_time(context.googlePath + L"oneway.txt", now);
                     passed = passed && ExecuteSyncPlan(context, error) &&
                         read(context.googlePath + L"oneway.txt") == "destination edited since analysis" &&
@@ -1623,7 +1855,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                         WriteEvidence(context.googlePath + path, "also edited on Google");
                 passed = passed && analyzeSync();
                 const auto starts = context.processStarts.load();
-                passed = passed && ExecuteSyncPlan(context, error) && context.processStarts == starts + 5 &&
+                passed = passed && ExecuteSyncPlan(context, error) && context.processStarts == starts + 15 &&
                     context.transferProgress.CopiedFiles() == 9 && context.transferProgress.SkippedFiles() == 0;
                 size_t preserved = 0;
                 for (const auto& entry : std::filesystem::recursive_directory_iterator(context.oneDrivePath)) {
@@ -1658,16 +1890,48 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                     passed = passed && ExecuteSyncPlan(context, error) && read(context.googlePath + L"both.txt") == "Google version";
                 }
             }
+            if (passed) {
+                step = "portableCloudHistory";
+                const auto oldConfig = context.configPath;
+                context.configPath = root + L"\\another-profile.conf";
+                passed = WriteEvidence(context.configPath, ReadSyncFile(oldConfig)) && analyzeSync() &&
+                    context.sync.hasBaseline && !context.sync.recovery && context.sync.baselineDocument.empty();
+                context.configPath = oldConfig;
+            }
+            if (passed) {
+                step = "partialCloudHistory";
+                const auto path = SharedHistoryPath(context, false);
+                const auto complete = ReadSyncFile(path);
+                passed = WriteEvidence(path, "{partial") && analyzeSync() && context.sync.recovery && !context.sync.hasBaseline;
+                for (const auto& row : context.sync.Plan(SyncMode::Bidirectional))
+                    passed = passed && row.action != SyncAction::DeleteGoogle && row.action != SyncAction::DeleteOneDrive;
+                passed = WriteEvidence(path, complete) && passed;
+                const auto statePath = SyncStatePath(context);
+                const auto local = ReadSyncFile(statePath);
+                auto legacy = SyncJson::parse(local);
+                legacy["binding"] = SyncBinding(context);
+                passed = passed && WriteEvidence(statePath, legacy.dump()) && WriteEvidence(path, "") &&
+                    WriteEvidence(SharedHistoryPath(context, true), "") && analyzeSync() &&
+                    context.sync.recovery && !context.sync.hasBaseline;
+                passed = WriteEvidence(statePath, local) && WriteEvidence(path, complete) &&
+                    WriteEvidence(SharedHistoryPath(context, true), complete) && passed;
+            }
+            if (passed) {
+                step = "unattendedSyncPreview";
+                passed = ReleaseCloudLock(context, error) && RunUnattendedSync(context, true, false, L"", 10, error) == 0;
+            }
         }
     } catch (const std::exception& e) {
         passed = false; error = Utf8ToWide(e.what());
     }
+    std::wstring unlockError;
+    if (!ReleaseCloudLock(context, unlockError)) { passed = false; error += unlockError; }
     DeleteCriticalSection(&context.processLock);
     if (!EnsureParentDirectory(resultPath)) return 3;
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.4\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.5\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"portableCloudHistory\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();

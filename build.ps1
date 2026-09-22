@@ -60,8 +60,8 @@ inline constexpr wchar_t kGoogleOAuthClientSecret[] = L"$googleClientSecret";
 "@
 [IO.File]::WriteAllText((Join-Path $generatedRoot 'google_oauth_config.h'), $oauthHeader, [Text.UTF8Encoding]::new($false))
 
-$rcloneVersion = '1.75.0-cloudnav.4'
-$rcloneExeSha256 = 'e32d5bb117758695880c4c21562fc98f64bb2d09fad21b0db7561311db69105f'
+$rcloneVersion = '1.75.0-cloudnav.5'
+$rcloneExeSha256 = '9448f29901009ee2c628f3116f6bd524ad1e61501e5d01c373d9f2048e0c1221'
 $rcloneCache = Join-Path $projectRoot ".third-party\rclone\v$rcloneVersion"
 $rcloneExe = Join-Path $rcloneCache 'rclone.exe'
 $rcloneReady = (Test-Path -LiteralPath $rcloneExe) -and

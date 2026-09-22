@@ -16,6 +16,7 @@ MigrationResult ShowMigrationDialog(HWND owner, HINSTANCE instance, bool demoMod
                                     const std::wstring& demoResultPath = {},
                                     CloudFolderHandoff* handoff = nullptr);
 std::string CurrentCloudAccountBinding();
+int RunScheduledCloudSync(HINSTANCE instance, int count, wchar_t** arguments);
 int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath);
 
 }  // namespace cloudnav
