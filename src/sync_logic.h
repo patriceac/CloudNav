@@ -207,10 +207,9 @@ inline SyncFile ReadSyncFileRow(const SyncJson& row, const std::string& path) {
     return file;
 }
 
-inline bool ReadSyncInventory(const std::string& text, SyncInventory& inventory, std::string& error) {
+inline bool ReadSyncInventoryRows(const SyncJson& json, SyncInventory& inventory, std::string& error) {
     inventory.clear();
     try {
-        const auto json = SyncJson::parse(text);
         if (!json.is_array()) throw std::runtime_error("Invalid inventory");
         std::set<std::string> directories;
         for (const auto& row : json) {
@@ -228,6 +227,11 @@ inline bool ReadSyncInventory(const std::string& text, SyncInventory& inventory,
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 
+inline bool ReadSyncInventory(const std::string& text, SyncInventory& inventory, std::string& error) {
+    try { return ReadSyncInventoryRows(SyncJson::parse(text), inventory, error); }
+    catch (const std::exception& e) { inventory.clear(); error = e.what(); return false; }
+}
+
 // Google Drive permits files and folders with identical names in the same
 // parent. OneDrive cannot represent those paths, and selecting one object by
 // path would be arbitrary. Keep the rest of the inventory usable and report
@@ -241,13 +245,14 @@ inline bool ReadGoogleSyncInventory(const std::string& text, SyncInventory& inve
         if (!json.is_array()) throw std::runtime_error("Invalid inventory");
 
         std::map<std::string, size_t> directories;
-        std::map<std::string, std::vector<SyncJson>> files;
+        struct FileGroup { size_t count = 0; const SyncJson* row = nullptr; };
+        std::map<std::string, FileGroup> files;
         for (const auto& row : json) {
             const auto path = row.at("Path").get<std::string>();
             if (!SafeSyncPath(path) || SyncPathKey(path).empty())
                 throw std::runtime_error("Unsupported path: " + path);
             if (row.at("IsDir").get<bool>()) ++directories[path];
-            else files[path].push_back(row);
+            else { auto& group = files[path]; ++group.count; group.row = &row; }
         }
 
         std::set<std::string> ambiguousDirectories;
@@ -255,16 +260,14 @@ inline bool ReadGoogleSyncInventory(const std::string& text, SyncInventory& inve
             if (directory.second > 1 || files.count(directory.first)) ambiguousDirectories.insert(directory.first);
 
         const auto insideAmbiguousDirectory = [&](const std::string& path) {
-            for (const auto& directory : ambiguousDirectories) {
-                if (path == directory || (path.size() > directory.size() &&
-                    path.compare(0, directory.size(), directory) == 0 && path[directory.size()] == '/')) return true;
-            }
-            return false;
+            for (size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/', slash + 1))
+                if (ambiguousDirectories.count(path.substr(0, slash))) return true;
+            return ambiguousDirectories.count(path) != 0;
         };
 
         for (const auto& group : files) {
             const auto& path = group.first;
-            const auto count = group.second.size();
+            const auto count = group.second.count;
             if (count > 1) {
                 ignoredPaths[path] = {count, "Google Drive contains " + std::to_string(count) +
                     " files with this same path. CloudNav ignored all of them; rename them to unique names to sync them with OneDrive."};
@@ -276,7 +279,7 @@ inline bool ReadGoogleSyncInventory(const std::string& text, SyncInventory& inve
                     : "This file is inside duplicate Google Drive folders. CloudNav ignored this ambiguous folder tree; rename the folders to sync it with OneDrive."};
                 continue;
             }
-            inventory.emplace(path, ReadSyncFileRow(group.second.front(), path));
+            inventory.emplace(path, ReadSyncFileRow(*group.second.row, path));
         }
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
@@ -409,13 +412,33 @@ inline std::string SyncFileList(const std::vector<SyncRow>& rows, SyncAction act
     return list;
 }
 
+// Target individual objects for small/sparse changes; match large batches
+// covering at least half of each account using directory listings.
+inline bool SyncUseTraversal(size_t selected, size_t sourceFiles, size_t destinationFiles) {
+    return selected >= 64 && selected >= sourceFiles / 2 + sourceFiles % 2 &&
+        selected >= destinationFiles / 2 + destinationFiles % 2;
+}
+
+inline std::uint64_t SyncPlannedBytes(const SyncAnalysis& analysis, const std::vector<SyncRow>& rows) {
+    std::uint64_t total = 0;
+    for (const auto& row : rows) {
+        const auto add = [&](std::uint64_t bytes) {
+            if (bytes > UINT64_MAX - total) throw std::runtime_error("Transfer size overflow");
+            total += bytes;
+        };
+        add(row.bytes);
+        if (row.action == SyncAction::KeepBoth) add(analysis.google.at(row.path).size);
+    }
+    return total;
+}
+
 inline bool LoadSyncBaseline(const std::string& document, const std::string& binding, SyncAnalysis& analysis) {
     try {
         const auto json = SyncJson::parse(document);
         std::string error;
         if (json.at("version") != 1 || json.at("binding") != binding ||
-            !ReadSyncInventory(json.at("oneDrive").dump(), analysis.previousOneDrive, error) ||
-            !ReadSyncInventory(json.at("google").dump(), analysis.previousGoogle, error)) return false;
+            !ReadSyncInventoryRows(json.at("oneDrive"), analysis.previousOneDrive, error) ||
+            !ReadSyncInventoryRows(json.at("google"), analysis.previousGoogle, error)) return false;
         if (analysis.previousOneDrive.size() != analysis.previousGoogle.size()) return false;
         for (const auto& item : analysis.previousOneDrive) {
             const auto other = analysis.previousGoogle.find(item.first);
@@ -426,8 +449,7 @@ inline bool LoadSyncBaseline(const std::string& document, const std::string& bin
     } catch (...) { return false; }
 }
 
-inline std::wstring SyncPlanSummary(const SyncAnalysis& analysis, SyncMode mode) {
-    const auto rows = analysis.Plan(mode);
+inline std::wstring SyncPlanSummary(const std::vector<SyncRow>& rows, bool complete) {
     size_t a = 0, b = 0, changes = 0, same = 0, deletions = 0, conflicts = 0, ignored = 0, blocked = 0;
     for (const auto& row : rows) {
         a += row.category == '+'; b += row.category == '-'; changes += row.category == '*';
@@ -436,10 +458,14 @@ inline std::wstring SyncPlanSummary(const SyncAnalysis& analysis, SyncMode mode)
         conflicts += row.action == SyncAction::KeepBoth || row.editDeleteConflict;
         ignored += row.action == SyncAction::Ignored; blocked += row.action == SyncAction::Blocked;
     }
-    return std::wstring(analysis.complete ? L"" : L"Partial results — ") + L"OneDrive only: " + std::to_wstring(a) +
+    return std::wstring(complete ? L"" : L"Partial results — ") + L"OneDrive only: " + std::to_wstring(a) +
         L"    Google Drive only: " + std::to_wstring(b) + L"    Different: " + std::to_wstring(changes) +
         L"\r\nIdentical: " + std::to_wstring(same) + L"    Removals: " + std::to_wstring(deletions) + L"    Conflicts: " + std::to_wstring(conflicts) +
         L"    Ignored: " + std::to_wstring(ignored) + L"    Blocked: " + std::to_wstring(blocked);
+}
+
+inline std::wstring SyncPlanSummary(const SyncAnalysis& analysis, SyncMode mode) {
+    return SyncPlanSummary(analysis.Plan(mode), analysis.complete);
 }
 
 } // namespace cloudnav

@@ -184,6 +184,22 @@ public:
 };
 
 void Run(const std::wstring& executable) {
+    {
+        App loading(executable, L"--demo-slow-detection");
+        Require(!IsWindowEnabled(GetDlgItem(loading.main, 1005)), "startup discovery blocked window creation");
+        DWORD_PTR response = 0;
+        Require(SendMessageTimeoutW(loading.main, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 500, &response) != 0,
+            "startup discovery blocked the UI thread");
+        Require(Wait([&] { return IsWindowEnabled(GetDlgItem(loading.main, 1005)) != FALSE; }), "startup result not delivered");
+        Require(Text(loading.main, 1004) == L"Google Drive — drive G:", "startup snapshot missing");
+        Click(loading.main, 1005);
+        Require(Wait([&] { return !IsWindowEnabled(GetDlgItem(loading.main, 1005)); }), "refresh did not start");
+        Require(SendMessageTimeoutW(loading.main, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 500, &response) != 0,
+            "refresh blocked the UI thread");
+        PostMessageW(loading.main, WM_CLOSE, 0, 0);
+        Require(Wait([&] { return WaitForSingleObject(loading.process.hProcess, 0) == WAIT_OBJECT_0; }), "close during discovery failed");
+        loading.main = nullptr;
+    }
     App app(executable, L"--demo-plan");
     CheckBounds(app.main);
     Require(GetDlgItem(app.main, 1002) == nullptr, "manual My Drive Browse control remains");

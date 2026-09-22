@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <atomic>
+#include <array>
 #include <string>
 #include <cwctype>
 
@@ -66,6 +67,7 @@ inline bool IsClientSetupExecutable(const std::wstring& path, CloudClient client
 }
 
 ClientInstallation DetectClientInstallation(CloudClient client);
+std::array<ClientInstallation, 2> DetectClientInstallations();
 bool VerifyClientPublisher(const std::wstring& path, CloudClient client, std::wstring& error);
 // Downloads only. Caller opens the verified installer with the normal vendor UI.
 bool DownloadClientInstaller(CloudClient client, const std::atomic_bool& cancel,

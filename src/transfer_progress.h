@@ -201,19 +201,21 @@ private:
 
 struct TransferBatches {
     std::map<SyncAction, size_t> actions;
-    std::map<std::string, std::array<size_t, 3>> conflicts;
+    std::array<size_t, 3> conflicts{};
 };
 
-inline TransferBatches PrepareTransferProgress(const SyncAnalysis& analysis, SyncMode mode, TransferProgress& progress) {
+inline TransferBatches PrepareTransferProgress(const SyncAnalysis& analysis, const std::vector<SyncRow>& rows, TransferProgress& progress) {
     progress = {};
     TransferBatches batches;
-    const auto rows = analysis.Plan(mode);
+    std::vector<TransferProgress::File> googleConflicts, oneDriveConflicts;
     for (const auto& row : rows) if (row.action == SyncAction::KeepBoth) {
-        const auto name = row.path.substr(row.path.find_last_of('/') + 1);
-        const auto googleBytes = analysis.google.at(row.path).size;
-        const auto oneDriveBytes = analysis.oneDrive.at(row.path).size;
-        batches.conflicts[row.path] = {progress.AddBatch({{name, googleBytes}}),
-            progress.AddBatch({{name, googleBytes}}), progress.AddBatch({{name, oneDriveBytes}})};
+        googleConflicts.push_back({row.path, analysis.google.at(row.path).size});
+        oneDriveConflicts.push_back({row.path, analysis.oneDrive.at(row.path).size});
+    }
+    if (!googleConflicts.empty()) {
+        batches.conflicts[0] = progress.AddBatch(googleConflicts);
+        batches.conflicts[1] = progress.AddBatch(googleConflicts, true);
+        batches.conflicts[2] = progress.AddBatch(oneDriveConflicts);
     }
     for (const auto action : {SyncAction::ToGoogle, SyncAction::ToOneDrive, SyncAction::DeleteGoogle, SyncAction::DeleteOneDrive}) {
         std::vector<TransferProgress::File> files;
@@ -222,6 +224,10 @@ inline TransferBatches PrepareTransferProgress(const SyncAnalysis& analysis, Syn
         if (!files.empty()) batches.actions[action] = progress.AddBatch(files, move);
     }
     return batches;
+}
+
+inline TransferBatches PrepareTransferProgress(const SyncAnalysis& analysis, SyncMode mode, TransferProgress& progress) {
+    return PrepareTransferProgress(analysis, analysis.Plan(mode), progress);
 }
 
 } // namespace cloudnav

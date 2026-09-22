@@ -48,25 +48,28 @@ struct InternetHandle {
 };
 }
 
-ClientInstallation DetectClientInstallation(CloudClient client) {
-    ClientInstallation info;
+std::array<ClientInstallation, 2> DetectClientInstallations() {
+    std::array<ClientInstallation, 2> installations;
+    const auto incomplete = [&] { for (auto& info : installations) info.detectionComplete = false; };
     for (HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
         for (REGSAM view : {KEY_WOW64_64KEY, KEY_WOW64_32KEY}) {
             HKEY uninstall = nullptr;
             const auto status = RegOpenKeyExW(root, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
                                               0, KEY_READ | view, &uninstall);
             if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) continue;
-            if (status != ERROR_SUCCESS) { info.detectionComplete = false; continue; }
+            if (status != ERROR_SUCCESS) { incomplete(); continue; }
             for (DWORD index = 0;; ++index) {
                 wchar_t name[256]; DWORD length = ARRAYSIZE(name);
                 const auto enumerated = RegEnumKeyExW(uninstall, index, name, &length, nullptr, nullptr, nullptr, nullptr);
                 if (enumerated == ERROR_NO_MORE_ITEMS) break;
-                if (enumerated != ERROR_SUCCESS) { info.detectionComplete = false; break; }
+                if (enumerated != ERROR_SUCCESS) { incomplete(); break; }
                 HKEY entry = nullptr;
                 if (RegOpenKeyExW(uninstall, name, 0, KEY_READ | view, &entry) != ERROR_SUCCESS) {
-                    info.detectionComplete = false; continue;
+                    incomplete(); continue;
                 }
-                if (Matches(client, ReadString(entry, L"DisplayName"), ReadString(entry, L"Publisher"))) {
+                const auto displayName = ReadString(entry, L"DisplayName"), publisher = ReadString(entry, L"Publisher");
+                for (const auto client : {CloudClient::OneDrive, CloudClient::GoogleDrive}) if (Matches(client, displayName, publisher)) {
+                    auto& info = installations[static_cast<size_t>(client)];
                     // Registration is also evidence of a partial/broken install:
                     // don't offer a second install as if the client were absent.
                     info.installed = true;
@@ -81,6 +84,8 @@ ClientInstallation DetectClientInstallation(CloudClient client) {
             RegCloseKey(uninstall);
         }
     }
+    for (const auto client : {CloudClient::OneDrive, CloudClient::GoogleDrive}) {
+    auto& info = installations[static_cast<size_t>(client)];
     if (client == CloudClient::OneDrive) {
         for (const wchar_t* root : {L"%LOCALAPPDATA%\\Microsoft\\OneDrive", L"%ProgramFiles%\\Microsoft OneDrive", L"%ProgramFiles(x86)%\\Microsoft OneDrive"}) {
             const auto directory = Expand(root);
@@ -106,7 +111,12 @@ ClientInstallation DetectClientInstallation(CloudClient client) {
             if (error) info.detectionComplete = false;
         }
     }
-    return info;
+    }
+    return installations;
+}
+
+ClientInstallation DetectClientInstallation(CloudClient client) {
+    return DetectClientInstallations()[static_cast<size_t>(client)];
 }
 
 bool VerifyClientPublisher(const std::wstring& path, CloudClient client, std::wstring& error) {

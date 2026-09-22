@@ -13,6 +13,10 @@ int wmain(int argc, wchar_t** argv) {
     const std::string original(std::istreambuf_iterator<char>(input), {});
     input.close();
     if (argc > 1 && std::wstring(argv[1]) == L"lsd") return original.find("root-failure") != std::string::npos ? 9 : 0;
+    if (argc > 1 && std::wstring(argv[1]) == L"lsjson") {
+        std::cout << (original.find("listing-failure") != std::string::npos ? "[invalid" : "[]");
+        return 0;
+    }
     if (original.find("provider-failure") != std::string::npos) {
         std::cout << R"({"State":"choose_type","Error":"ObjectHandle is Invalid"})"; return 0;
     }

@@ -71,15 +71,20 @@ inline void TestTransferProgress() {
     plan.complete = true;
     plan.oneDrive = {{"both.bin", {20, "2026-09-09T10:00:00Z", {}}}, {"same", {1, "2026-09-09T10:00:00Z", {}}}};
     plan.google = {{"both.bin", {30, "2026-09-09T10:00:00Z", {}}}, {"same", {1, "2026-09-09T10:00:00Z", {}}}};
+    plan.oneDrive["nested/both.bin"] = plan.oneDrive.at("both.bin");
+    plan.google["nested/both.bin"] = plan.google.at("both.bin");
     TransferProgress merge;
-    const auto batches = PrepareTransferProgress(plan, SyncMode::Bidirectional, merge);
-    assert(merge.TotalBytes() == 80 && merge.TotalFiles() == 3); // two preserved Google copies + OneDrive original
-    for (auto batch : batches.conflicts.at("both.bin")) {
+    const auto rows = plan.Plan(SyncMode::Bidirectional);
+    const auto batches = PrepareTransferProgress(plan, rows, merge);
+    assert(SyncPlanSummary(rows, plan.complete) == SyncPlanSummary(plan, SyncMode::Bidirectional));
+    assert(merge.TotalBytes() == 160 && merge.TotalFiles() == 6 && SyncPlannedBytes(plan, rows) == merge.TotalBytes());
+    for (auto batch : batches.conflicts) {
         merge.BeginBatch(batch, 1);
-        merge.Log(copied("both.bin"), 2);
+        for (const auto* path : {"both.bin", "nested/both.bin"})
+            merge.Log(J{{"level", "info"}, {"object", path}, {"msg", batch == batches.conflicts[1] ? "Moved (server-side)" : "Copied (new)"}}.dump(), 2);
         merge.EndBatch(true, 3);
     }
-    assert(merge.CopiedFiles() == 3 && merge.CompletedBytes() == 80);
+    assert(merge.CopiedFiles() == 6 && merge.CompletedBytes() == 160);
     PrepareTransferProgress(plan, SyncMode::ToGoogle, merge);
     assert(merge.TotalBytes() == 0 && merge.TotalFiles() == 0); // equal-time destination is preserved
 }

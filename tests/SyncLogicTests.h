@@ -132,10 +132,12 @@ inline void RunSyncLogicTests() {
         {{"Path", "photos"}, {"IsDir", true}, {"Size", -1}, {"ModTime", "2026-09-09T10:00:00Z"}},
         {{"Path", "photos"}, {"IsDir", true}, {"Size", -1}, {"ModTime", "2026-09-09T10:00:00Z"}},
         {{"Path", "photos/one.jpg"}, {"IsDir", false}, {"Size", 1}, {"ModTime", "2026-09-09T10:00:00Z"}},
+        {{"Path", "photos2/one.jpg"}, {"IsDir", false}, {"Size", 1}, {"ModTime", "2026-09-09T10:00:00Z"}},
+        {{"Path", "photos-old/one.jpg"}, {"IsDir", false}, {"Size", 1}, {"ModTime", "2026-09-09T10:00:00Z"}},
         {{"Path", "outside.jpg"}, {"IsDir", false}, {"Size", 1}, {"ModTime", "2026-09-09T10:00:00Z"}}
     });
     assert(ReadGoogleSyncInventory(duplicateFolders.dump(), inventory, ignored, error));
-    assert(inventory.size() == 1 && inventory.count("outside.jpg") == 1);
+    assert(inventory.size() == 3 && inventory.count("outside.jpg") && inventory.count("photos2/one.jpg") && inventory.count("photos-old/one.jpg"));
     assert(ignored.size() == 1 && ignored.count("photos/one.jpg") == 1);
     duplicate = SaveSyncInventory(analysis.oneDrive);
     duplicate[0]["Size"] = -1;
@@ -160,4 +162,8 @@ inline void RunSyncLogicTests() {
     assert(SyncEquivalent(original, sameSizeTime));
     const auto args = SyncInventoryArguments(L"config", L"remote:", L"log");
     assert(args[0] == L"lsjson" && std::find(args.begin(), args.end(), L"/.CloudNav-history/**") != args.end());
+    assert(!SyncUseTraversal(63, 64, 64));
+    assert(SyncUseTraversal(64, 128, 128));
+    assert(!SyncUseTraversal(64, 129, 128) && !SyncUseTraversal(64, 128, 129));
+    assert(SyncUseTraversal(65, 129, 129) && SyncUseTraversal(64, 64, 0));
 }

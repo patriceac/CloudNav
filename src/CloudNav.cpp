@@ -21,6 +21,8 @@
 #include <memory>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <stdexcept>
 
 #include "logic.h"
 #include "folder_manager.h"
@@ -61,6 +63,7 @@ constexpr int IDC_INSTALL_ONEDRIVE = 1014;
 constexpr int IDC_INSTALL_GOOGLE = 1015;
 constexpr int IDC_UNINSTALL_GOOGLE = 1016;
 constexpr UINT WM_CLIENT_DOWNLOAD = WM_APP + 40;
+constexpr UINT WM_STATE_COMPLETE = WM_APP + 41;
 constexpr UINT_PTR kClientProcessTimer = 40;
 constexpr int kMainClientWidthDip = 740;
 constexpr int kMainClientHeightDip = 692;
@@ -150,6 +153,12 @@ bool g_oneDriveBlocked = false;
 bool g_demoClientsMissing = false;
 bool g_demoClientFailure = false;
 bool g_demoClientUnknownRoots = false;
+bool g_demoSlowDetection = false;
+bool g_stateBusy = false;
+bool g_stateReady = false;
+bool g_closeAfterState = false;
+std::thread g_stateThread;
+struct StateResult { AppState state; bool available = false; bool error = false; std::wstring message; };
 bool g_clientDownloading = false;
 bool g_closeAfterDownload = false;
 std::atomic_bool g_cancelClientDownload{false};
@@ -158,7 +167,7 @@ HANDLE g_clientProcess = nullptr;
 cloudnav::CloudClient g_activeClient = cloudnav::CloudClient::OneDrive;
 std::wstring g_downloadedInstaller;
 struct ClientDownloadResult { std::wstring path; std::wstring error; };
-bool ClientBusy() { return g_clientDownloading || g_clientProcess != nullptr; }
+bool ClientBusy() { return g_stateBusy || g_clientDownloading || g_clientProcess != nullptr; }
 
 std::wstring FormatWindowsError(DWORD code) {
     wchar_t* buffer = nullptr;
@@ -425,7 +434,7 @@ std::wstring ShellDisplayName(const std::wstring& clsid, std::wstring* fileSyste
     return label;
 }
 
-std::wstring DetectGoogleDriveRoot(wchar_t& letter) {
+std::wstring DetectGoogleDriveRoot(wchar_t& letter, std::vector<std::wstring>& googleRoots) {
     letter = 0;
     const DWORD needed = GetLogicalDriveStringsW(0, nullptr);
     if (!needed) {
@@ -440,14 +449,14 @@ std::wstring DetectGoogleDriveRoot(wchar_t& letter) {
         wchar_t volumeName[MAX_PATH] = {};
         if (GetVolumeInformationW(root, volumeName, ARRAYSIZE(volumeName), nullptr, nullptr, nullptr, nullptr, 0) &&
             ContainsInsensitive(volumeName, L"Google Drive")) {
-            letter = static_cast<wchar_t>(std::towupper(root[0]));
-            return root;
+            googleRoots.emplace_back(root);
         }
         const std::wstring shortcut = std::wstring(root) + L"My Drive.lnk";
         if (GetFileAttributesW(shortcut.c_str()) != INVALID_FILE_ATTRIBUTES) {
             fallback = root;
         }
     }
+    if (!googleRoots.empty()) fallback = googleRoots.front();
     if (!fallback.empty()) {
         letter = static_cast<wchar_t>(std::towupper(fallback[0]));
     }
@@ -617,7 +626,6 @@ std::wstring DetectOneDriveUninstaller() {
 }
 
 void DetectOneDriveClientState(AppState& state) {
-    state.oneDriveClient = cloudnav::DetectClientInstallation(cloudnav::CloudClient::OneDrive);
     state.oneDriveAutoStart = DetectOneDriveAutoStart();
     state.oneDriveUninstaller = state.oneDriveClient.uninstallExecutable;
     if (state.oneDriveUninstaller.empty() && state.oneDriveClient.installed) {
@@ -642,18 +650,8 @@ void DetectOneDriveClientState(AppState& state) {
     state.personalFolderScanComplete = usage.complete;
 }
 
-void DetectGoogleClientState(AppState& state) {
-    state.googleClient = cloudnav::DetectClientInstallation(cloudnav::CloudClient::GoogleDrive);
-    std::vector<std::wstring> roots;
+void DetectGoogleClientState(AppState& state, std::vector<std::wstring> roots) {
     if (!state.myDrivePath.empty()) roots.push_back(state.myDrivePath);
-    const DWORD drives = GetLogicalDrives();
-    for (int i = 0; i < 26; ++i) {
-        if (!(drives & (1u << i))) continue;
-        std::wstring root = L"A:\\"; root[0] += static_cast<wchar_t>(i);
-        wchar_t label[MAX_PATH] = {};
-        if (GetVolumeInformationW(root.c_str(), label, ARRAYSIZE(label), nullptr, nullptr, nullptr, nullptr, 0) &&
-            ContainsInsensitive(label, L"Google Drive")) roots.push_back(root);
-    }
     state.googleRootsKnown = !roots.empty();
     state.googlePersonalFolders = DetectPersonalFoldersInRoots(roots);
 }
@@ -707,10 +705,13 @@ AppState DetectState() {
     state.myDriveVisible = pinned != 0 && RegistryKeyExists(HKEY_CURRENT_USER, namespaceKey);
     state.oneDrive = DetectOneDrive();
     state.oneDriveFolderAvailable = PathIsDirectory(state.oneDrive.path);
+    auto clients = cloudnav::DetectClientInstallations();
+    state.oneDriveClient = std::move(clients[0]);
+    state.googleClient = std::move(clients[1]);
     DetectOneDriveClientState(state);
-    DetectGoogleClientState(state);
-
-    DetectGoogleDriveRoot(state.googleDriveLetter);
+    std::vector<std::wstring> googleRoots;
+    DetectGoogleDriveRoot(state.googleDriveLetter, googleRoots);
+    DetectGoogleClientState(state, std::move(googleRoots));
     if (state.googleDriveLetter) {
         DWORD noDrives = 0;
         ReadRegistryDword(HKEY_CURRENT_USER,
@@ -865,7 +866,15 @@ void UpdateControlsFromState() {
     Button_SetCheck(g_googleDrive, g_state.googleDriveVisible ? BST_CHECKED : BST_UNCHECKED);
     UpdateVisibilityPending();
     for (HWND control : {g_personalFolders, g_migrateCloud, g_refresh}) EnableWindow(control, !ClientBusy());
-    if (ClientBusy()) EnableWindow(g_apply, FALSE);
+    if (ClientBusy() || !g_stateReady) {
+        for (HWND control : {g_apply, g_myDrive, g_oneDrive, g_googleDrive, g_installOneDrive,
+            g_installGoogle, g_uninstallOneDrive, g_uninstallGoogle, g_disableOneDriveStartup, g_personalFolders})
+            EnableWindow(control, FALSE);
+    }
+    if (!g_stateReady) {
+        for (HWND label : {g_myDriveDetail, g_oneDriveDetail, g_googleDriveDetail, g_startupDetail, g_googleClientDetail})
+            SetWindowTextW(label, L"Checking this PC…");
+    }
 }
 
 bool VerifyOneDriveActionGuard() {
@@ -1378,6 +1387,29 @@ bool RestartExplorer() {
                                                    SW_SHOWNORMAL)) > 32;
 }
 
+void StartStateWork(std::function<void(StateResult&)> operation = {}, const wchar_t* status = L"Checking this PC…") {
+    if (ClientBusy()) return;
+    if (g_stateThread.joinable()) g_stateThread.join();
+    g_stateBusy = true;
+    UpdateControlsFromState();
+    ShowStatus(status);
+    const HWND window = g_window;
+    g_stateThread = std::thread([window, operation = std::move(operation)] {
+        auto result = std::make_unique<StateResult>();
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        try {
+            if (FAILED(com)) throw std::runtime_error("COM initialization failed");
+            if (g_demoSlowDetection) Sleep(2000);
+            if (operation) operation(*result);
+            result->state = DetectState();
+            result->available = true;
+            if (result->message.empty()) result->message = L"Status refreshed from this PC.";
+        } catch (...) { result->error = true; result->message = L"Unable to check this PC. Try Refresh again."; }
+        if (SUCCEEDED(com)) CoUninitialize();
+        if (PostMessageW(window, WM_STATE_COMPLETE, 0, reinterpret_cast<LPARAM>(result.get()))) result.release();
+    });
+}
+
 void ApplySelections() {
     bool showMyDrive = Button_GetCheck(g_myDrive) == BST_CHECKED;
     const bool showOneDrive = Button_GetCheck(g_oneDrive) == BST_CHECKED;
@@ -1405,33 +1437,23 @@ void ApplySelections() {
         return;
     }
 
-    EnableWindow(GetDlgItem(g_window, IDC_APPLY), FALSE);
-    ShowStatus(L"Applying changes…");
-    std::wstring error;
-
-    if (!RunElevatedApply(showMyDrive, g_chosenMyDrivePath,
-                          showOneDrive,
-                          g_state.oneDrive.detected && showOneDrive != g_state.oneDrive.visible ? g_state.oneDrive.clsid : L"",
-                          showGoogleDrive, g_state.googleDriveLetter, error)) {
-        EnableWindow(GetDlgItem(g_window, IDC_APPLY), TRUE);
-        ShowStatus(error, true);
-        return;
-    }
-
-    NotifyShell();
-    const bool restarted = RestartExplorer();
-    g_state = DetectState();
-    UpdateControlsFromState();
-    UpdateVisibilityPending();
-    ShowStatus(restarted
-        ? L"Applied. File Explorer was restarted."
-        : L"Applied. Reopen File Explorer to see the result.", !restarted);
+    const auto myDrivePath = g_chosenMyDrivePath;
+    const auto oneDriveClsid = g_state.oneDrive.detected && showOneDrive != g_state.oneDrive.visible ? g_state.oneDrive.clsid : L"";
+    const auto letter = g_state.googleDriveLetter;
+    StartStateWork([=](StateResult& result) {
+        if (!RunElevatedApply(showMyDrive, myDrivePath, showOneDrive, oneDriveClsid, showGoogleDrive, letter, result.message)) {
+            result.error = true;
+            return;
+        }
+        NotifyShell();
+        const bool restarted = RestartExplorer();
+        result.message = restarted ? L"Applied. File Explorer was restarted." : L"Applied. Reopen File Explorer to see the result.";
+        result.error = !restarted;
+    }, L"Applying changes…");
 }
 
 void RefreshState() {
-    if (!g_demoMode) {
-        g_state = DetectState();
-    }
+    if (!g_demoMode || g_demoSlowDetection) { StartStateWork(); return; }
     UpdateControlsFromState();
     ShowStatus(L"Status refreshed from this PC.");
 }
@@ -1612,6 +1634,16 @@ void CreateInterface(HWND window) {
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_STATE_COMPLETE: {
+        std::unique_ptr<StateResult> result(reinterpret_cast<StateResult*>(lParam));
+        if (g_stateThread.joinable()) g_stateThread.join();
+        g_stateBusy = false;
+        if (result->available) { g_state = std::move(result->state); g_stateReady = true; }
+        UpdateControlsFromState();
+        ShowStatus(result->message, result->error);
+        if (g_closeAfterState) PostMessageW(window, WM_CLOSE, 0, 0);
+        return 0;
+    }
     case WM_CLIENT_DOWNLOAD: {
         std::unique_ptr<ClientDownloadResult> result(reinterpret_cast<ClientDownloadResult*>(lParam));
         if (g_clientDownloadThread.joinable()) g_clientDownloadThread.join();
@@ -1635,11 +1667,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             CloseHandle(g_clientProcess); g_clientProcess = nullptr;
             KillTimer(window, kClientProcessTimer);
             cloudnav::RemoveClientDownload(g_downloadedInstaller); g_downloadedInstaller.clear();
-            g_state = DetectState(); UpdateControlsFromState();
-            const auto& client = g_activeClient == cloudnav::CloudClient::OneDrive ? g_state.oneDriveClient : g_state.googleClient;
-            ShowStatus(L"Setup exited (code " + std::to_wstring(exitCode) + L"). " + cloudnav::ClientName(g_activeClient) +
-                (!client.detectionComplete ? L" status unavailable. Refresh after setup finishes." : client.installed ?
-                    L" is detected as installed. Refresh if setup is still open." : L" is not detected as installed. Refresh if setup is still open."), exitCode != 0);
+            StartStateWork([exitCode](StateResult& result) {
+                result.message = L"Setup exited (code " + std::to_wstring(exitCode) + L"). Status refreshed; refresh again if setup is still open.";
+                result.error = exitCode != 0;
+            });
             return 0;
         }
         break;
@@ -1654,6 +1685,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     case WM_COMMAND:
+        if (g_stateBusy) return 0;
         if (ClientBusy() && LOWORD(wParam) != IDC_INSTALL_ONEDRIVE && LOWORD(wParam) != IDC_INSTALL_GOOGLE) return 0;
         switch (LOWORD(wParam)) {
         case IDC_INSTALL_ONEDRIVE: InstallClient(cloudnav::CloudClient::OneDrive); return 0;
@@ -1684,13 +1716,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             providers.simulateOneDriveBackupActive = g_demoPlan && !g_demoFailure;
             const bool changed = cloudnav::ShowFolderManagerDialog(
                 window, g_instance, providers, g_demoMode);
-            if (!g_demoMode) {
-                g_state = DetectState();
-                UpdateControlsFromState();
-            }
-            ShowStatus(changed
-                ? L"Personal folder locations updated."
-                : L"Folder manager closed.");
+            const auto status = changed ? L"Personal folder locations updated." : L"Folder manager closed.";
+            if (!g_demoMode) StartStateWork([status](StateResult& result) { result.message = status; });
+            else ShowStatus(status);
             return 0;
         }
         case IDC_MIGRATE_CLOUD: {
@@ -1707,7 +1735,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 providers.copyAccountBinding = handoff.accountBinding;
                 providers.preloadDemoPlan = g_demoMode;
                 cloudnav::ShowFolderManagerDialog(window, g_instance, providers, g_demoMode);
-                if (!g_demoMode) { g_state = DetectState(); UpdateControlsFromState(); }
+                if (!g_demoMode) RefreshState();
             }
             ShowStatus(result == cloudnav::MigrationResult::ConfigureFolders
                 ? L"Copy complete; folder manager opened."
@@ -1766,6 +1794,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SaveWindowPosition(window);
         return 0;
     case WM_CLOSE:
+        if (g_stateBusy) {
+            g_closeAfterState = true;
+            ShowStatus(L"Finishing the current system check before closing…");
+            return 0;
+        }
         if (g_clientDownloading) {
             g_closeAfterDownload = true;
             g_cancelClientDownload = true;
@@ -1936,7 +1969,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
         return result;
     }
     for (int index = 1; arguments && index < argumentCount; ++index) {
-        if (EqualsInsensitive(arguments[index], L"--demo")) {
+        if (EqualsInsensitive(arguments[index], L"--demo-slow-detection")) {
+            g_demoMode = true;
+            g_demoSlowDetection = true;
+        } else if (EqualsInsensitive(arguments[index], L"--demo")) {
             g_demoMode = true;
         } else if (EqualsInsensitive(arguments[index], L"--demo-plan")) {
             g_demoMode = true;
@@ -1966,9 +2002,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
     INITCOMMONCONTROLSEX controls = {sizeof(controls), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS};
     InitCommonControlsEx(&controls);
     g_backgroundBrush = CreateSolidBrush(RGB(248, 250, 252));
-    std::wstring migrationError;
-    if (!g_demoMode) MigrateMyDriveForUser(GetCurrentUserSid(), migrationError);
-    g_state = DetectState();
+    if (g_demoMode && !g_demoSlowDetection) { g_state = DetectState(); g_stateReady = true; }
 
     WNDCLASSEXW windowClass = {sizeof(windowClass)};
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
@@ -2007,9 +2041,15 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
     }
     ResizeMainWindowForDpi(g_window, g_uiDpi, nullptr);
     RestoreWindowPosition(g_window);
-    if (!migrationError.empty()) ShowStatus(L"My Drive upgrade failed: " + migrationError, true);
     ShowWindow(g_window, showCommand);
     UpdateWindow(g_window);
+    if (!g_stateReady) StartStateWork([](StateResult& result) {
+        std::wstring migrationError;
+        if (!g_demoMode && !MigrateMyDriveForUser(GetCurrentUserSid(), migrationError)) {
+            result.error = true;
+            result.message = L"My Drive upgrade failed: " + migrationError;
+        }
+    });
 
     MSG message = {};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
