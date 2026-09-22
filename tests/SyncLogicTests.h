@@ -10,6 +10,11 @@ inline void RunSyncLogicTests() {
     assert(MergeSyncAccountConfig(configBefore, "", "cloudnav-onedrive") == configBefore);
     assert(SyncListingProgress(true, 0, 0) == L"OneDrive — waiting for listing data — elapsed 0m 0s");
     assert(SyncListingProgress(false, 12, 65) == L"Google Drive — 12 files received — elapsed 1m 5s");
+    assert(SyncInventoryProgress(true, R"({"mode":"changes","items":3,"pages":1})", 65) ==
+        L"OneDrive — checking changes — 3 items / 1 API pages — elapsed 1m 5s");
+    assert(SyncInventoryProgress(false, R"({"mode":"full","items":2000,"pages":2})", 2).find(L"2000 items / 2 API pages") != std::wstring::npos);
+    assert(SyncInventoryProgress(false, "partial", 0).empty());
+    assert(SyncInventoryProgress(false, R"({"mode":"changes","items":-1,"pages":0})", 0).empty());
     assert(SyncModeFromSetting(0) == SyncMode::ToGoogle);
     assert(SyncModeFromSetting(1) == SyncMode::ToOneDrive);
     assert(SyncModeFromSetting(2) == SyncMode::Bidirectional);
@@ -162,6 +167,13 @@ inline void RunSyncLogicTests() {
     assert(SyncEquivalent(original, sameSizeTime));
     const auto args = SyncInventoryArguments(L"config", L"remote:", L"log");
     assert(args[0] == L"lsjson" && std::find(args.begin(), args.end(), L"/.CloudNav-history/**") != args.end());
+    const auto incrementalArgs = SyncInventoryArguments(L"config", L"remote:", L"log", L"account-cache");
+    const auto verificationArgs = SyncInventoryArguments(L"config", L"remote:", L"log", L"account-cache", true);
+    assert(std::find(incrementalArgs.begin(), incrementalArgs.end(), L"--onedrive-cloudnav-cache") != incrementalArgs.end());
+    assert(std::find(incrementalArgs.begin(), incrementalArgs.end(), L"--drive-cloudnav-cache") != incrementalArgs.end());
+    assert(std::find(incrementalArgs.begin(), incrementalArgs.end(), L"--onedrive-cloudnav-full") == incrementalArgs.end());
+    assert(std::find(verificationArgs.begin(), verificationArgs.end(), L"--onedrive-cloudnav-full") != verificationArgs.end());
+    assert(std::find(verificationArgs.begin(), verificationArgs.end(), L"--drive-cloudnav-full") != verificationArgs.end());
     assert(!SyncUseTraversal(63, 64, 64));
     assert(SyncUseTraversal(64, 128, 128));
     assert(!SyncUseTraversal(64, 129, 128) && !SyncUseTraversal(64, 128, 129));

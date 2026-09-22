@@ -25,6 +25,15 @@ Expand-Archive -LiteralPath $sourceArchive -DestinationPath $sourceParent -Force
 $source = Join-Path $sourceParent 'rclone-1.75.0'
 & git -C $projectRoot apply --unidiff-zero --directory=.third-party/rclone-source/rclone-1.75.0 --ignore-space-change --whitespace=nowarn (Join-Path $PSScriptRoot 'rclone-cloudnav.patch')
 if ($LASTEXITCODE -ne 0) { throw 'Unable to apply the CloudNav OAuth patch.' }
+& git -C $projectRoot apply --unidiff-zero --directory=.third-party/rclone-source/rclone-1.75.0 --ignore-space-change --whitespace=nowarn (Join-Path $PSScriptRoot 'rclone-inventory.patch')
+if ($LASTEXITCODE -ne 0) { throw 'Unable to apply the CloudNav inventory patch.' }
+New-Item -ItemType Directory -Force (Join-Path $source 'lib\cloudnavinventory') | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cloudnav-inventory\cache.go') -Destination (Join-Path $source 'lib\cloudnavinventory\cache.go')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cloudnav-inventory\cache_test.go') -Destination (Join-Path $source 'lib\cloudnavinventory\cache_test.go')
+foreach ($provider in @('onedrive', 'drive')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "cloudnav-inventory\$provider.go") -Destination (Join-Path $source "backend\$provider\cloudnav.go")
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "cloudnav-inventory\${provider}_test.go") -Destination (Join-Path $source "backend\$provider\cloudnav_test.go")
+}
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'rclone-cloudnav_test.go') -Destination (Join-Path $source 'lib\oauthutil\cloudnav_test.go')
 New-Item -ItemType Directory -Force (Split-Path -Parent $OutputPath) | Out-Null
 $savedCgo = $env:CGO_ENABLED
@@ -40,7 +49,9 @@ try {
     try {
         & $go test ./lib/oauthutil -run TestCloudNavReservedPortFallback -count=1
         if ($LASTEXITCODE -ne 0) { throw 'OAuth callback regression test failed.' }
-        & $go build -trimpath -buildvcs=false -ldflags '-s -w -X github.com/rclone/rclone/fs.Version=v1.75.0-cloudnav.3' -o $OutputPath .
+        & $go test ./lib/cloudnavinventory ./backend/onedrive ./backend/drive -run '^TestCloudNav' -count=1
+        if ($LASTEXITCODE -ne 0) { throw 'Incremental inventory regression tests failed.' }
+        & $go build -trimpath -buildvcs=false -ldflags '-s -w -X github.com/rclone/rclone/fs.Version=v1.75.0-cloudnav.4' -o $OutputPath .
         if ($LASTEXITCODE -ne 0) { throw 'Patched rclone build failed.' }
     } finally { Pop-Location }
 } finally {

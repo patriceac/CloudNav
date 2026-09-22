@@ -196,6 +196,20 @@ inline bool SyncEquivalent(const SyncFile& a, const SyncFile& b) {
     return a.time.size() >= 20 && b.time.size() >= 20 && a.time.substr(0, 19) == b.time.substr(0, 19);
 }
 
+inline std::wstring SyncInventoryProgress(bool oneDrive, const std::string& data, std::uint64_t elapsedSeconds) {
+    try {
+        const auto progress = SyncJson::parse(data);
+        const auto mode = progress.at("mode").get<std::string>();
+        if ((mode != "full" && mode != "changes" && mode != "scan") ||
+            !progress.at("items").is_number_unsigned() || !progress.at("pages").is_number_unsigned()) return {};
+        return std::wstring(oneDrive ? L"OneDrive" : L"Google Drive") + L" — " +
+            (mode == "changes" ? L"checking changes" : L"reading full inventory") + L" — " +
+            std::to_wstring(progress.at("items").get<std::uint64_t>()) + L" items" +
+            (mode == "scan" ? L"" : L" / " + std::to_wstring(progress.at("pages").get<std::uint64_t>()) + L" API pages") +
+            L" — elapsed " + std::to_wstring(elapsedSeconds / 60) + L"m " + std::to_wstring(elapsedSeconds % 60) + L"s";
+    } catch (...) { return {}; }
+}
+
 inline SyncFile ReadSyncFileRow(const SyncJson& row, const std::string& path) {
     const auto size = row.at("Size").get<std::int64_t>();
     SyncFile file;
@@ -397,10 +411,15 @@ inline SyncInventory SyncBaselineInventory(const SyncInventory& inventory, const
 }
 
 inline std::vector<std::wstring> SyncInventoryArguments(const std::wstring& config, const std::wstring& remote,
-    const std::wstring& log) {
-    return {L"lsjson", remote, L"--config", config, L"--recursive", L"--hash", L"--fast-list",
+    const std::wstring& log, const std::wstring& cache = {}, bool full = false) {
+    std::vector<std::wstring> args = {L"lsjson", remote, L"--config", config, L"--recursive", L"--hash", L"--fast-list",
         L"--onedrive-delta", L"--drive-skip-gdocs", L"--exclude", L"/Personal Vault/**", L"--exclude",
         L"/.CloudNav-history/**", L"--use-json-log", L"--log-file", log};
+    if (!cache.empty()) {
+        args.insert(args.end(), {L"--onedrive-cloudnav-cache", cache, L"--drive-cloudnav-cache", cache});
+        if (full) args.insert(args.end(), {L"--onedrive-cloudnav-full", L"--drive-cloudnav-full"});
+    }
+    return args;
 }
 
 inline std::string SyncFileList(const std::vector<SyncRow>& rows, SyncAction action) {

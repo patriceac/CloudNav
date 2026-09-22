@@ -1,0 +1,54 @@
+--- a/backend/onedrive/onedrive.go
++++ b/backend/onedrive/onedrive.go
+@@ -5,0 +6 @@
++	inventory "github.com/rclone/rclone/lib/cloudnavinventory"
+@@ -266,0 +268,10 @@
++			Advanced: true,
++		}, {
++			Name: "cloudnav_cache",
++			Help: "CloudNav inventory cache path.",
++			Default: "",
++			Advanced: true,
++		}, {
++			Name: "cloudnav_full",
++			Help: "Refresh CloudNav inventory from a full listing.",
++			Default: false,
+@@ -796,0 +808,2 @@
++	CloudNavCache string `config:"cloudnav_cache"`
++	CloudNavFull bool `config:"cloudnav_full"`
+@@ -1476,0 +1490,8 @@
++	if f.opt.CloudNavCache == "" { return f.listRFull(ctx, dir, callback) }
++	if dir != "" || f.root != "" { return f.cloudNavConventional(ctx, dir, callback) }
++	err = f.cloudNavList(ctx, dir, callback)
++	if err == inventory.ErrUnsupported { return f.cloudNavConventional(ctx, dir, callback) }
++	return err
++}
++
++func (f *Fs) listRFull(ctx context.Context, dir string, callback fs.ListRCallback) (err error) {
+--- a/backend/drive/drive.go
++++ b/backend/drive/drive.go
+@@ -10,0 +11 @@
++	inventory "github.com/rclone/rclone/lib/cloudnavinventory"
+@@ -502,0 +504,10 @@
++			Name: "cloudnav_cache",
++			Help: "CloudNav inventory cache path.",
++			Default: "",
++			Advanced: true,
++		}, {
++			Name: "cloudnav_full",
++			Help: "Refresh CloudNav inventory from a full listing.",
++			Default: false,
++			Advanced: true,
++		}, {
+@@ -807,0 +819,2 @@
++	CloudNavCache string `config:"cloudnav_cache"`
++	CloudNavFull bool `config:"cloudnav_full"`
+@@ -2244,0 +2258,8 @@
++	if f.opt.CloudNavCache == "" { return f.listRFull(ctx, dir, callback) }
++	if dir != "" || f.root != "" { return f.cloudNavConventional(ctx, dir, callback) }
++	err = f.cloudNavList(ctx, dir, callback)
++	if err == inventory.ErrUnsupported { return f.cloudNavConventional(ctx, dir, callback) }
++	return err
++}
++
++func (f *Fs) listRFull(ctx context.Context, dir string, callback fs.ListRCallback) (err error) {

@@ -9,7 +9,7 @@ IDR_MANIFEST RT_MANIFEST "CloudNav.manifest"
 IDI_CLOUDNAV ICON "CloudNav.ico"
 IDR_ONEDRIVE_LOGO RCDATA "../assets/onedrive-official.png"
 IDR_GOOGLE_DRIVE_LOGO RCDATA "../assets/google-drive-official.png"
-IDR_RCLONE_EXE RCDATA "../.third-party/rclone/v1.75.0-cloudnav.3/rclone.exe"
+IDR_RCLONE_EXE RCDATA "../.third-party/rclone/v1.75.0-cloudnav.4/rclone.exe"
 
 IDD_CLOUD_MIGRATION DIALOGEX 0, 0, 500, 340
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU

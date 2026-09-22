@@ -110,6 +110,7 @@ struct DialogContext {
     std::atomic<unsigned> inventoryReads = 0;
     std::atomic<unsigned> processStarts = 0;
     std::atomic<unsigned> listingProgressUpdates = 0;
+    std::atomic<unsigned> inventoryProgressUpdates = 0;
     std::atomic<bool> listingFailed = false;
     bool parallelListing = false;
     std::wstring listingStatus[2];
@@ -180,7 +181,7 @@ bool ResourceMatchesFile(HINSTANCE instance, const std::wstring& path) {
 
 bool ExtractRclone(HINSTANCE instance, std::wstring& path, std::wstring& error) {
     const std::wstring root = LocalAppDataPath() + L"\\CloudNav\\Runtime";
-    path = root + L"\\rclone-v1.75.0-cloudnav.3.exe";
+    path = root + L"\\rclone-v1.75.0-cloudnav.4.exe";
     if (ResourceMatchesFile(instance, path)) return true;
     HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(IDR_RCLONE_EXE), RT_RCDATA);
     if (!resource) { error = L"The embedded rclone resource was not found."; return false; }
@@ -231,10 +232,15 @@ void PostListingProgress(DialogContext& context, bool oneDrive, MigrationStage s
     LeaveCriticalSection(&context.processLock);
 }
 
+std::string ReadSyncFile(const std::wstring& path);
+
 bool RunProcess(DialogContext& context, const std::vector<std::wstring>& arguments,
                 MigrationStage stage, std::wstring& error, DWORD* processExitCode = nullptr, AnalysisReport* report = nullptr,
-                std::string* captured = nullptr, bool privateOutput = false, TransferProgress* transferProgress = nullptr) {
+                std::string* captured = nullptr, bool privateOutput = false, TransferProgress* transferProgress = nullptr,
+                const std::wstring& inventoryCache = {}) {
     if (context.cancelRequested || (captured && !privateOutput && context.listingFailed)) return false;
+    const auto inventoryProgress = inventoryCache.empty() ? L"" : inventoryCache + L".progress-" + std::to_wstring(GetCurrentProcessId());
+    if (!inventoryProgress.empty()) DeleteFileW(inventoryProgress.c_str());
     // Serialize only process creation, so concurrent children cannot inherit
     // each other's temporary inheritable pipe handles.
     static std::mutex launchMutex;
@@ -311,7 +317,11 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
             TerminateProcess(process.hProcess, ERROR_TIMEOUT);
         }
         if (captured && !privateOutput && now - lastInventoryUpdate >= 1000) {
-            PostListingProgress(context, listingOneDrive, stage, SyncListingProgress(listingOneDrive, receivedFiles, (now - listingStarted) / 1000));
+            const auto elapsed = (now - listingStarted) / 1000;
+            auto progress = inventoryProgress.empty() ? L"" : SyncInventoryProgress(listingOneDrive, ReadSyncFile(inventoryProgress), elapsed);
+            if (!progress.empty()) ++context.inventoryProgressUpdates;
+            if (progress.empty()) progress = SyncListingProgress(listingOneDrive, receivedFiles, elapsed);
+            PostListingProgress(context, listingOneDrive, stage, progress);
             ++context.listingProgressUpdates;
             lastInventoryUpdate = now;
         }
@@ -530,8 +540,10 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
         const std::wstring remote = oneDrive ? context.oneDrivePath : context.googlePath;
         ++context.inventoryReads;
         const auto log = context.logPath + (oneDrive ? L".onedrive" : L".google");
-        if (!RunProcess(context, SyncInventoryArguments(configs.paths[oneDrive ? 0 : 1], remote, log),
-            stage, accountError, nullptr, nullptr, &output)) {
+        const auto cache = context.configPath + L".inventory-" + Utf8ToWide(analysis.binding) + (oneDrive ? L".onedrive.json" : L".google.json");
+        // Independent verification after writes must observe a fresh full listing.
+        if (!RunProcess(context, SyncInventoryArguments(configs.paths[oneDrive ? 0 : 1], remote, log, cache, stage == MigrationStage::Verifying),
+            stage, accountError, nullptr, nullptr, &output, false, nullptr, cache)) {
             if (!accountError.empty()) accountError += L"\nListing log: " + log;
             context.listingFailed = true;
             return false;
@@ -1405,16 +1417,22 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
         if (passed) {
             step = "silentListingProgress";
             const auto fixture = root + L"\\delayed-listing.ps1";
-            passed = WriteEvidence(fixture, "Start-Sleep -Seconds 3\r\nWrite-Output '['\r\n"
+            passed = WriteEvidence(fixture, "param([string]$Cache, [string]$Owner)\r\n"
+                "if ($Cache) { Set-Content -LiteralPath ($Cache + '.progress-' + $Owner) -Value '{\"mode\":\"changes\",\"items\":25,\"pages\":2}' }\r\n"
+                "Start-Sleep -Seconds 3\r\nWrite-Output '['\r\n"
                 "Write-Output '{\"Path\":\"sample.txt\",\"Size\":1,\"IsDir\":false,\"ModTime\":\"2026-09-09T10:00:00Z\"}'\r\nWrite-Output ']'\r\n");
             wchar_t systemDirectory[MAX_PATH] = {};
             passed = passed && GetSystemDirectoryW(systemDirectory, MAX_PATH) != 0;
             context.runtimePath = std::wstring(systemDirectory) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
             const auto updates = context.listingProgressUpdates.load();
+            const auto providerUpdates = context.inventoryProgressUpdates.load();
+            const auto cache = root + L"\\progress-cache";
             std::string output, parseError;
             SyncInventory inventory;
-            passed = passed && RunProcess(context, {L"-NoProfile", L"-NonInteractive", L"-ExecutionPolicy", L"Bypass", L"-File", fixture}, MigrationStage::Analyzing,
-                error, nullptr, nullptr, &output) && context.listingProgressUpdates >= updates + 2 &&
+            passed = passed && RunProcess(context, {L"-NoProfile", L"-NonInteractive", L"-ExecutionPolicy", L"Bypass", L"-File", fixture,
+                L"-Cache", cache, L"-Owner", std::to_wstring(GetCurrentProcessId())}, MigrationStage::Analyzing,
+                error, nullptr, nullptr, &output, false, nullptr, cache) && context.listingProgressUpdates >= updates + 2 &&
+                context.inventoryProgressUpdates >= providerUpdates + 2 &&
                 ReadSyncInventory(output, inventory, parseError) && inventory.size() == 1;
             if (passed) {
                 step = "cancelBothListings";
@@ -1649,7 +1667,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.3\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.4\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();
