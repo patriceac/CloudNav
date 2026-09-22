@@ -131,7 +131,9 @@ struct DialogContext {
     CRITICAL_SECTION processLock = {};
     std::atomic<bool> cancelRequested = false;
     std::string historyBinding;
+    std::wstring cloudRootIds[2];
     std::wstring cloudLockId;
+    std::wstring cloudLockParentId;
     HANDLE job = nullptr;
     DialogContext() {
         job = CreateJobObjectW(nullptr, nullptr);
@@ -196,7 +198,7 @@ bool ResourceMatchesFile(HINSTANCE instance, const std::wstring& path) {
 
 bool ExtractRclone(HINSTANCE instance, std::wstring& path, std::wstring& error) {
     const std::wstring root = LocalAppDataPath() + L"\\CloudNav\\Runtime";
-    path = root + L"\\rclone-v1.75.0-cloudnav.6.exe";
+    path = root + L"\\rclone-v1.75.0-cloudnav.7.exe";
     if (ResourceMatchesFile(instance, path)) return true;
     HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(IDR_RCLONE_EXE), RT_RCDATA);
     if (!resource) { error = L"The embedded rclone resource was not found."; return false; }
@@ -276,6 +278,10 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
     SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
     std::wstring command = QuoteArgument(context.runtimePath);
     for (const auto& argument : arguments) command += L" " + QuoteArgument(argument);
+    if (stage != MigrationStage::Connecting && stage != MigrationStage::Preparing) {
+        if (!context.cloudRootIds[0].empty()) command += L" --onedrive-root-folder-id " + QuoteArgument(context.cloudRootIds[0]);
+        if (!context.cloudRootIds[1].empty()) command += L" --drive-root-folder-id " + QuoteArgument(context.cloudRootIds[1]);
+    }
     if (transferProgress) command += L" --log-level INFO";
     const std::wstring combinedPath = context.logPath + L".analysis-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
     if (report) command += L" --combined " + QuoteArgument(combinedPath);
@@ -375,7 +381,7 @@ bool RunProcess(DialogContext& context, const std::vector<std::wstring>& argumen
         if (privateOutput && captured && captured->size() > 4 * 1024 * 1024) {
             TerminateProcess(process.hProcess, ERROR_BUFFER_OVERFLOW);
         }
-        if (privateOutput) continue;
+        if (privateOutput || (captured && stage == MigrationStage::History)) continue;
         if (log != INVALID_HANDLE_VALUE) {
             DWORD logged = 0;
             WriteFile(log, buffer, read, &logged, nullptr);
@@ -543,16 +549,10 @@ bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) 
     return true;
 }
 
-bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstring& error,
-    MigrationStage stage = MigrationStage::Analyzing) {
-    analysis.binding = SyncBinding(context);
-    analysis.complete = false;
-    auto originalConfig = ReadSyncFile(context.configPath);
-    if (!context.demoMode && (context.oneDrivePath == L"cloudnav-onedrive:" || context.googlePath == L"cloudnav-gdrive:")) {
-        if (!AuthReady(originalConfig, "cloudnav-onedrive", true) || !AuthReady(originalConfig, "cloudnav-gdrive", false)) {
-            error = L"An account configuration is incomplete. Reconnect both accounts before analyzing."; return false;
-        }
-    }
+template<class ReadAccount>
+bool ReadAccountsInParallel(DialogContext& context, ReadAccount readAccount, std::wstring& error) {
+    const auto binding = SyncBinding(context);
+    const auto originalConfig = ReadSyncFile(context.configPath);
     const auto configPrefix = context.configPath + L".parallel-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
     struct ListingConfigs {
         std::wstring paths[2];
@@ -562,12 +562,56 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
         error = L"Unable to prepare account listing configuration."; return false;
     }
     context.listingFailed = false;
+    std::wstring errors[2];
+    const auto read = [&](int i) {
+        bool ok = false;
+        try { ok = readAccount(i, configs.paths[i], errors[i]); }
+        catch (const std::exception& e) { errors[i] = Utf8ToWide(e.what()); }
+        if (!ok) context.listingFailed = true;
+        return ok;
+    };
+    auto oneDrive = std::async(std::launch::async, read, 0);
+    const bool googleOk = read(1), oneDriveOk = oneDrive.get();
+    // Each child can refresh its own OAuth token without racing the other.
+    // Merge only its own section after both children have stopped.
+    if (binding != SyncBinding(context)) { error = L"The accounts changed during analysis. Analyze again."; return false; }
+    auto mergedConfig = ReadSyncFile(context.configPath);
+    for (int i = 0; i < 2; ++i) {
+        const auto updated = ReadSyncFile(configs.paths[i]);
+        if (SyncBindingMaterial(updated) != SyncBindingMaterial(originalConfig)) {
+            error = L"Account configuration changed during analysis. Analyze again."; return false;
+        }
+        const std::string remote = i == 0 ? "cloudnav-onedrive" : "cloudnav-gdrive";
+        const auto from = SyncConfigSection(updated, remote), old = SyncConfigSection(originalConfig, remote);
+        if (from.first != std::string::npos && old.first != std::string::npos &&
+            updated.substr(from.first, from.second) != originalConfig.substr(old.first, old.second))
+            mergedConfig = MergeSyncAccountConfig(mergedConfig, updated, remote);
+    }
+    if (mergedConfig != ReadSyncFile(context.configPath) && !WriteEvidence(context.configPath, mergedConfig)) {
+        error = L"Unable to save refreshed account connections."; return false;
+    }
+    if (!oneDriveOk || !googleOk) {
+        error = !errors[0].empty() ? L"OneDrive: " + errors[0] : L"Google Drive: " + errors[1];
+        return false;
+    }
+    return !context.cancelRequested;
+}
+
+bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstring& error,
+    MigrationStage stage = MigrationStage::Analyzing) {
+    analysis.binding = SyncBinding(context);
+    analysis.complete = false;
+    const auto originalConfig = ReadSyncFile(context.configPath);
+    if (!context.demoMode && (context.oneDrivePath == L"cloudnav-onedrive:" || context.googlePath == L"cloudnav-gdrive:")) {
+        if (!AuthReady(originalConfig, "cloudnav-onedrive", true) || !AuthReady(originalConfig, "cloudnav-gdrive", false)) {
+            error = L"An account configuration is incomplete. Reconnect both accounts before analyzing."; return false;
+        }
+    }
     context.parallelListing = true;
     context.listingStatus[0] = SyncListingProgress(true, 0, 0);
     context.listingStatus[1] = SyncListingProgress(false, 0, 0);
-    std::wstring errors[2];
-    const auto readAccount = [&](bool oneDrive) {
-        auto& accountError = errors[oneDrive ? 0 : 1];
+    const auto readAccount = [&](int i, const std::wstring& config, std::wstring& accountError) {
+        const bool oneDrive = i == 0;
         try {
         std::string output, parseError;
         const std::wstring remote = oneDrive ? context.oneDrivePath : context.googlePath;
@@ -575,7 +619,7 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
         const auto log = context.logPath + (oneDrive ? L".onedrive" : L".google");
         const auto cache = context.configPath + L".inventory-" + Utf8ToWide(analysis.binding) + (oneDrive ? L".onedrive.json" : L".google.json");
         // Independent verification after writes must observe a fresh full listing.
-        if (!RunProcess(context, SyncInventoryArguments(configs.paths[oneDrive ? 0 : 1], remote, log, cache, stage == MigrationStage::Verifying),
+        if (!RunProcess(context, SyncInventoryArguments(config, remote, log, cache, stage == MigrationStage::Verifying),
             stage, accountError, nullptr, nullptr, &output, false, nullptr, cache)) {
             if (!accountError.empty()) accountError += L"\nListing log: " + log;
             context.listingFailed = true;
@@ -603,38 +647,15 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
             accountError = Utf8ToWide(e.what()); context.listingFailed = true; return false;
         }
     };
-    bool oneDriveOk = false, googleOk = false;
+    bool success = false;
     try {
-        auto oneDrive = std::async(std::launch::async, readAccount, true);
-        googleOk = readAccount(false);
-        oneDriveOk = oneDrive.get();
+        success = ReadAccountsInParallel(context, readAccount, error);
     } catch (...) {
         context.parallelListing = false;
         throw;
     }
     context.parallelListing = false;
-    // Each child can refresh its own OAuth token without racing the other.
-    // Merge only its own section after both children have stopped.
-    if (analysis.binding != SyncBinding(context)) { error = L"The accounts changed during analysis. Analyze again."; return false; }
-    auto mergedConfig = ReadSyncFile(context.configPath);
-    for (int i = 0; i < 2; ++i) {
-        const auto updated = ReadSyncFile(configs.paths[i]);
-        if (SyncBindingMaterial(updated) != SyncBindingMaterial(originalConfig)) {
-            error = L"Account configuration changed during listing. Analyze again."; return false;
-        }
-        const std::string remote = i == 0 ? "cloudnav-onedrive" : "cloudnav-gdrive";
-        const auto from = SyncConfigSection(updated, remote), old = SyncConfigSection(originalConfig, remote);
-        if (from.first != std::string::npos && old.first != std::string::npos &&
-            updated.substr(from.first, from.second) != originalConfig.substr(old.first, old.second))
-            mergedConfig = MergeSyncAccountConfig(mergedConfig, updated, remote);
-    }
-    if (mergedConfig != ReadSyncFile(context.configPath) && !WriteEvidence(context.configPath, mergedConfig)) {
-        error = L"Unable to save refreshed account connections."; return false;
-    }
-    if (!oneDriveOk || !googleOk) {
-        error = !errors[0].empty() ? L"OneDrive: " + errors[0] : L"Google Drive: " + errors[1];
-        return false;
-    }
+    if (!success) return false;
     if (analysis.binding != SyncBinding(context)) { error = L"The accounts changed during analysis. Analyze again."; return false; }
     analysis.complete = !context.cancelRequested;
     return analysis.complete;
@@ -651,13 +672,13 @@ void LoadCurrentBaseline(DialogContext& context, SyncAnalysis& analysis) {
 }
 
 bool SharedHistoryCommand(DialogContext& context, const std::vector<std::wstring>& command,
-    std::wstring& error, std::string* output = nullptr, DWORD* code = nullptr) {
-    PostHistoryProgress(context, command[0] == L"cat" ? L"Reading shared sync history…" :
+    std::wstring& error, std::string* output = nullptr, DWORD* code = nullptr, const std::wstring& config = {}) {
+    PostHistoryProgress(context, command[0] == L"cat" || command[1] == L"cloudnav-history" ? L"Reading shared sync history…" :
         command[0] == L"copyto" ? L"Saving shared sync history…" :
         command[1] == L"cloudnav-lock" ? L"Acquiring sync lock…" :
         command[1] == L"cloudnav-unlock" ? L"Releasing sync lock…" : L"Checking account identity…");
     auto args = command;
-    args.insert(args.end(), {L"--config", context.configPath, L"--retries", L"1", L"--low-level-retries", L"2",
+    args.insert(args.end(), {L"--config", config.empty() ? context.configPath : config, L"--retries", L"1", L"--low-level-retries", L"2",
         L"--contimeout", L"15s", L"--timeout", L"30s", L"--log-file", context.logPath + L".history"});
     return RunProcess(context, args, MigrationStage::History, error, code, nullptr, output);
 }
@@ -669,32 +690,44 @@ std::wstring SharedHistoryPath(const DialogContext& context, bool oneDrive) {
 
 // Cloud roots, not login tokens, identify portable history. Fixture roots use the same state flow.
 bool PrepareSharedHistory(DialogContext& context, std::wstring& error) {
-    context.listingFailed = false;
-    std::string roots;
-    for (const auto& remote : {context.oneDrivePath, context.googlePath}) {
+    context.cloudRootIds[0].clear(); context.cloudRootIds[1].clear();
+    std::string roots[2];
+    std::wstring rootIds[2];
+    if (!ReadAccountsInParallel(context, [&](int i, const std::wstring& config, std::wstring& accountError) {
+        const auto& remote = i == 0 ? context.oneDrivePath : context.googlePath;
         if (remote == L"cloudnav-onedrive:" || remote == L"cloudnav-gdrive:") {
             std::string result;
-            if (!SharedHistoryCommand(context, {L"backend", L"cloudnav-identity", remote, L"--json"}, error, &result)) return false;
-            const auto identity = SyncJson::parse(result).get<std::string>();
-            if (identity.empty()) { error = L"Cloud account identity is missing."; return false; }
-            roots += identity + "\n";
-        } else roots += std::filesystem::path(remote).generic_u8string() + "\n";
-    }
-    context.historyBinding = SyncDigest(roots);
+            if (!SharedHistoryCommand(context, {L"backend", L"cloudnav-identity", remote, L"--json"}, accountError, &result, nullptr, config)) return false;
+            const auto identity = SyncJson::parse(result);
+            roots[i] = identity.at("identity").get<std::string>();
+            rootIds[i] = Utf8ToWide(identity.at("rootId").get<std::string>());
+            if (roots[i].empty() || rootIds[i].empty()) { accountError = L"Cloud account identity is missing."; return false; }
+        } else roots[i] = std::filesystem::path(remote).generic_u8string();
+        return true;
+    }, error)) return false;
+    context.cloudRootIds[0] = rootIds[0]; context.cloudRootIds[1] = rootIds[1];
+    context.historyBinding = SyncDigest(roots[0] + "\n" + roots[1] + "\n");
     return true;
 }
 
 bool RefreshSharedHistory(DialogContext& context, SyncAnalysis& analysis, std::wstring& error) {
     std::string documents[2];
     bool missing[2] = {};
-    for (int i = 0; i < 2; ++i) {
+    if (!ReadAccountsInParallel(context, [&](int i, const std::wstring& config, std::wstring& accountError) {
         DWORD code = 0;
-        if (!SharedHistoryCommand(context, {L"cat", SharedHistoryPath(context, i == 0)}, error, &documents[i], &code)) {
+        const auto& remote = i == 0 ? context.oneDrivePath : context.googlePath;
+        const bool cloud = !context.cloudRootIds[i].empty();
+        const auto path = SharedHistoryPath(context, i == 0);
+        const std::vector<std::wstring> command = cloud
+            ? std::vector<std::wstring>{L"backend", L"cloudnav-history", remote, path.substr(remote.size()), L"--json"}
+            : std::vector<std::wstring>{L"cat", path};
+        if (!SharedHistoryCommand(context, command, accountError, &documents[i], &code, config)) {
             if (code != 3 && code != 4) return false; // Not-found is distinct from unavailable.
             missing[i] = true;
-            documents[i].clear(); error.clear();
-        }
-    }
+            documents[i].clear(); accountError.clear();
+        } else if (cloud) documents[i] = SyncJson::parse(documents[i]).get<std::string>();
+        return true;
+    }, error)) return false;
     analysis.historyBinding = context.historyBinding;
     analysis.sharedDocument = SyncJson::array({documents[0], documents[1]}).dump();
     LoadCurrentBaseline(context, analysis);
@@ -728,14 +761,16 @@ bool ReleaseCloudLock(DialogContext& context, std::wstring& error) {
     context.listingFailed = false;
     bool ok = false;
     if (context.oneDrivePath == L"cloudnav-onedrive:") {
-        ok = SharedHistoryCommand(context, {L"backend", L"cloudnav-unlock", context.oneDrivePath, context.cloudLockId}, error);
+        std::vector<std::wstring> command{L"backend", L"cloudnav-unlock", context.oneDrivePath, context.cloudLockId};
+        if (!context.cloudLockParentId.empty()) command.push_back(context.cloudLockParentId);
+        ok = SharedHistoryCommand(context, command, error);
     } else {
         std::error_code ec;
         std::filesystem::remove(std::filesystem::path(context.oneDrivePath) / L".CloudNav-history/.sync/active", ec);
         ok = !ec;
     }
     context.cancelRequested = cancelled;
-    if (ok) { DeleteFileW((SyncStatePath(context) + L".lock").c_str()); context.cloudLockId.clear(); }
+    if (ok) { DeleteFileW((SyncStatePath(context) + L".lock").c_str()); context.cloudLockId.clear(); context.cloudLockParentId.clear(); }
     return ok;
 }
 
@@ -745,6 +780,7 @@ bool AcquireCloudLock(DialogContext& context, std::wstring& error) {
     // The local mutex and kill-on-close process job establish that this PC's previous writer has stopped.
     if (previous.is_object() && previous.value("binding", "") == context.historyBinding) {
         context.cloudLockId = Utf8ToWide(previous.at("id").get<std::string>());
+        context.cloudLockParentId = Utf8ToWide(previous.value("parentId", ""));
         if (!ReleaseCloudLock(context, error)) return false;
     }
     if (context.oneDrivePath == L"cloudnav-onedrive:") {
@@ -753,14 +789,17 @@ bool AcquireCloudLock(DialogContext& context, std::wstring& error) {
             error = L"Another PC may be syncing these accounts, or its cloud lock needs recovery. No files changed. " + error;
             return false;
         }
-        context.cloudLockId = Utf8ToWide(SyncJson::parse(id).get<std::string>());
+        const auto lock = SyncJson::parse(id);
+        context.cloudLockId = Utf8ToWide(lock.at("id").get<std::string>());
+        context.cloudLockParentId = Utf8ToWide(lock.at("parentId").get<std::string>());
     } else {
         const auto folder = std::filesystem::path(context.oneDrivePath) / L".CloudNav-history/.sync/active";
         std::filesystem::create_directories(folder.parent_path());
         if (!std::filesystem::create_directory(folder)) { error = L"Another sync is running."; return false; }
         context.cloudLockId = L"fixture-lock";
     }
-    const SyncJson saved = {{"binding", context.historyBinding}, {"id", std::filesystem::path(context.cloudLockId).generic_u8string()}};
+    const SyncJson saved = {{"binding", context.historyBinding}, {"id", WideToUtf8(context.cloudLockId)},
+        {"parentId", WideToUtf8(context.cloudLockParentId)}};
     if (!WriteEvidence(journal, saved.dump())) { error = L"Unable to save cloud lock recovery state."; return false; }
     return true;
 }
@@ -1932,6 +1971,12 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 context.configPath = oldConfig;
             }
             if (passed) {
+                step = "parallelHistoryReads";
+                context.peakChildProcesses = 0;
+                passed = RefreshSharedHistory(context, context.sync, error) && context.peakChildProcesses == 2 &&
+                    context.sync.hasBaseline && !context.sync.recovery;
+            }
+            if (passed) {
                 step = "partialCloudHistory";
                 const auto path = SharedHistoryPath(context, false);
                 const auto complete = ReadSyncFile(path);
@@ -1964,7 +2009,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.6\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"portableCloudHistory\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.7\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"portableCloudHistory\":true,\"parallelHistoryReads\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();

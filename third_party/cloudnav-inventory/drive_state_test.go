@@ -29,12 +29,12 @@ func TestCloudNavHistoryIdentity(t *testing.T) {
 		f := &Fs{svc: svc}
 		f.dirCache = dircache.New("", alias, f)
 		id, err := f.cloudNavIdentity(ctx)
-		if err != nil || id != "drive:stable-root:false:false:false:false:false" {
+		if err != nil || id.(map[string]string)["identity"] != "drive:stable-root:false:false:false:false:false" || id.(map[string]string)["rootId"] != "stable-root" {
 			t.Fatal("nonportable root identity", id, err)
 		}
 		f.opt.StarredOnly = true
 		selected, err := f.cloudNavIdentity(ctx)
-		if err != nil || selected == id {
+		if err != nil || selected.(map[string]string)["identity"] == id.(map[string]string)["identity"] {
 			t.Fatal("selected view reused whole-drive history")
 		}
 	}

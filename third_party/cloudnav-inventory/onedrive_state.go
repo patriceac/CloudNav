@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/rclone/rclone/fs"
+	inventory "github.com/rclone/rclone/lib/cloudnavinventory"
 )
 
 const cloudNavLockParent = ".CloudNav-history/.sync"
@@ -13,6 +14,8 @@ const cloudNavLockParent = ".CloudNav-history/.sync"
 // concurrent claimants cannot both succeed. Locks never expire under a writer.
 func (f *Fs) Command(ctx context.Context, name string, args []string, _ map[string]string) (any, error) {
 	switch name {
+	case "cloudnav-history":
+		return inventory.ReadHistory(ctx, f.NewObject, args)
 	case "cloudnav-identity":
 		root, err := f.dirCache.FindDir(ctx, "", false)
 		if err != nil {
@@ -22,7 +25,7 @@ func (f *Fs) Command(ctx context.Context, name string, args []string, _ map[stri
 		if err != nil {
 			return nil, err
 		}
-		return "onedrive:" + f.driveID + ":" + item.GetID(), nil
+		return map[string]string{"identity": "onedrive:" + f.driveID + ":" + item.GetID(), "rootId": item.GetID()}, nil
 	case "cloudnav-lock":
 		parent, err := f.dirCache.FindDir(ctx, cloudNavLockParent, true)
 		if err != nil {
@@ -32,10 +35,15 @@ func (f *Fs) Command(ctx context.Context, name string, args []string, _ map[stri
 		if err != nil {
 			return nil, fmt.Errorf("CloudNav cloud lock is held or could not be acquired: %w", err)
 		}
-		return id, nil
+		return map[string]string{"id": id, "parentId": parent}, nil
 	case "cloudnav-unlock":
-		if len(args) != 1 || args[0] == "" {
+		if len(args) < 1 || len(args) > 2 || args[0] == "" {
 			return nil, fmt.Errorf("exact lock ID required")
+		}
+		// Reuse the parent resolved when acquiring this exact lock. Recovery
+		// journals from older versions omit it and still resolve the path.
+		if len(args) == 2 && args[1] != "" {
+			f.dirCache.Put(cloudNavLockParent, args[1])
 		}
 		parent, err := f.dirCache.FindDir(ctx, cloudNavLockParent, false)
 		if err == fs.ErrorDirNotFound {

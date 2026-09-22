@@ -19,6 +19,7 @@ func TestCloudNavHistoryLock(t *testing.T) {
 	ctx, config := fs.AddConfig(context.Background())
 	var mu sync.Mutex
 	locked := false
+	lookups := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -41,6 +42,7 @@ func TestCloudNavHistoryLock(t *testing.T) {
 			w.WriteHeader(204)
 			return
 		case "GET":
+			lookups++
 			if !locked {
 				w.WriteHeader(404)
 				_, _ = w.Write([]byte(`{"error":{"code":"itemNotFound"}}`))
@@ -64,14 +66,32 @@ func TestCloudNavHistoryLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lock := owner.(map[string]string)
+	if lock["id"] != "d#lock" || lock["parentId"] != "d#parent" {
+		t.Fatal("lock did not retain its resolved IDs", owner)
+	}
 	if _, err = b.Command(ctx, "cloudnav-lock", nil, nil); err == nil {
 		t.Fatal("second writer acquired lock")
 	}
 	if _, err = b.Command(ctx, "cloudnav-unlock", []string{"other-id"}, nil); err == nil || !locked {
 		t.Fatal("wrong owner released lock")
 	}
-	if _, err = a.Command(ctx, "cloudnav-unlock", []string{owner.(string)}, nil); err != nil || locked {
+	// A new process has no directory cache. Supplying the saved parent must
+	// need only the live ownership lookup, and must still reject a wrong ID.
+	c := newFs()
+	c.dirCache = dircache.New("", "d#root", c)
+	if err := c.dirCache.FindRoot(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	before := lookups
+	if _, err = c.Command(ctx, "cloudnav-unlock", []string{"other-id", lock["parentId"]}, nil); err == nil || !locked {
+		t.Fatal("cached parent bypassed ownership check")
+	}
+	if _, err = c.Command(ctx, "cloudnav-unlock", []string{lock["id"], lock["parentId"]}, nil); err != nil || locked {
 		t.Fatal("owner could not release", err)
+	}
+	if lookups-before != 2 {
+		t.Fatal("unlock repeated parent path lookups", lookups-before)
 	}
 	if _, err = b.Command(ctx, "cloudnav-lock", nil, nil); err != nil {
 		t.Fatal("next writer could not acquire", err)

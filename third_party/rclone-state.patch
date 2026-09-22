@@ -1,5 +1,6 @@
 --- a/backend/drive/drive.go
 +++ b/backend/drive/drive.go
-@@ -4048,1 +4048,2 @@
+@@ -4048,1 +4048,3 @@
  func (f *Fs) Command(ctx context.Context, name string, arg []string, opt map[string]string) (out any, err error) {
 +	if name == "cloudnav-identity" { return f.cloudNavIdentity(ctx) }
++	if name == "cloudnav-history" { return f.cloudNavHistory(ctx, arg) }
