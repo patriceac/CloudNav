@@ -1377,7 +1377,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 step = "inventoryReadinessWithoutProbes";
                 const std::string config = "# root-failure\n[cloudnav-onedrive]\ntype=onedrive\ndrive_id=fixture\ndrive_type=personal\n"
                     "token={\"access_token\":\"SYNTHETIC\"}\n[cloudnav-gdrive]\ntype=drive\nclient_id=fixture\nclient_secret=fixture\n"
-                    "token={\"access_token\":\"SYNTHETIC\"}\n";
+                    "token={\"access_token\":\"SYNTHETIC\",\"refresh_token\":\"SYNTHETIC-REFRESH\"}\n";
                 SyncAnalysis inventory;
                 const auto starts = context.processStarts.load();
                 passed = WriteEvidence(context.configPath, config) && ReadCurrentSync(context, inventory, error) &&
@@ -1641,8 +1641,8 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 }
             }
         }
-    } catch (const std::exception&) {
-        passed = false;
+    } catch (const std::exception& e) {
+        passed = false; error = Utf8ToWide(e.what());
     }
     DeleteCriticalSection(&context.processLock);
     if (!EnsureParentDirectory(resultPath)) return 3;
