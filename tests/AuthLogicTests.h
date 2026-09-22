@@ -3,6 +3,16 @@
 
 inline void TestAuthLogic() {
     using namespace cloudnav;
+    const auto refreshed = [](const char* expiry, const char* token) {
+        return std::string("[cloudnav-onedrive]\ntoken=") + SyncJson{{"access_token", token}, {"expiry", expiry}}.dump() + "\n";
+    };
+    const auto older = refreshed("2026-09-23T11:00:00+02:00", "older");
+    const auto newer = refreshed("2026-09-23T09:01:00.123Z", "newer");
+    assert(MergeRefreshedAccountConfig(older, newer, "cloudnav-onedrive") == newer);
+    assert(MergeRefreshedAccountConfig(newer, older, "cloudnav-onedrive") == newer);
+    assert(MergeRefreshedAccountConfig(newer, refreshed("invalid", "bad"), "cloudnav-onedrive") == newer);
+    assert(MergeRefreshedAccountConfig(newer, "[cloudnav-onedrive]\ntoken={}\n", "cloudnav-onedrive") == newer);
+    assert(MergeRefreshedAccountConfig(newer + "[other]\nkeep=yes\n", older, "cloudnav-onedrive") == newer + "[other]\nkeep=yes\n");
     assert(AuthFailureDetails("panic: runtime error\nSENSITIVE-TOKEN\ngithub.com/rclone/rclone/lib/oauthutil.ConfigOAuth(0x123)") ==
         L"The bundled rclone engine crashed during account setup. Component: lib/oauthutil.ConfigOAuth.");
     assert(AuthFailureDetails("secret=private").empty());

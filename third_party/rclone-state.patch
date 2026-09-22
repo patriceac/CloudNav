@@ -1,5 +1,8 @@
 --- a/backend/drive/drive.go
 +++ b/backend/drive/drive.go
+@@ -76,1 +76,1 @@
+-	partialFields    = "id,name,size,md5Checksum,sha1Checksum,sha256Checksum,trashed,explicitlyTrashed,modifiedTime,createdTime,mimeType,parents,webViewLink,shortcutDetails,exportLinks,resourceKey"
++	partialFields    = "id,name,size,md5Checksum,sha1Checksum,sha256Checksum,trashed,explicitlyTrashed,modifiedTime,createdTime,mimeType,parents,webViewLink,shortcutDetails,exportLinks,resourceKey,version"
 @@ -4048,1 +4048,3 @@
  func (f *Fs) Command(ctx context.Context, name string, arg []string, opt map[string]string) (out any, err error) {
 +	if name == "cloudnav-identity" { return f.cloudNavIdentity(ctx) }

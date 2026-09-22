@@ -57,7 +57,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'OAuth callback regression test failed.' }
         & $go test ./lib/cloudnavinventory ./backend/onedrive ./backend/drive -run '^TestCloudNav' -count=1
         if ($LASTEXITCODE -ne 0) { throw 'Incremental inventory regression tests failed.' }
-        & $go build -trimpath -buildvcs=false -ldflags '-s -w -X github.com/rclone/rclone/fs.Version=v1.75.0-cloudnav.7' -o $OutputPath .
+        & $go build -trimpath -buildvcs=false -ldflags '-s -w -X github.com/rclone/rclone/fs.Version=v1.75.0-cloudnav.8' -o $OutputPath .
         if ($LASTEXITCODE -ne 0) { throw 'Patched rclone build failed.' }
     } finally { Pop-Location }
 } finally {

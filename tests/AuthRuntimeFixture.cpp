@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include "../src/auth_logic.h"
@@ -12,6 +13,43 @@ int wmain(int argc, wchar_t** argv) {
     std::ifstream input(config, std::ios::binary);
     const std::string original(std::istreambuf_iterator<char>(input), {});
     input.close();
+    const std::string marker = "# concurrent-analysis=";
+    const auto scenarioStart = original.find(marker);
+    if (scenarioStart != std::string::npos) {
+        const auto start = scenarioStart + marker.size();
+        const auto scenario = original.substr(start, original.find('\n', start) - start);
+        const auto nonceStart = original.find("# concurrent-run=") + std::string("# concurrent-run=").size();
+        const auto nonce = original.substr(nonceStart, original.find('\n', nonceStart) - nonceStart);
+        const bool inventory = argc > 2 && std::wstring(argv[1]) == L"lsjson";
+        const bool history = argc > 3 && std::wstring(argv[1]) == L"backend" && std::wstring(argv[2]) == L"cloudnav-history";
+        if (!inventory && !history) return 13;
+        const bool oneDrive = std::wstring(argv[inventory ? 2 : 3]) == L"cloudnav-onedrive:";
+        const auto index = (inventory ? 0 : 2) + (oneDrive ? 0 : 1);
+        const auto prefix = std::filesystem::path(config).parent_path() / ("concurrent-" + scenario + "-" + nonce + "-");
+        std::ofstream(prefix.wstring() + std::to_wstring(index)).put('1');
+        const auto deadline = GetTickCount64() + 5000;
+        for (;;) {
+            bool all = true;
+            for (int i = 0; i < 4; ++i) all &= std::filesystem::exists(prefix.wstring() + std::to_wstring(i));
+            if (all) break;
+            if (GetTickCount64() > deadline) return 14; // Serialized reads cannot pass this barrier.
+            Sleep(10);
+        }
+        if (scenario == "cancel") { Sleep(30000); return 15; }
+        if (scenario == "history-failure" && index == 2) { Sleep(100); return 9; }
+        const std::string remote = oneDrive ? "cloudnav-onedrive" : "cloudnav-gdrive";
+        auto fields = cloudnav::AuthFields(original, remote);
+        auto token = cloudnav::SyncJson::parse(fields["token"]);
+        token["access_token"] = inventory ? "SYNTHETIC-EARLIER" : "SYNTHETIC-LATER";
+        token["expiry"] = inventory ? "2026-09-23T10:01:00Z" : "2026-09-23T10:02:00Z";
+        fields["token"] = token.dump();
+        if (scenario == "account-change" && index == 0) fields["drive_id"] = "different-drive";
+        std::string section = "[" + remote + "]\n";
+        for (const auto& field : fields) section += field.first + "=" + field.second + "\n";
+        std::ofstream(config, std::ios::binary | std::ios::trunc) << cloudnav::MergeSyncAccountConfig(original, section, remote);
+        std::cout << (inventory ? "[]" : "\"{}\"");
+        return 0;
+    }
     if (argc > 1 && std::wstring(argv[1]) == L"lsd") return original.find("root-failure") != std::string::npos ? 9 : 0;
     if (argc > 1 && std::wstring(argv[1]) == L"lsjson") {
         std::cout << (original.find("listing-failure") != std::string::npos ? "[invalid" : "[]");

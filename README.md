@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.12
+# CloudNav 1.4.13
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -10,7 +10,7 @@ CloudNav is a native, portable Windows 11 utility that brings together two setti
 
 One standalone `.exe`, with no installer or additional application runtime.
 
-Version 1.4.12 checks account identities and reads shared sync histories in parallel, reuses validated cloud root and lock-parent IDs, and opens history files directly from those roots. Version 1.4.11 adds persistent OneDrive delta feeds for shared folders and keeps both providers' completed counts visible while checking sync history.
+Version 1.4.13 reads inventories and shared sync histories concurrently, reuses unchanged history after checking its live cloud version, and refreshes up to three independent OneDrive shared-folder delta feeds at once. Failed or cancelled reads cannot produce a complete analysis or commit a partial OneDrive catalog. Version 1.4.12 reduced identity and lock overhead; version 1.4.11 added persistent delta feeds for shared folders.
 
 Version 1.4.6 opens the matching OneDrive backup dialog when a personal-folder change needs it. The user stops the selected backups, then clicks Continue setup in CloudNav to apply the saved locations. Redirect only never reads, compares, copies, or downloads personal file contents. The title bar displays the running version.
 
@@ -79,7 +79,7 @@ An exclusive OneDrive metadata-folder lock prevents overlapping CloudNav operati
 
 Comparison prefers a shared checksum when available; otherwise it uses size and UTC modification time at second precision. OneDrive and Google Drive do not always expose a common hash. Equality is therefore not a promise of a downloaded byte-for-byte comparison. When Google Drive contains several files at the same path, CloudNav lists that path as ignored and skips every ambiguous object while continuing with the rest of the plan; rename those objects to unique names to include them. Files inside duplicate Google Drive folder paths are skipped for the same reason. Case/Unicode collisions across accounts, unsupported paths, and unreadable inventories still block execution.
 
-CloudNav embeds rclone **1.75.0-cloudnav.7**, built from pinned upstream 1.75.0 sources with OAuth callback, incremental inventory and shared-history support, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. Google Drive uses CloudNav's dedicated installed-app OAuth credentials; they identify CloudNav but do not authenticate a user. Upgrades detect both implicit and explicitly configured rclone shared Google clients and require **Reconnect after upgrade**. Reconnect uses the packaged CloudNav client and a fresh sign-in for that user; valid intentional custom clients are retained. A failed connection leaves the previous configuration intact. Every user signs in separately and receives a per-user token in `%LOCALAPPDATA%\CloudNav`; tokens and migration state are never embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
+CloudNav embeds rclone **1.75.0-cloudnav.8**, built from pinned upstream 1.75.0 sources with OAuth callback, incremental inventory and shared-history support, so the distributed application remains one portable executable. The engine is extracted into the current user's local application-data directory and byte-verified before use. Google Drive uses CloudNav's dedicated installed-app OAuth credentials; they identify CloudNav but do not authenticate a user. Upgrades detect both implicit and explicitly configured rclone shared Google clients and require **Reconnect after upgrade**. Reconnect uses the packaged CloudNav client and a fresh sign-in for that user; valid intentional custom clients are retained. A failed connection leaves the previous configuration intact. Every user signs in separately and receives a per-user token in `%LOCALAPPDATA%\CloudNav`; tokens and migration state are never embedded. rclone is redistributed under the MIT License; see [`third_party/rclone-LICENSE.txt`](third_party/rclone-LICENSE.txt).
 
 If Windows reserves rclone's usual callback port 53682, Google Drive and OneDrive sign-in fall back to an available port on `127.0.0.1`. The same callback URI is used for authorization and token exchange; state validation remains enabled. Other providers retain their registered callback behavior. This follows the loopback redirect rules documented by [Google](https://developers.google.com/identity/protocols/oauth2/native-app) and [Microsoft](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url#localhost-exceptions). The reproducible engine build recipe, patch, and regression test are in `third_party/Build-Rclone.ps1`, `third_party/rclone-cloudnav.patch`, and `third_party/rclone-cloudnav_test.go`. This Windows engine uses a non-CGO build; CloudNav does not use rclone's optional FUSE mount commands.
 

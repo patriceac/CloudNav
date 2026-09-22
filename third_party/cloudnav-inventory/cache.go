@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -152,6 +153,13 @@ type Progress struct {
 	LastPageMS int64  `json:"lastPageMs"`
 	name       string
 	ctx        context.Context
+	mu         sync.Mutex
+}
+
+func (p *Progress) Full() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Mode = "full" // Keep full visible if any independent feed needs rebuilding.
 }
 
 func NewProgress(ctx context.Context, name, mode string) *Progress {
@@ -161,6 +169,8 @@ func NewProgress(ctx context.Context, name, mode string) *Progress {
 }
 
 func (p *Progress) Page(items int, started time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.Pages++
 	p.Items += items
 	p.LastPageMS = time.Since(started).Milliseconds()

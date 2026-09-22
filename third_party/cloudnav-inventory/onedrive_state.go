@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rclone/rclone/backend/onedrive/api"
 	"github.com/rclone/rclone/fs"
 	inventory "github.com/rclone/rclone/lib/cloudnavinventory"
 )
@@ -15,7 +16,25 @@ const cloudNavLockParent = ".CloudNav-history/.sync"
 func (f *Fs) Command(ctx context.Context, name string, args []string, _ map[string]string) (any, error) {
 	switch name {
 	case "cloudnav-history":
-		return inventory.ReadHistory(ctx, f.NewObject, args)
+		root, err := f.dirCache.FindDir(ctx, "", false)
+		if err != nil {
+			return nil, err
+		}
+		return inventory.ReadHistory(ctx, func(ctx context.Context, remote string) (fs.Object, string, error) {
+			info, _, err := f.readMetaDataForPath(ctx, f.rootSlash()+remote)
+			if err != nil {
+				if apiErr, ok := err.(*api.Error); ok && apiErr.ErrorInfo.Code == "itemNotFound" {
+					err = fs.ErrorObjectNotFound
+				}
+				return nil, "", err
+			}
+			object, err := f.newObjectWithInfo(ctx, remote, info)
+			version := ""
+			if info.GetID() != "" && info.ETag != "" {
+				version = info.GetID() + ":" + info.ETag
+			}
+			return object, version, err
+		}, "onedrive:"+f.driveID+":"+root, args)
 	case "cloudnav-identity":
 		root, err := f.dirCache.FindDir(ctx, "", false)
 		if err != nil {

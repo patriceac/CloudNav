@@ -198,7 +198,7 @@ bool ResourceMatchesFile(HINSTANCE instance, const std::wstring& path) {
 
 bool ExtractRclone(HINSTANCE instance, std::wstring& path, std::wstring& error) {
     const std::wstring root = LocalAppDataPath() + L"\\CloudNav\\Runtime";
-    path = root + L"\\rclone-v1.75.0-cloudnav.7.exe";
+    path = root + L"\\rclone-v1.75.0-cloudnav.8.exe";
     if (ResourceMatchesFile(instance, path)) return true;
     HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(IDR_RCLONE_EXE), RT_RCDATA);
     if (!resource) { error = L"The embedded rclone resource was not found."; return false; }
@@ -253,10 +253,12 @@ std::string ReadSyncFile(const std::wstring& path);
 
 void PostHistoryProgress(DialogContext& context, const wchar_t* title) {
     if (!context.dialog) return;
+    EnterCriticalSection(&context.processLock);
     auto* update = new ProgressUpdate{-1, MigrationStage::History,
         context.listingStatus[0].empty() ? L"OneDrive — waiting for inventory" : context.listingStatus[0],
         context.listingStatus[1].empty() ? L"Google Drive — waiting for inventory" : context.listingStatus[1], title};
     if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
+    LeaveCriticalSection(&context.processLock);
 }
 
 bool RunProcess(DialogContext& context, const std::vector<std::wstring>& arguments,
@@ -550,19 +552,20 @@ bool ConnectAccount(DialogContext& context, bool oneDrive, std::wstring& error) 
 }
 
 template<class ReadAccount>
-bool ReadAccountsInParallel(DialogContext& context, ReadAccount readAccount, std::wstring& error) {
+bool ReadAccountsInParallel(DialogContext& context, ReadAccount readAccount, std::wstring& error, int count = 2) {
     const auto binding = SyncBinding(context);
     const auto originalConfig = ReadSyncFile(context.configPath);
     const auto configPrefix = context.configPath + L".parallel-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
     struct ListingConfigs {
-        std::wstring paths[2];
+        std::vector<std::wstring> paths;
         ~ListingConfigs() { for (const auto& path : paths) DeleteFileW(path.c_str()); }
-    } configs{{configPrefix + L"-onedrive.conf", configPrefix + L"-google.conf"}};
+    } configs;
+    for (int i = 0; i < count; ++i) configs.paths.push_back(configPrefix + L"-" + std::to_wstring(i) + L".conf");
     for (const auto& path : configs.paths) if (!WriteEvidence(path, originalConfig)) {
         error = L"Unable to prepare account listing configuration."; return false;
     }
     context.listingFailed = false;
-    std::wstring errors[2];
+    std::vector<std::wstring> errors(count);
     const auto read = [&](int i) {
         bool ok = false;
         try { ok = readAccount(i, configs.paths[i], errors[i]); }
@@ -570,35 +573,49 @@ bool ReadAccountsInParallel(DialogContext& context, ReadAccount readAccount, std
         if (!ok) context.listingFailed = true;
         return ok;
     };
-    auto oneDrive = std::async(std::launch::async, read, 0);
-    const bool googleOk = read(1), oneDriveOk = oneDrive.get();
+    std::vector<std::future<bool>> reads;
+    for (int i = 0; i < count; ++i) reads.push_back(std::async(std::launch::async, read, i));
+    bool success = true;
+    for (int i = 0; i < count; ++i) {
+        if (i == 2 && count == 4 && (reads[2].wait_for(std::chrono::seconds(0)) != std::future_status::ready ||
+            reads[3].wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+            PostHistoryProgress(context, L"Reading shared sync history…");
+        if (!reads[i].get()) success = false;
+    }
     // Each child can refresh its own OAuth token without racing the other.
-    // Merge only its own section after both children have stopped.
+    // Merge only its own section after all children have stopped.
     if (binding != SyncBinding(context)) { error = L"The accounts changed during analysis. Analyze again."; return false; }
     auto mergedConfig = ReadSyncFile(context.configPath);
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < count; ++i) {
         const auto updated = ReadSyncFile(configs.paths[i]);
         if (SyncBindingMaterial(updated) != SyncBindingMaterial(originalConfig)) {
             error = L"Account configuration changed during analysis. Analyze again."; return false;
         }
-        const std::string remote = i == 0 ? "cloudnav-onedrive" : "cloudnav-gdrive";
+        const std::string remote = i % 2 == 0 ? "cloudnav-onedrive" : "cloudnav-gdrive";
         const auto from = SyncConfigSection(updated, remote), old = SyncConfigSection(originalConfig, remote);
         if (from.first != std::string::npos && old.first != std::string::npos &&
             updated.substr(from.first, from.second) != originalConfig.substr(old.first, old.second))
-            mergedConfig = MergeSyncAccountConfig(mergedConfig, updated, remote);
+            mergedConfig = MergeRefreshedAccountConfig(mergedConfig, updated, remote);
     }
     if (mergedConfig != ReadSyncFile(context.configPath) && !WriteEvidence(context.configPath, mergedConfig)) {
         error = L"Unable to save refreshed account connections."; return false;
     }
-    if (!oneDriveOk || !googleOk) {
-        error = !errors[0].empty() ? L"OneDrive: " + errors[0] : L"Google Drive: " + errors[1];
+    if (!success) {
+        for (int i = 0; i < count; ++i) if (!errors[i].empty()) {
+            error = std::wstring(i % 2 == 0 ? L"OneDrive: " : L"Google Drive: ") + errors[i]; break;
+        }
         return false;
     }
     return !context.cancelRequested;
 }
 
+struct SharedHistoryRead { std::string documents[2]; bool missing[2] = {}; };
+bool ReadSharedHistoryAccount(DialogContext& context, int i, const std::wstring& config,
+    SharedHistoryRead& history, std::wstring& error);
+void ApplySharedHistory(DialogContext& context, SyncAnalysis& analysis, const SharedHistoryRead& history);
+
 bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstring& error,
-    MigrationStage stage = MigrationStage::Analyzing) {
+    MigrationStage stage = MigrationStage::Analyzing, bool withHistory = false) {
     analysis.binding = SyncBinding(context);
     analysis.complete = false;
     const auto originalConfig = ReadSyncFile(context.configPath);
@@ -610,7 +627,9 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
     context.parallelListing = true;
     context.listingStatus[0] = SyncListingProgress(true, 0, 0);
     context.listingStatus[1] = SyncListingProgress(false, 0, 0);
+    SharedHistoryRead history;
     const auto readAccount = [&](int i, const std::wstring& config, std::wstring& accountError) {
+        if (i >= 2) return ReadSharedHistoryAccount(context, i - 2, config, history, accountError);
         const bool oneDrive = i == 0;
         try {
         std::string output, parseError;
@@ -649,7 +668,7 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
     };
     bool success = false;
     try {
-        success = ReadAccountsInParallel(context, readAccount, error);
+        success = ReadAccountsInParallel(context, readAccount, error, withHistory ? 4 : 2);
     } catch (...) {
         context.parallelListing = false;
         throw;
@@ -657,6 +676,7 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
     context.parallelListing = false;
     if (!success) return false;
     if (analysis.binding != SyncBinding(context)) { error = L"The accounts changed during analysis. Analyze again."; return false; }
+    if (withHistory) ApplySharedHistory(context, analysis, history);
     analysis.complete = !context.cancelRequested;
     return analysis.complete;
 }
@@ -710,32 +730,42 @@ bool PrepareSharedHistory(DialogContext& context, std::wstring& error) {
     return true;
 }
 
-bool RefreshSharedHistory(DialogContext& context, SyncAnalysis& analysis, std::wstring& error) {
-    std::string documents[2];
-    bool missing[2] = {};
-    if (!ReadAccountsInParallel(context, [&](int i, const std::wstring& config, std::wstring& accountError) {
-        DWORD code = 0;
-        const auto& remote = i == 0 ? context.oneDrivePath : context.googlePath;
-        const bool cloud = !context.cloudRootIds[i].empty();
-        const auto path = SharedHistoryPath(context, i == 0);
-        const std::vector<std::wstring> command = cloud
-            ? std::vector<std::wstring>{L"backend", L"cloudnav-history", remote, path.substr(remote.size()), L"--json"}
-            : std::vector<std::wstring>{L"cat", path};
-        if (!SharedHistoryCommand(context, command, accountError, &documents[i], &code, config)) {
-            if (code != 3 && code != 4) return false; // Not-found is distinct from unavailable.
-            missing[i] = true;
-            documents[i].clear(); accountError.clear();
-        } else if (cloud) documents[i] = SyncJson::parse(documents[i]).get<std::string>();
-        return true;
-    }, error)) return false;
+bool ReadSharedHistoryAccount(DialogContext& context, int i, const std::wstring& config,
+    SharedHistoryRead& history, std::wstring& accountError) {
+    DWORD code = 0;
+    const auto& remote = i == 0 ? context.oneDrivePath : context.googlePath;
+    const bool cloud = !context.cloudRootIds[i].empty();
+    const auto path = SharedHistoryPath(context, i == 0);
+    const auto cache = context.configPath + L".history-" + Utf8ToWide(context.historyBinding) +
+        (i == 0 ? L".onedrive.json" : L".google.json");
+    const std::vector<std::wstring> command = cloud
+        ? std::vector<std::wstring>{L"backend", L"cloudnav-history", remote, path.substr(remote.size()), cache, L"--json"}
+        : std::vector<std::wstring>{L"cat", path};
+    if (!SharedHistoryCommand(context, command, accountError, &history.documents[i], &code, config)) {
+        if (code != 3 && code != 4) return false; // Not-found is distinct from unavailable.
+        history.missing[i] = true;
+        history.documents[i].clear(); accountError.clear();
+    } else if (cloud) history.documents[i] = SyncJson::parse(history.documents[i]).get<std::string>();
+    return true;
+}
+
+void ApplySharedHistory(DialogContext& context, SyncAnalysis& analysis, const SharedHistoryRead& history) {
     analysis.historyBinding = context.historyBinding;
-    analysis.sharedDocument = SyncJson::array({documents[0], documents[1]}).dump();
+    analysis.sharedDocument = SyncJson::array({history.documents[0], history.documents[1]}).dump();
     LoadCurrentBaseline(context, analysis);
-    if (missing[0] && missing[1]) return true; // Upgrade an existing, locally validated baseline.
-    LoadSharedSyncState(documents[0], documents[1], context.historyBinding, analysis);
+    if (history.missing[0] && history.missing[1]) return; // Upgrade an existing, locally validated baseline.
+    LoadSharedSyncState(history.documents[0], history.documents[1], context.historyBinding, analysis);
     if (GetFileAttributesW((SyncStatePath(context) + L".pending").c_str()) != INVALID_FILE_ATTRIBUTES) {
         analysis.hasBaseline = false; analysis.recovery = true;
     }
+}
+
+bool RefreshSharedHistory(DialogContext& context, SyncAnalysis& analysis, std::wstring& error) {
+    SharedHistoryRead history;
+    if (!ReadAccountsInParallel(context, [&](int i, const std::wstring& config, std::wstring& accountError) {
+        return ReadSharedHistoryAccount(context, i, config, history, accountError);
+    }, error)) return false;
+    ApplySharedHistory(context, analysis, history);
     return true;
 }
 
@@ -952,7 +982,7 @@ int RunUnattendedSync(DialogContext& context, bool preview, bool publishHistory,
         }
         return 0;
     }
-    if (!ReadCurrentSync(context, context.sync, error) || !RefreshSharedHistory(context, context.sync, error)) return 1;
+    if (!ReadCurrentSync(context, context.sync, error, MigrationStage::Analyzing, true)) return 1;
     context.plan = context.sync.Plan(context.mode);
     if (!accessMarker.empty()) {
         const auto marker = std::filesystem::path(accessMarker).generic_u8string();
@@ -1057,7 +1087,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
         success = ConnectAccount(context, oneDrive, error);
     } else if (context.task == Task::Analyze) {
         success = PrepareSharedHistory(context, error) && AcquireCloudLock(context, error) &&
-            ReadCurrentSync(context, sync, error) && RefreshSharedHistory(context, sync, error);
+            ReadCurrentSync(context, sync, error, MigrationStage::Analyzing, true);
         plan = sync.Plan(context.mode);
         report = SyncReport(sync, plan);
     } else if (context.task == Task::Copy) {
@@ -1698,6 +1728,51 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 passed = passed && WriteEvidence(context.configPath, config + "# listing-failure\n") &&
                     !ReadCurrentSync(context, inventory, error) && !inventory.complete;
                 context.listingFailed = false;
+                if (passed) {
+                    step = "overlappingAnalysisReads";
+                    context.cloudRootIds[0] = L"fixture-od"; context.cloudRootIds[1] = L"fixture-gd";
+                    context.historyBinding = "fixture";
+                    const auto baselineBefore = ReadSyncFile(SyncStatePath(context));
+                    for (const auto* scenario : {"success", "account-change", "history-failure", "cancel"}) {
+                        const auto nonce = std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64());
+                        const auto original = std::string("# concurrent-analysis=") + scenario + "\n# concurrent-run=" + nonce + "\n" + config;
+                        passed = passed && WriteEvidence(context.configPath, original);
+                        SyncAnalysis concurrent;
+                        context.peakChildProcesses = 0;
+                        auto result = std::async(std::launch::async, [&] {
+                            return ReadCurrentSync(context, concurrent, error, MigrationStage::Analyzing, true);
+                        });
+                        if (std::string(scenario) == "cancel") {
+                            bool all = false;
+                            const auto deadline = GetTickCount64() + 5000;
+                            while (!all && GetTickCount64() < deadline) {
+                                all = true;
+                                for (int i = 0; i < 4; ++i) all &= std::filesystem::exists(root + L"\\concurrent-cancel-" + Utf8ToWide(nonce) + L"-" + std::to_wstring(i));
+                                if (!all) Sleep(10);
+                            }
+                            CancelTask(context);
+                            passed = passed && all;
+                        }
+                        const bool success = result.get();
+                        const bool expected = std::string(scenario) == "success";
+                        passed = passed && success == expected && concurrent.complete == expected &&
+                            context.peakChildProcesses == 4 && context.childProcesses.empty() &&
+                            ReadSyncFile(SyncStatePath(context)) == baselineBefore;
+                        if (expected) {
+                            for (const auto* remote : {"cloudnav-onedrive", "cloudnav-gdrive"})
+                                passed = passed && AuthFields(ReadSyncFile(context.configPath), remote)["token"].find("SYNTHETIC-LATER") != std::string::npos;
+                        } else {
+                            passed = passed && concurrent.sharedDocument.empty() && !concurrent.hasBaseline;
+                            if (std::string(scenario) != "history-failure") passed = passed && ReadSyncFile(context.configPath) == original;
+                        }
+                        for (const auto& entry : std::filesystem::directory_iterator(root))
+                            if (entry.path().filename().wstring().find(L".parallel-") != std::wstring::npos) passed = false;
+                        context.cancelRequested = false; context.listingFailed = false;
+                        if (!passed) { step += std::string(":") + scenario; break; }
+                    }
+                    context.cloudRootIds[0].clear(); context.cloudRootIds[1].clear();
+                    context.historyBinding.clear();
+                }
             }
             context.runtimePath = runtime;
             error.clear();
@@ -1849,13 +1924,12 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
             const auto odBefore = snapshot(context.oneDrivePath), gdBefore = snapshot(context.googlePath);
             const auto analyzeSync = [&] {
                 context.sync = {};
-                if (!ReadCurrentSync(context, context.sync, error)) return false;
-                if (!RefreshSharedHistory(context, context.sync, error)) return false;
+                if (!ReadCurrentSync(context, context.sync, error, MigrationStage::Analyzing, true)) return false;
                 context.plan = context.sync.Plan(context.mode);
                 return true;
             };
             context.peakChildProcesses = 0;
-            passed = passed && analyzeSync() && context.peakChildProcesses == 2 &&
+            passed = passed && analyzeSync() && context.peakChildProcesses == 4 &&
                 snapshot(context.oneDrivePath) == odBefore && snapshot(context.googlePath) == gdBefore;
             if (passed) {
                 step = "reverseSyncCopy";
@@ -2009,7 +2083,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.7\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"portableCloudHistory\":true,\"parallelHistoryReads\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.8\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"portableCloudHistory\":true,\"parallelHistoryReads\":true,\"overlappingAnalysisReads\":true,\"cancelAllAnalysisReads\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();

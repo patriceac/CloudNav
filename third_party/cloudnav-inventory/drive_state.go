@@ -4,11 +4,30 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rclone/rclone/fs"
 	inventory "github.com/rclone/rclone/lib/cloudnavinventory"
 )
 
 func (f *Fs) cloudNavHistory(ctx context.Context, args []string) (any, error) {
-	return inventory.ReadHistory(ctx, f.NewObject, args)
+	root, err := f.dirCache.FindDir(ctx, "", false)
+	if err != nil {
+		return nil, err
+	}
+	return inventory.ReadHistory(ctx, func(ctx context.Context, remote string) (fs.Object, string, error) {
+		info, extension, exportName, exportMimeType, isDocument, err := f.getRemoteInfoWithExport(ctx, remote)
+		if err != nil {
+			return nil, "", err
+		}
+		object, err := f.newObjectWithExportInfo(ctx, remote, info, extension, exportName, exportMimeType, isDocument)
+		if err == nil && object == nil {
+			err = fs.ErrorObjectNotFound
+		}
+		version := ""
+		if info.Id != "" && info.Version > 0 {
+			version = fmt.Sprintf("%s:%d", info.Id, info.Version)
+		}
+		return object, version, err
+	}, "drive:"+root, args)
 }
 
 func (f *Fs) cloudNavIdentity(ctx context.Context) (any, error) {

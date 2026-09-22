@@ -58,6 +58,18 @@ inline std::map<std::string, std::string> AuthFields(const std::string& config, 
     return fields;
 }
 
+inline std::string MergeRefreshedAccountConfig(const std::string& current, const std::string& updated, const std::string& remote) {
+    const auto expiry = [&](const std::string& config) {
+        const auto token = SyncJson::parse(AuthFields(config, remote)["token"], nullptr, false);
+        if (!token.is_object() || !token.contains("expiry") || !token["expiry"].is_string()) return std::string();
+        try { return CanonicalSyncTime(token["expiry"].get<std::string>()); }
+        catch (...) { return std::string(); }
+    };
+    // Two reads of one provider may both renew a token. Never replace the
+    // newer renewal with an older child's snapshot when joining them.
+    return expiry(updated) < expiry(current) ? current : MergeSyncAccountConfig(current, updated, remote);
+}
+
 inline bool AuthReady(const std::string& config, const std::string& remote, bool oneDrive) {
     auto fields = AuthFields(config, remote);
     if (fields["type"] != (oneDrive ? "onedrive" : "drive")) return false;

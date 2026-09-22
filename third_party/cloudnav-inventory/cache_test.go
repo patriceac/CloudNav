@@ -2,11 +2,58 @@ package cloudnavinventory
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 )
+
+func TestCloudNavConcurrentProgress(t *testing.T) {
+	p := NewProgress(context.Background(), filepath.Join(t.TempDir(), "inventory"), "changes")
+	var workers sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			p.Full()
+			for n := 0; n < 10; n++ {
+				p.Page(2, time.Now())
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() { workers.Wait(); close(done) }()
+	last := 0
+	for {
+		data, err := os.ReadFile(p.name)
+		var status struct {
+			Mode         string
+			Pages, Items int
+		}
+		// Windows can briefly deny a read during replacement. The application
+		// retains its previous display then; any readable document must be whole.
+		if err == nil && (json.Unmarshal(data, &status) != nil || status.Pages < last || status.Items != 2*status.Pages) {
+			t.Fatal("torn/nonmonotonic progress", string(data))
+		}
+		if err == nil {
+			last = status.Pages
+		}
+		select {
+		case <-done:
+			data, _ = os.ReadFile(p.name)
+			if json.Unmarshal(data, &status) != nil || status.Pages < last || status.Items != 2*status.Pages ||
+				p.Mode != "full" || p.Pages != 30 || p.Items != 60 {
+				t.Fatal("lost progress updates", string(data))
+			}
+			return
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
 
 func TestCloudNavAtomicCacheAndIdentity(t *testing.T) {
 	ctx := context.Background()

@@ -13,6 +13,7 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/list"
 	inventory "github.com/rclone/rclone/lib/cloudnavinventory"
+	"golang.org/x/sync/errgroup"
 )
 
 func (f *Fs) cloudNavList(ctx context.Context, dir string, callback fs.ListRCallback) error {
@@ -60,6 +61,46 @@ func (f *Fs) cloudNavList(ctx context.Context, dir string, callback fs.ListRCall
 		if err != nil {
 			return err
 		}
+		// Refresh independent, reachable targets together. Entry assembly and
+		// the final catalog commit remain serial; aliases share one request.
+		targets := make(map[string]*inventory.Snapshot[*api.Item])
+		for _, entry := range entries {
+			item := scope.Items[entry.ID]
+			if item.RemoteItem == nil || item.GetFolder() == nil {
+				continue
+			}
+			if item.RemoteItem.ID == "" || item.RemoteItem.ParentReference == nil || item.RemoteItem.ParentReference.DriveID == "" {
+				return errors.New("OneDrive shared item has no target identity")
+			}
+			target := item.GetID()
+			if _, done := state.Scopes[target]; done {
+				continue
+			}
+			if _, queued := targets[target]; queued {
+				continue
+			}
+			shared := cached[target]
+			if shared.Identity != target || shared.Items == nil {
+				shared = inventory.Snapshot[*api.Item]{Identity: target}
+			}
+			targets[target] = &shared
+		}
+		group, refreshCtx := errgroup.WithContext(ctx)
+		group.SetLimit(3)
+		for target, shared := range targets {
+			group.Go(func() error {
+				if err := f.cloudNavRefresh(refreshCtx, target, false, shared, progress); err != nil {
+					return fmt.Errorf("refresh OneDrive shared folder: %w", err)
+				}
+				return nil
+			})
+		}
+		if err := group.Wait(); err != nil {
+			return err
+		}
+		for target, shared := range targets {
+			state.Scopes[target] = *shared
+		}
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -94,18 +135,7 @@ func (f *Fs) cloudNavList(ctx context.Context, dir string, callback fs.ListRCall
 			}
 			if item.RemoteItem != nil && item.GetFolder() != nil {
 				target := item.GetID()
-				shared, refreshed := state.Scopes[target]
-				if !refreshed {
-					shared = cached[target]
-					if shared.Identity != target || shared.Items == nil {
-						shared = inventory.Snapshot[*api.Item]{Identity: target}
-					}
-					if err := f.cloudNavRefresh(ctx, target, false, &shared, progress); err != nil {
-						return fmt.Errorf("refresh OneDrive shared folder: %w", err)
-					}
-					state.Scopes[target] = shared
-				}
-				if err := emit(target, remotePath, shared); err != nil {
+				if err := emit(target, remotePath, state.Scopes[target]); err != nil {
 					return err
 				}
 			}
@@ -127,9 +157,8 @@ func (f *Fs) cloudNavRefresh(ctx context.Context, root string, main bool, state 
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		full := state.Cursor == ""
-		progress.Mode = "changes"
 		if full {
-			progress.Mode = "full"
+			progress.Full()
 			state.Items = make(map[string]*api.Item)
 		}
 		err := f.cloudNavDelta(ctx, root, main, state, progress)
