@@ -220,6 +220,13 @@ void Run(const std::wstring& executable) {
     Require(SendDlgItemMessageW(quick, IDC_MIGRATION_MODE, CB_GETCURSEL, 0, 0) == 2 &&
         !IsWindowEnabled(GetDlgItem(quick, IDC_MIGRATION_ANALYZE)) && Text(quick, IDCANCEL) == L"Cancel",
         "full sync did not start automatically in two-way mode");
+    Require(Wait([&] {
+        const HWND bar = GetDlgItem(quick, IDC_MIGRATION_PROGRESS);
+        return Text(quick, IDC_MIGRATION_PHASE).find(L"Analyzing differences — 40% (2 of 5 steps)") != std::wstring::npos &&
+            SendMessageW(bar, PBM_GETPOS, 0, 0) == 40 && (GetWindowLongPtrW(bar, GWL_STYLE) & PBS_MARQUEE) == 0;
+    }), "full sync analysis did not show completed steps");
+    Sleep(800); // Let the native progress-bar animation settle before visual evidence.
+    Capture(quick, L"ui-full-sync-analysis.png");
     Require(Wait([&] { return Text(quick, IDC_MIGRATION_PHASE) == L"Synchronization complete"; }),
         "full sync did not complete");
     Require(!IsWindowEnabled(GetDlgItem(quick, IDC_MIGRATION_CUTOVER)) && Text(quick, IDCANCEL) == L"Close",

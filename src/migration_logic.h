@@ -15,6 +15,16 @@ namespace cloudnav {
 enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, Copy, QuickSync };
 enum class MigrationStage { Preparing, Connecting, Analyzing, Copying, Verifying, History };
 
+inline unsigned AnalysisStepsCompleted(unsigned milestones) {
+    unsigned completed = 0;
+    for (unsigned bit = 1; bit < 1u << 5; bit <<= 1) if (milestones & bit) ++completed;
+    return completed;
+}
+
+inline int AnalysisProgressPercent(unsigned milestones) {
+    return static_cast<int>(AnalysisStepsCompleted(milestones) * 20);
+}
+
 inline std::vector<std::wstring> AuthenticationArguments(bool oneDrive, bool existing,
     const std::wstring& remote, const std::wstring& configPath,
     const std::wstring& googleClientId = {}, const std::wstring& googleClientSecret = {}) {

@@ -158,6 +158,11 @@ int wmain() {
     assert(std::wstring(cloudnav::MigrationStageTitle(cloudnav::MigrationStage::Verifying)).find(L"3 / 3") != std::wstring::npos);
     assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Copying)).find(L"engine") == std::wstring::npos);
     assert(std::wstring(cloudnav::MigrationStageDetails(cloudnav::MigrationStage::Verifying)).find(L"Independent") != std::wstring::npos);
+    assert(cloudnav::AnalysisProgressPercent(0) == 0);
+    assert(cloudnav::AnalysisProgressPercent(1u << 0) == 20);
+    assert(cloudnav::AnalysisProgressPercent((1u << 1) | (1u << 3)) == 40);
+    assert(cloudnav::AnalysisProgressPercent(0x1f) == 100);
+    assert(cloudnav::AnalysisProgressPercent(0x3f) == 100);
 
     double value = 0;
     assert(cloudnav::JsonNumber("{\"bytes\":524288,\"totalBytes\":1048576}", "bytes", value));
