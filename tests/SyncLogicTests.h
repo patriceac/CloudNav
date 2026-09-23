@@ -200,6 +200,11 @@ inline void RunSyncLogicTests() {
     assert(SyncBaselineUnchanged(unchanged));
     SyncAnalysis scheduled;
     scheduled.complete = scheduled.hasBaseline = true;
+    scheduled.oneDrive[".onedrive-gdrive-sync-access"] = original;
+    assert(!SyncAccessMarkerPresent(scheduled, ".onedrive-gdrive-sync-access"));
+    scheduled.google[".onedrive-gdrive-sync-access"] = original;
+    assert(SyncAccessMarkerPresent(scheduled, ".onedrive-gdrive-sync-access"));
+    assert(!SyncAccessMarkerPresent(scheduled, "other-marker"));
     for (int i = 0; i < 10; ++i) scheduled.oneDrive[std::to_string(i)] = original;
     assert(UnattendedSyncBlocker(scheduled, {{"0", '+', SyncAction::DeleteOneDrive}}, 10).empty());
     assert(!UnattendedSyncBlocker(scheduled, {{"0", '+', SyncAction::DeleteOneDrive}, {"1", '+', SyncAction::DeleteOneDrive}}, 10).empty());

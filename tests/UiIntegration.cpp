@@ -212,8 +212,28 @@ void Run(const std::wstring& executable) {
     Require(Text(app.main, 1001) == L"Google Drive — My Drive folder", "folder provider label is ambiguous");
     Require(Text(app.main, 1003).find(L"OneDrive") != std::wstring::npos, "account label omits OneDrive");
     Require(Text(app.main, 1004) == L"Google Drive — drive G:", "drive provider label is ambiguous");
-    Require(Text(app.main, 1010) == L"Transfer or sync files…", "cloud transfer entry point is mislabeled");
+    Require(Text(app.main, 1021) == L"Full sync now" && Text(app.main, 1010) == L"Detailed sync…",
+        "cloud sync actions are missing");
     Capture(app.main, L"ui-main.png");
+    Click(app.main, 1021);
+    HWND quick = Window(app.process.dwProcessId, CLOUDNAV_TITLE L" — cloud sync");
+    Require(SendDlgItemMessageW(quick, IDC_MIGRATION_MODE, CB_GETCURSEL, 0, 0) == 2 &&
+        !IsWindowEnabled(GetDlgItem(quick, IDC_MIGRATION_ANALYZE)) && Text(quick, IDCANCEL) == L"Cancel",
+        "full sync did not start automatically in two-way mode");
+    Require(Wait([&] { return Text(quick, IDC_MIGRATION_PHASE) == L"Synchronization complete"; }),
+        "full sync did not complete");
+    Require(!IsWindowEnabled(GetDlgItem(quick, IDC_MIGRATION_CUTOVER)) && Text(quick, IDCANCEL) == L"Close",
+        "full sync completion did not offer a safe close action");
+    Click(quick, IDCANCEL);
+    Require(Wait([&] { return Text(app.main, 1020) == L"Full sync complete."; }),
+        "home screen did not report full sync completion");
+    Click(app.main, 1010);
+    HWND detailed = Window(app.process.dwProcessId, CLOUDNAV_TITLE L" — cloud sync");
+    Require(IsWindowEnabled(GetDlgItem(detailed, IDC_MIGRATION_ANALYZE)) &&
+        Text(detailed, IDC_MIGRATION_PHASE) == L"1 / 2 — Analyze before copying",
+        "detailed sync did not open for manual choices");
+    Click(detailed, IDCANCEL);
+    Require(Wait([&] { return !IsWindow(detailed); }), "detailed sync did not close");
     SendDlgItemMessageW(app.main, 1001, BM_SETCHECK, BST_UNCHECKED, 0);
     Click(app.main, 1001);
     Require(Wait([&] { return IsWindowEnabled(GetDlgItem(app.main, 1006)) != FALSE; }), "visibility changes were not detected");

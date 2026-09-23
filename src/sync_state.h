@@ -57,4 +57,8 @@ inline std::string UnattendedSyncBlocker(const SyncAnalysis& analysis, const std
         return "Removal limit exceeded. Review the plan in CloudNav.";
     return {};
 }
+
+inline bool SyncAccessMarkerPresent(const SyncAnalysis& analysis, const std::string& marker) {
+    return analysis.oneDrive.count(marker) && analysis.google.count(marker);
+}
 } // namespace cloudnav

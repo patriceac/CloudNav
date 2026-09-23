@@ -41,6 +41,8 @@ namespace {
 
 constexpr wchar_t kOneDriveRemote[] = L"cloudnav-onedrive";
 constexpr wchar_t kGoogleRemote[] = L"cloudnav-gdrive";
+constexpr wchar_t kQuickSyncAccessMarker[] = L".onedrive-gdrive-sync-access";
+constexpr unsigned kQuickSyncMaxDeletePercent = 10;
 constexpr UINT WM_MIGRATION_PROGRESS = WM_APP + 41;
 constexpr UINT WM_MIGRATION_COMPLETE = WM_APP + 42;
 
@@ -84,12 +86,14 @@ struct CompletionUpdate {
     AnalysisReport report;
     SyncAnalysis sync;
     std::vector<SyncRow> plan;
+    int unattendedCode = -1;
 };
 
 struct DialogContext {
     HWND dialog = nullptr;
     HINSTANCE instance = nullptr;
     bool demoMode = false;
+    bool quickSync = false;
     bool running = false;
     bool closeRequested = false;
     bool analyzed = false;
@@ -989,7 +993,7 @@ int RunUnattendedSync(DialogContext& context, bool preview, bool publishHistory,
     context.plan = context.sync.Plan(context.mode);
     if (!accessMarker.empty()) {
         const auto marker = std::filesystem::path(accessMarker).generic_u8string();
-        if (!context.sync.oneDrive.count(marker) || !context.sync.google.count(marker)) {
+        if (!SyncAccessMarkerPresent(context.sync, marker)) {
             error = L"The scheduled sync access marker is missing from an account. No files changed."; return 3;
         }
     }
@@ -1001,6 +1005,7 @@ int RunUnattendedSync(DialogContext& context, bool preview, bool publishHistory,
 DWORD WINAPI WorkerProc(void* parameter) {
     auto& context = *static_cast<DialogContext*>(parameter);
     bool success = false;
+    int unattendedCode = -1;
     std::wstring error;
     AnalysisReport report;
     SyncAnalysis sync;
@@ -1015,7 +1020,7 @@ DWORD WINAPI WorkerProc(void* parameter) {
         success = false;
     } else if (context.demoMode) {
         const auto stage = context.task == Task::Analyze ? MigrationStage::Analyzing :
-            context.task == Task::Copy ? MigrationStage::Copying : MigrationStage::Connecting;
+            context.task == Task::Copy || context.task == Task::QuickSync ? MigrationStage::Copying : MigrationStage::Connecting;
         if (stage == MigrationStage::Connecting) {
             std::string answer;
             const SyncJson option = {{"Name", "config_driveid"}, {"Help", "Select the drive to connect. These are synthetic test accounts."},
@@ -1095,13 +1100,21 @@ DWORD WINAPI WorkerProc(void* parameter) {
         report = SyncReport(sync, plan);
     } else if (context.task == Task::Copy) {
         success = PrepareSharedHistory(context, error) && AcquireCloudLock(context, error) && ExecuteSyncPlan(context, error);
+    } else if (context.task == Task::QuickSync) {
+        unattendedCode = RunUnattendedSync(context, false, false, kQuickSyncAccessMarker,
+            kQuickSyncMaxDeletePercent, error);
+        success = unattendedCode == 0 && !context.cancelRequested;
+        sync = std::move(context.sync);
+        plan = std::move(context.plan);
+        if (sync.complete) report = SyncReport(sync, plan);
     }
     } catch (const std::exception& e) { success = false; error = Utf8ToWide(e.what()); }
     std::wstring unlockError;
     if (!ReleaseCloudLock(context, unlockError)) { success = false; error += L" Cloud lock release failed. " + unlockError; }
     if (locked) ReleaseMutex(mutex);
     if (mutex) CloseHandle(mutex);
-    auto* completion = new CompletionUpdate{context.task, success, context.cancelRequested.load(), error, std::move(report), std::move(sync), std::move(plan)};
+    auto* completion = new CompletionUpdate{context.task, success, context.cancelRequested.load(), error,
+        std::move(report), std::move(sync), std::move(plan), unattendedCode};
     if (!PostMessageW(context.dialog, WM_MIGRATION_COMPLETE, 0, reinterpret_cast<LPARAM>(completion))) delete completion;
     return 0;
 }
@@ -1113,9 +1126,9 @@ void RefreshButtons(DialogContext& context) {
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_COPY), !context.running && context.analyzed && !context.report.Count('!'));
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_MODE), !context.running);
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_COPY, context.mode == SyncMode::Bidirectional ? L"Sync" : L"Copy");
-    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_CUTOVER), !context.running && context.copied);
+    EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_CUTOVER), !context.running && context.copied && !context.quickSync);
     EnableWindow(GetDlgItem(context.dialog, IDC_MIGRATION_REPORT), !context.running && context.report.available);
-    const int primary = context.running ? IDCANCEL : context.copied ? IDC_MIGRATION_CUTOVER :
+    const int primary = context.running || (context.quickSync && context.copied) ? IDCANCEL : context.copied ? IDC_MIGRATION_CUTOVER :
         context.analyzed ? IDC_MIGRATION_COPY :
         IsWindowEnabled(GetDlgItem(context.dialog, IDC_MIGRATION_ANALYZE)) ? IDC_MIGRATION_ANALYZE : IDCANCEL;
     for (int id : {IDC_MIGRATION_ANALYZE, IDC_MIGRATION_COPY, IDC_MIGRATION_CUTOVER, IDCANCEL}) {
@@ -1171,6 +1184,7 @@ void SetMigrationProgress(DialogContext& context, int percent) {
 
 void StartTask(DialogContext& context, Task task) {
     if (context.running) return;
+    if (task != Task::QuickSync) context.quickSync = false;
     if (task != Task::Copy) { context.report = {}; context.sync = {}; context.plan.clear(); }
     const auto summary = (task == Task::Copy && context.report.available
         ? L"Before copy — " : std::wstring()) + context.report.Summary();
@@ -1178,7 +1192,7 @@ void StartTask(DialogContext& context, Task task) {
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_PLAN, CurrentPlanDetails(context).c_str());
     InvalidateMigrationValidation(task, context.analyzed, context.copied);
     if (task == Task::Analyze) context.sawAnalyzeProgress = false;
-    if (task == Task::Analyze || task == Task::Copy) {
+    if (task == Task::Analyze || task == Task::Copy || task == Task::QuickSync) {
         context.sawCopyProgress = false;
         context.sawVerifyProgress = false;
         context.progressConsistent = true;
@@ -1367,7 +1381,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         context->images.Load(context->instance);
         for (auto mode : {SyncMode::ToGoogle, SyncMode::ToOneDrive, SyncMode::Bidirectional})
             ComboBox_AddString(GetDlgItem(dialog, IDC_MIGRATION_MODE), SyncModeLabel(mode));
-        context->mode = LoadSyncMode(context->demoMode);
+        context->mode = context->quickSync ? SyncMode::Bidirectional : LoadSyncMode(context->demoMode);
         ComboBox_SetCurSel(GetDlgItem(dialog, IDC_MIGRATION_MODE), static_cast<int>(context->mode));
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETRANGE32, 0, 100);
         context->configPath = LocalAppDataPath() + L"\\CloudNav\\Migration\\rclone.conf";
@@ -1389,6 +1403,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         }
         SendDlgItemMessageW(dialog, IDC_MIGRATION_PHASE, WM_SETFONT, reinterpret_cast<WPARAM>(context->theme.bold), TRUE);
         RefreshPlan(*context);
+        if (context->quickSync) StartTask(*context, Task::QuickSync);
         return TRUE;
     }
     if (!context) return FALSE;
@@ -1497,7 +1512,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
             completedTask == Task::AuthenticateGoogle;
         if (context->worker) { CloseHandle(context->worker); context->worker = nullptr; }
         context->running = false;
-        if (update->task == Task::Analyze) {
+        if (update->task == Task::Analyze || update->task == Task::QuickSync) {
             context->sync = std::move(update->sync);
             context->plan = std::move(update->plan);
             context->report = std::move(update->report);
@@ -1539,10 +1554,21 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                 SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, context->mode == SyncMode::Bidirectional ?
                     L"100 % — cloud files checked after transfer, history saved" : L"100 % — copy complete with no errors reported");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"You can now set up Windows folders or close this window.");
+            } else if (update->task == Task::QuickSync) {
+                context->copied = true;
+                SetMigrationProgress(*context, 100);
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"Synchronization complete");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Full sync complete");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, L"The scheduled two-way sync settings completed successfully.");
+                SetDlgItemTextW(dialog, IDC_MIGRATION_PLAN,
+                    L"Access check passed · 10% deletion limit · both accounts synchronized.");
             }
         } else {
-            SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, update->cancelled ? L"Operation cancelled." : L"Operation interrupted.");
-            SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, L"Operation stopped — no transfer running");
+            const bool review = update->task == Task::QuickSync && update->unattendedCode == 3;
+            SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, update->cancelled ? L"Operation cancelled." :
+                review ? L"Sync needs review" : L"Operation interrupted.");
+            SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, review ? L"No files changed — review the plan before syncing" :
+                L"Operation stopped — no transfer running");
             SendDlgItemMessageW(dialog, IDC_MIGRATION_PROGRESS, PBM_SETSTATE, update->cancelled ? PBST_PAUSED : PBST_ERROR, 0);
             SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS,
                             update->cancelled ? L"Analyze again to resume. Files already copied and archives are kept." : update->message.c_str());
@@ -1556,6 +1582,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         RefreshButtons(*context);
         if (context->copied || context->analyzed)
             SendMessageW(dialog, WM_NEXTDLGCTL, reinterpret_cast<WPARAM>(GetDlgItem(dialog,
+                context->quickSync && context->copied ? IDCANCEL :
                 context->copied ? IDC_MIGRATION_CUTOVER : IDC_MIGRATION_COPY)), TRUE);
         if (context->analyzed && !context->copied)
             WriteMilestone(*context, L"analysis-ready.json", context->sawAnalyzeProgress && !context->indeterminate &&
@@ -1563,7 +1590,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         if (context->report.complete) WriteMilestone(*context, L"analysis-summary.json",
             ui::ControlText(dialog, IDC_MIGRATION_SUMMARY) == context->report.Summary() &&
             IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_REPORT)) != FALSE);
-        if (context->copied)
+        if (context->copied && !context->quickSync)
             WriteMilestone(*context, L"copied.json", LOWORD(SendMessageW(dialog, DM_GETDEFID, 0, 0)) == IDC_MIGRATION_CUTOVER);
         if (context->cancelRequested) {
             context->cancellationConsistent &= !context->copied &&
@@ -1581,11 +1608,12 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
 }  // namespace
 
 MigrationResult ShowMigrationDialog(HWND owner, HINSTANCE instance, bool demoMode,
-                                    const std::wstring& demoResultPath, CloudFolderHandoff* handoff) {
+                                    const std::wstring& demoResultPath, CloudFolderHandoff* handoff, bool quickSync) {
     if (handoff) *handoff = {};
     DialogContext context;
     context.instance = instance;
     context.demoMode = demoMode;
+    context.quickSync = quickSync;
     context.demoResultPath = demoResultPath;
     InitializeCriticalSection(&context.processLock);
     const INT_PTR result = DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_CLOUD_MIGRATION), owner,
@@ -1600,7 +1628,8 @@ MigrationResult ShowMigrationDialog(HWND owner, HINSTANCE instance, bool demoMod
         }
         catch (...) { handoff->copyCompleted = false; }
     }
-    return result == 2 ? MigrationResult::ConfigureFolders : MigrationResult::Closed;
+    return result == 2 ? MigrationResult::ConfigureFolders :
+        quickSync && context.copied ? MigrationResult::Synced : MigrationResult::Closed;
 }
 
 std::string CurrentCloudAccountBinding() {

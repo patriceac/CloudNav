@@ -12,7 +12,7 @@
 
 namespace cloudnav {
 
-enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, Copy };
+enum class MigrationTask { None, AuthenticateOneDrive, AuthenticateGoogle, Analyze, Copy, QuickSync };
 enum class MigrationStage { Preparing, Connecting, Analyzing, Copying, Verifying, History };
 
 inline std::vector<std::wstring> AuthenticationArguments(bool oneDrive, bool existing,

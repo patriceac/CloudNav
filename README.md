@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.14
+# CloudNav 1.4.15
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -10,7 +10,7 @@ CloudNav is a native, portable Windows 11 utility that brings together two setti
 
 One standalone `.exe`, with no installer or additional application runtime.
 
-Version 1.4.14 finishes a two-way sync after live delta and history checks when both catalogs still match their verified shared baseline. Unchanged runs skip history uploads and full verification listings. Changes, missing shared history, and recovery retain the complete synchronization path. Version 1.4.13 added concurrent inventory/history reads, history caching with live version checks, and parallel OneDrive shared-folder delta feeds.
+Version 1.4.15 adds **Full sync now** to the main window. It starts the same guarded two-way sync as the scheduled task and shows progress and cancellation; **Detailed sync…** opens the existing analysis and direction choices. Version 1.4.14 made unchanged scheduled runs skip history uploads and full verification listings after live delta and history checks.
 
 Version 1.4.6 opens the matching OneDrive backup dialog when a personal-folder change needs it. The user stops the selected backups, then clicks Continue setup in CloudNav to apply the saved locations. Redirect only never reads, compares, copies, or downloads personal file contents. The title bar displays the running version.
 
@@ -24,6 +24,7 @@ Version 1.4.6 opens the matching OneDrive backup dialog when a personal-folder c
 - disable OneDrive automatic startup or launch its uninstaller when no managed personal folder still depends on OneDrive;
 - install OneDrive or Google Drive through their official setup programs, and uninstall Google Drive with personal-folder checks;
 - analyze OneDrive and Google Drive together, then choose either one-way copy direction or a manual bidirectional sync without repeating the comparison;
+- start a guarded two-way sync from the main window or open detailed sync for manual choices;
 - preview per-file actions, preserve both conflicting versions, archive overwritten/deleted files, and recover interrupted transfers through a reviewed merge;
 - inspect complete current/proposed paths and selected folder changes before an action-specific final confirmation;
 - apply Explorer visibility independently, with the Apply button enabled only for pending changes;
@@ -74,6 +75,8 @@ Bidirectional completion requires another comparison and saves the new baseline 
 An exclusive OneDrive metadata-folder lock prevents overlapping CloudNav operations across PCs. Locks do not expire while a writer may still be active. The originating PC can recover its own interrupted run using its local lock journal; an unknown lock on another PC requires recovery there. Child transfer processes stop if CloudNav exits. External sync tools do not participate in this lock.
 
 `CloudNav.exe --sync` runs a windowless two-way sync using the current user's saved CloudNav accounts. It requires valid history and stops before changing files if conflicts need review or removals exceed 10% of either account. Options: `--preview` analyzes without transferring user files; `--max-delete-percent N` adjusts the guard; `--check-access filename` requires an existing marker on both accounts; `--publish-history` backs up an existing verified baseline without transferring user files. Results are written to `%LOCALAPPDATA%\CloudNav\Migration\scheduled-sync-result.json` (override with `--result path`). Exit codes are 0 for success, 1 for an error, 2 for a skipped overlapping local run, and 3 for required review. Authentication problems never open a sign-in window during a scheduled run.
+
+**Full sync now** uses the scheduled task's current access marker (`.onedrive-gdrive-sync-access`) and 10% removal limit, with progress and cancellation in the cloud sync window. If history, conflicts, or the removal guard need attention, it stops before changing files; use **Detailed sync…** to inspect the accounts and choose a transfer direction. Starting a full sync does not change the saved detailed-sync direction.
 
 `tools/Update-SyncScheduledTask.ps1` updates the existing Windows task to the Release executable while preserving its triggers and user context. It retains network/missed-run settings, prevents overlapping scheduled instances, and backs up the previous task XML. It does not start a sync.
 

@@ -59,6 +59,7 @@ constexpr int IDC_PERSONAL_FOLDERS = 1007;
 constexpr int IDC_DISABLE_ONEDRIVE_STARTUP = 1008;
 constexpr int IDC_UNINSTALL_ONEDRIVE = 1009;
 constexpr int IDC_MIGRATE_CLOUD = 1010;
+constexpr int IDC_FULL_SYNC = 1021;
 constexpr int IDC_INSTALL_ONEDRIVE = 1014;
 constexpr int IDC_INSTALL_GOOGLE = 1015;
 constexpr int IDC_UNINSTALL_GOOGLE = 1016;
@@ -116,6 +117,7 @@ HWND g_googleDriveDetail = nullptr;
 HWND g_personalFolders = nullptr;
 HWND g_personalFoldersDetail = nullptr;
 HWND g_migrateCloud = nullptr;
+HWND g_fullSync = nullptr;
 HWND g_migrateCloudDetail = nullptr;
 HWND g_explanation = nullptr;
 HWND g_status = nullptr;
@@ -865,7 +867,7 @@ void UpdateControlsFromState() {
     EnableWindow(g_googleDrive, g_state.googleDriveLetter != 0);
     Button_SetCheck(g_googleDrive, g_state.googleDriveVisible ? BST_CHECKED : BST_UNCHECKED);
     UpdateVisibilityPending();
-    for (HWND control : {g_personalFolders, g_migrateCloud, g_refresh}) EnableWindow(control, !ClientBusy());
+    for (HWND control : {g_personalFolders, g_migrateCloud, g_fullSync, g_refresh}) EnableWindow(control, !ClientBusy());
     if (ClientBusy() || !g_stateReady) {
         for (HWND control : {g_apply, g_myDrive, g_oneDrive, g_googleDrive, g_installOneDrive,
             g_installGoogle, g_uninstallOneDrive, g_uninstallGoogle, g_disableOneDriveStartup, g_personalFolders})
@@ -1520,8 +1522,9 @@ void LayoutMainControls(UINT dpi) {
     MoveControl(g_personalFoldersDetail, 28, 338, 400, 18, dpi);
     MoveControl(g_personalFolders, 456, 318, 256, 34, dpi);
     MoveControl(g_migrationSection, 28, 370, 400, 22, dpi);
-    MoveControl(g_migrateCloudDetail, 28, 394, 410, 26, dpi);
-    MoveControl(g_migrateCloud, 456, 374, 256, 34, dpi);
+    MoveControl(g_migrateCloudDetail, 28, 394, 410, 34, dpi);
+    MoveControl(g_fullSync, 456, 374, 124, 34, dpi);
+    MoveControl(g_migrateCloud, 588, 374, 124, 34, dpi);
     MoveControl(g_oneDriveSection, 28, 448, 324, 22, dpi);
     MoveControl(g_startupDetail, 28, 476, 324, 24, dpi);
     MoveControl(g_oneDriveSafety, 28, 504, 324, 56, dpi);
@@ -1577,15 +1580,22 @@ void CreateInterface(HWND window) {
     g_personalFoldersDetail = CreateLabel(
         window, L"Choose where Windows stores your six personal folders.", g_smallFont);
 
+    g_fullSync = CreateWindowExW(
+        0, L"BUTTON", L"Full sync now",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        0, 0, 0, 0, window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_FULL_SYNC)),
+        g_instance, nullptr);
+    SetControlFont(g_fullSync, g_bodyBoldFont);
     g_migrateCloud = CreateWindowExW(
-        0, L"BUTTON", L"Transfer or sync files…",
+        0, L"BUTTON", L"Detailed sync…",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0, 0, 0, 0, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MIGRATE_CLOUD)),
         g_instance, nullptr);
     SetControlFont(g_migrateCloud, g_bodyBoldFont);
     g_migrateCloudDetail = CreateLabel(
-        window, L"Analyze OneDrive and Google Drive, then choose how files should move.", g_smallFont);
+        window, L"Run the same two-way full sync as the scheduled task.\r\nAccess check · 10% deletion limit", g_smallFont);
 
     g_explanation = CreateLabel(
         window,
@@ -1742,6 +1752,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 : L"Cloud sync window closed.");
             return 0;
         }
+        case IDC_FULL_SYNC: {
+            const auto result = cloudnav::ShowMigrationDialog(
+                window, g_instance, g_demoMode, g_demoMigrationResult, nullptr, true);
+            ShowStatus(result == cloudnav::MigrationResult::Synced ?
+                L"Full sync complete." : L"Full sync was not completed. Open Detailed sync to review.",
+                result != cloudnav::MigrationResult::Synced);
+            return 0;
+        }
         case IDC_APPLY:
             ApplySelections();
             return 0;
@@ -1862,6 +1880,7 @@ void RecreateUiFonts(UINT dpi) {
     SetControlFont(g_googleSafety, g_smallFont);
     for (HWND button : {g_installOneDrive, g_installGoogle, g_uninstallGoogle}) SetControlFont(button, g_bodyFont);
     SetControlFont(g_migrateCloud, g_bodyBoldFont);
+    SetControlFont(g_fullSync, g_bodyBoldFont);
     SetControlFont(g_migrateCloudDetail, g_smallFont);
     SetControlFont(g_myDrive, g_bodyBoldFont);
     SetControlFont(g_myDriveDetail, g_smallFont);

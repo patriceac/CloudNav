@@ -147,7 +147,8 @@ int wmain() {
     assert(cloudnav::ProviderAccountLabel(L"OneDrive", L"") == L"OneDrive");
 
     for (auto task : {cloudnav::MigrationTask::Analyze, cloudnav::MigrationTask::AuthenticateGoogle,
-                      cloudnav::MigrationTask::AuthenticateOneDrive, cloudnav::MigrationTask::Copy}) {
+                      cloudnav::MigrationTask::AuthenticateOneDrive, cloudnav::MigrationTask::Copy,
+                      cloudnav::MigrationTask::QuickSync}) {
         bool analyzed = true, verified = true;
         cloudnav::InvalidateMigrationValidation(task, analyzed, verified);
         assert(!verified);
