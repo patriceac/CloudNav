@@ -25,6 +25,29 @@ inline int AnalysisProgressPercent(unsigned milestones) {
     return static_cast<int>(AnalysisStepsCompleted(milestones) * 20);
 }
 
+inline bool IsSyncTask(MigrationTask task) {
+    return task == MigrationTask::Copy || task == MigrationTask::QuickSync;
+}
+
+// Full sync reserves 40% for analysis; manual sync starts with its reviewed plan.
+// Within sync: safeguards 0-20, transfers 20-70, verification 70-85,
+// saved history 85-95, local finalization 95-99. Only successful completion earns 100.
+inline int OperationProgressPercent(MigrationTask task, MigrationStage stage, int percent,
+    bool syncMilestone, int previous) {
+    if (!IsSyncTask(task)) return percent;
+    int candidate = previous;
+    if (percent >= 0) {
+        percent = (std::min)(100, percent);
+        if (stage == MigrationStage::Analyzing && task == MigrationTask::QuickSync && !syncMilestone)
+            candidate = percent * 40 / 100;
+        else if (syncMilestone || stage == MigrationStage::Copying) {
+            const int sync = syncMilestone ? percent : 20 + percent * 50 / 100;
+            candidate = task == MigrationTask::QuickSync ? 40 + sync * 60 / 100 : sync;
+        }
+    }
+    return (std::min)(99, (std::max)(previous, candidate));
+}
+
 inline std::vector<std::wstring> AuthenticationArguments(bool oneDrive, bool existing,
     const std::wstring& remote, const std::wstring& configPath,
     const std::wstring& googleClientId = {}, const std::wstring& googleClientSecret = {}) {

@@ -18,6 +18,7 @@ inline void TestTransferProgress() {
     for (unsigned t = 1; t <= 40; ++t) p.Log(stats(t * 100, t * 100), t);
     const auto running = p.Format(40);
     assert(p.TotalBytes() == 16050 && p.CompletedBytes() == 0);
+    assert(running.percent == 25); // A large in-flight file advances the bar before completing.
     assert(running.eta > 0 && running.eta < 200);
     assert(running.text.find(L"160.5") == std::wstring::npos); // engine total is irrelevant
     assert(running.details.find(L"292") == std::wstring::npos);
@@ -26,6 +27,7 @@ inline void TestTransferProgress() {
     p.Log(R"json({"level":"error","object":"large.bin","msg":"Failed to copy: googleapi 403 RATE_LIMIT_EXCEEDED"})json", 61);
     p.Log(stats(40000, 1000, 1), 62); // retry traffic and partial bytes cannot finish a file
     assert(p.CompletedBytes() == 0 && p.Format(62).eta < 0);
+    assert(p.Format(62).percent == 6); // Retried bytes do not accumulate as completed work.
     assert(p.Format(62).details.find(L"Google Drive quota") != std::wstring::npos);
     p.Log(R"json({"level":"info","object":"small.txt","msg":"Moved (server-side)"})json", 63);
     assert(p.CompletedFiles() == 0); // a backup move is not a successful copy

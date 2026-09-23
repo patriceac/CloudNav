@@ -81,6 +81,7 @@ struct ProgressUpdate {
     std::wstring statistics;
     std::wstring details;
     std::wstring title;
+    bool syncMilestone = false;
 };
 
 struct CompletionUpdate {
@@ -111,6 +112,7 @@ struct DialogContext {
     bool sawVerifyProgress = false;
     bool indeterminate = false;
     bool progressConsistent = true;
+    int operationPercent = 0;
     bool cancellationConsistent = true;
     AnalysisReport report;
     SyncAnalysis sync;
@@ -124,6 +126,7 @@ struct DialogContext {
     std::atomic<unsigned> listingProgressUpdates = 0;
     std::atomic<unsigned> inventoryProgressUpdates = 0;
     std::atomic<unsigned> analysisMilestones = 0;
+    std::atomic<unsigned> verificationMilestones = 0;
     std::atomic<bool> analysisActive = false;
     std::atomic<bool> listingFailed = false;
     bool parallelListing = false;
@@ -233,8 +236,10 @@ bool ExtractRclone(HINSTANCE instance, std::wstring& path, std::wstring& error) 
     return true;
 }
 
-std::wstring AnalysisProgressTitle(unsigned milestones) {
+std::wstring AnalysisProgressTitle(unsigned milestones, Task task) {
     const auto steps = AnalysisStepsCompleted(milestones);
+    if (task == Task::QuickSync)
+        return L"Analyzing differences (" + std::to_wstring(steps) + L" of 5 analysis steps)";
     return std::wstring(MigrationStageTitle(MigrationStage::Analyzing)) + L" — " +
         std::to_wstring(steps * 20) + L"% (" + std::to_wstring(steps) + L" of 5 steps)";
 }
@@ -246,7 +251,7 @@ void PostProgress(DialogContext& context, int percent, MigrationStage stage,
     if (stage == MigrationStage::Analyzing && context.analysisActive) {
         const auto milestones = context.analysisMilestones.load();
         update->percent = AnalysisProgressPercent(milestones);
-        update->title = AnalysisProgressTitle(milestones);
+        update->title = AnalysisProgressTitle(milestones, context.task);
     }
     if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
 }
@@ -256,7 +261,8 @@ double ProgressTime() { return static_cast<double>(GetTickCount64()) / 1000.0; }
 void PostTransferProgress(DialogContext& context, TransferProgress& progress, double now) {
     const auto display = progress.Format(now);
     if (!context.dialog) return;
-    auto* update = new ProgressUpdate{display.percent, MigrationStage::Copying, display.text, display.details};
+    auto* update = new ProgressUpdate{display.percent, MigrationStage::Copying,
+        IsSyncTask(context.task) ? L"Transfers: " + display.text : display.text, display.details};
     if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
 }
 
@@ -269,7 +275,7 @@ void PostListingProgress(DialogContext& context, bool oneDrive, MigrationStage s
         const auto milestones = context.analysisMilestones.load();
         auto* update = new ProgressUpdate{analysis ? AnalysisProgressPercent(milestones) : -1,
             stage, context.listingStatus[0], context.listingStatus[1],
-            analysis ? AnalysisProgressTitle(milestones) : L""};
+            analysis ? AnalysisProgressTitle(milestones, context.task) : L""};
         if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
     }
     LeaveCriticalSection(&context.processLock);
@@ -285,7 +291,7 @@ void PostHistoryProgress(DialogContext& context, const wchar_t* title) {
     auto* update = new ProgressUpdate{analysis ? AnalysisProgressPercent(milestones) : -1, MigrationStage::History,
         context.listingStatus[0].empty() ? L"OneDrive — waiting for inventory" : context.listingStatus[0],
         context.listingStatus[1].empty() ? L"Google Drive — waiting for inventory" : context.listingStatus[1],
-        analysis && context.parallelListing ? AnalysisProgressTitle(milestones) : title};
+        analysis && context.parallelListing ? AnalysisProgressTitle(milestones, context.task) : title};
     if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
     LeaveCriticalSection(&context.processLock);
 }
@@ -297,9 +303,17 @@ void PostAnalysisMilestone(DialogContext& context, unsigned milestone) {
     const auto current = previous | milestone;
     if (current != previous && context.dialog) {
         auto* update = new ProgressUpdate{AnalysisProgressPercent(current), MigrationStage::Analyzing,
-            context.listingStatus[0], context.listingStatus[1], AnalysisProgressTitle(current)};
+            context.listingStatus[0], context.listingStatus[1], AnalysisProgressTitle(current, context.task)};
         if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
     }
+    LeaveCriticalSection(&context.processLock);
+}
+
+void PostSyncMilestone(DialogContext& context, int percent, MigrationStage stage, const wchar_t* title) {
+    if (!context.dialog || !IsSyncTask(context.task) || context.cancelRequested) return;
+    EnterCriticalSection(&context.processLock);
+    auto* update = new ProgressUpdate{percent, stage, context.listingStatus[0], context.listingStatus[1], title, true};
+    if (!PostMessageW(context.dialog, WM_MIGRATION_PROGRESS, 0, reinterpret_cast<LPARAM>(update))) delete update;
     LeaveCriticalSection(&context.processLock);
 }
 
@@ -710,6 +724,11 @@ bool ReadCurrentSync(DialogContext& context, SyncAnalysis& analysis, std::wstrin
         PostListingProgress(context, oneDrive, stage, status);
         if (withHistory && stage == MigrationStage::Analyzing)
             PostAnalysisMilestone(context, oneDrive ? kOneDriveInventoryDone : kGoogleInventoryDone);
+        if (stage == MigrationStage::Verifying) {
+            const auto complete = context.verificationMilestones.fetch_or(1u << i) | (1u << i);
+            PostSyncMilestone(context, 70 + static_cast<int>(AnalysisStepsCompleted(complete)) * 5,
+                stage, L"Checking cloud files");
+        }
         return true;
         } catch (const std::exception& e) {
             accountError = Utf8ToWide(e.what()); context.listingFailed = true; return false;
@@ -830,6 +849,8 @@ bool SaveSharedHistory(DialogContext& context, const SyncJson& baseline, const s
         if (!SharedHistoryCommand(context, {L"cat", SharedHistoryPath(context, oneDrive)}, error, &actual) || actual != document) {
             error = L"Cloud sync history could not be verified. Review the next analysis."; return false;
         }
+        PostSyncMilestone(context, (pending ? 10 : 85) + (oneDrive ? 5 : 10), MigrationStage::History,
+            pending ? L"Preparing sync recovery history" : L"Saving verified sync history");
     }
     DeleteFileW(path.c_str());
     return true;
@@ -920,10 +941,14 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         error = L"Accounts or sync history changed since analysis. No transfer started: analyze again to review the plan.";
         return false;
     }
+    PostSyncMilestone(context, 10, MigrationStage::History, L"Sync safety checks complete");
     // A verified, unchanged pair needs no recovery journal or post-transfer scan.
     // Matching files with changed inventories still need a new shared baseline.
     if ((context.mode != SyncMode::Bidirectional || SyncBaselineUnchanged(context.sync)) && std::all_of(rows.begin(), rows.end(),
-        [](const auto& row) { return row.action == SyncAction::None || row.action == SyncAction::Ignored; })) return true;
+        [](const auto& row) { return row.action == SyncAction::None || row.action == SyncAction::Ignored; })) {
+        PostSyncMilestone(context, 99, MigrationStage::History, L"No changes needed — finishing sync");
+        return true;
+    }
     GUID runId = {};
     wchar_t runText[40] = {};
     if (FAILED(CoCreateGuid(&runId)) || !StringFromGUID2(runId, runText, 40)) {
@@ -994,6 +1019,8 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     if (!transfer(SyncAction::ToGoogle, od, gd, false) || !transfer(SyncAction::ToOneDrive, gd, od, false) ||
         !transfer(SyncAction::DeleteGoogle, gd, gd, true) || !transfer(SyncAction::DeleteOneDrive, od, od, true)) return false;
     if (context.mode == SyncMode::Bidirectional) {
+        context.verificationMilestones = 0;
+        PostSyncMilestone(context, 70, MigrationStage::Verifying, L"Checking cloud files");
         SyncAnalysis after;
         if (!ReadCurrentSync(context, after, error, MigrationStage::Verifying)) return false;
         if (after.binding != context.sync.binding) { error = L"The accounts changed. History was not committed."; return false; }
@@ -1006,12 +1033,14 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         const auto baselineOneDrive = SyncBaselineInventory(after.oneDrive, after.ignoredGooglePaths);
         const SyncJson document = {{"version", 1}, {"binding", context.historyBinding}, {"oneDrive", SaveSyncInventory(baselineOneDrive)},
             {"google", SaveSyncInventory(after.google)}};
+        PostSyncMilestone(context, 85, MigrationStage::History, L"Saving verified sync history");
         if (!SaveSharedHistory(context, document, generation, false, error)) return false;
         if (!WriteEvidence(state, document.dump())) { error = L"History was not saved. A recovery analysis will be needed."; return false; }
         if (!DeleteFileW((state + L".pending").c_str())) { error = L"The recovery journal could not be finalized. Analyze again."; return false; }
     }
     // One-way copies intentionally leave the pair in merge/recovery mode:
     // they do not establish a successful bidirectional baseline.
+    PostSyncMilestone(context, 99, MigrationStage::History, L"Finishing sync");
     return true;
 }
 
@@ -1104,6 +1133,11 @@ DWORD WINAPI WorkerProc(void* parameter) {
             for (const auto& row : context.plan)
                 if (row.action != SyncAction::None && row.action != SyncAction::Ignored && row.action != SyncAction::Blocked)
                     demoFiles.push_back({row.path, row.bytes});
+            if (context.task == Task::QuickSync) demoFiles.push_back({"Documents/full-sync.bin", 1048576});
+            PostHistoryProgress(context, L"Checking sync safety…");
+            PostSyncMilestone(context, 10, MigrationStage::History, L"Sync safety checks complete");
+            PostHistoryProgress(context, L"Preparing sync recovery history…");
+            PostSyncMilestone(context, 20, MigrationStage::History, L"Sync recovery history saved");
             demoProgress.BeginBatch(demoProgress.AddBatch(demoFiles), 0);
         }
         for (int percent = 0; percent <= 100 && !context.cancelRequested; percent += 2) {
@@ -1147,6 +1181,24 @@ DWORD WINAPI WorkerProc(void* parameter) {
         }
         context.parallelListing = false;
         success = !context.cancelRequested && (stage != MigrationStage::Connecting || success);
+        if (success && stage == MigrationStage::Copying) {
+            if (context.mode == SyncMode::Bidirectional) {
+                PostSyncMilestone(context, 70, MigrationStage::Verifying, L"Checking cloud files");
+                context.parallelListing = true;
+                PostListingProgress(context, true, MigrationStage::Verifying, L"OneDrive : 4 files read — complete");
+                PostSyncMilestone(context, 75, MigrationStage::Verifying, L"OneDrive verification complete");
+                PostListingProgress(context, false, MigrationStage::Verifying, L"Google Drive : 3 files read — complete");
+                PostSyncMilestone(context, 80, MigrationStage::Verifying, L"Cloud inventories checked");
+                context.parallelListing = false;
+                PostSyncMilestone(context, 85, MigrationStage::History, L"Saving verified sync history");
+                PostHistoryProgress(context, L"Saving verified sync history");
+                Sleep(1800);
+                PostSyncMilestone(context, 90, MigrationStage::History, L"OneDrive sync history saved");
+                PostSyncMilestone(context, 95, MigrationStage::History, L"Google Drive sync history saved");
+            }
+            PostSyncMilestone(context, 99, MigrationStage::History, L"Finishing sync");
+            PostHistoryProgress(context, L"Releasing sync lock…");
+        }
         if (context.task == Task::Analyze) {
             const std::string time = "2026-09-09T10:00:00Z";
             sync.oneDrive = {{"Documents/nouveau.pdf", {1048576, time, {}}}, {"Photos/vacances.jpg", {2097152, time, {}}},
@@ -1279,12 +1331,14 @@ void StartTask(DialogContext& context, Task task) {
     context.task = task;
     context.cancelRequested = false;
     context.analysisMilestones = 0;
+    context.verificationMilestones = 0;
+    context.operationPercent = 0;
     context.analysisActive = task == Task::Analyze || task == Task::QuickSync;
     context.listingStatus[0].clear();
     context.listingStatus[1].clear();
     if (task == Task::Analyze || task == Task::QuickSync) context.sawHistoryProgress = false;
     SendDlgItemMessageW(context.dialog, IDC_MIGRATION_PROGRESS, PBM_SETSTATE, PBST_NORMAL, 0);
-    SetMigrationProgress(context, context.analysisActive ? 0 : -1);
+    SetMigrationProgress(context, context.analysisActive || IsSyncTask(task) ? 0 : -1);
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_PHASE, MigrationStageTitle(MigrationStage::Preparing));
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_STATS, L"Waiting for progress…");
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, MigrationStageDetails(MigrationStage::Preparing));
@@ -1304,7 +1358,7 @@ void CancelTask(DialogContext& context) {
     EnterCriticalSection(&context.processLock);
     for (HANDLE process : context.childProcesses) TerminateProcess(process, ERROR_CANCELLED);
     LeaveCriticalSection(&context.processLock);
-    SetMigrationProgress(context, 0);
+    SetMigrationProgress(context, IsSyncTask(context.task) ? context.operationPercent : 0);
     SetDlgItemTextW(context.dialog, IDC_MIGRATION_DETAILS, L"Cancelling… Files already copied will be reused when resuming.");
 }
 
@@ -1549,14 +1603,27 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
     } else if (message == WM_MIGRATION_PROGRESS) {
         auto* update = reinterpret_cast<ProgressUpdate*>(lParam);
         if (context->cancelRequested) { delete update; return TRUE; }
+        const int previous = context->operationPercent;
+        update->percent = OperationProgressPercent(context->task, update->stage, update->percent,
+            update->syncMilestone, previous);
+        context->operationPercent = update->percent;
+        if (IsSyncTask(context->task)) {
+            if (update->title.empty()) update->title = update->stage == MigrationStage::Copying ? L"Applying sync plan" :
+                update->stage == MigrationStage::Verifying ? L"Checking cloud files" : MigrationStageTitle(update->stage);
+            update->title += L" — " + std::to_wstring(update->percent) + L"% overall";
+        }
         SetMigrationProgress(*context, update->percent);
         const auto title = update->title.empty() ? MigrationStageTitle(update->stage) : update->title.c_str();
         SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, title);
         SetDlgItemTextW(dialog, IDC_MIGRATION_STATS, update->statistics.c_str());
         SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, update->details.c_str());
         RedrawWindow(dialog, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        const HWND progressBar = GetDlgItem(dialog, IDC_MIGRATION_PROGRESS);
         const bool consistent = ui::ControlText(dialog, IDC_MIGRATION_PHASE) == title &&
-            ui::ControlText(dialog, IDC_MIGRATION_DETAILS) == update->details;
+            ui::ControlText(dialog, IDC_MIGRATION_DETAILS) == update->details &&
+            (!IsSyncTask(context->task) || (!context->indeterminate && update->percent >= previous && update->percent < 100 &&
+                (GetWindowLongPtrW(progressBar, GWL_STYLE) & PBS_MARQUEE) == 0 &&
+                SendMessageW(progressBar, PBM_GETPOS, 0, 0) == update->percent));
         context->progressConsistent &= consistent;
         if (update->stage == MigrationStage::History && update->statistics.find(L"files read — complete") != std::wstring::npos) {
             context->sawHistoryProgress = consistent && ui::ControlText(dialog, IDC_MIGRATION_STATS) == update->statistics &&
@@ -1590,6 +1657,8 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
         return TRUE;
     } else if (message == WM_MIGRATION_COMPLETE) {
         auto* update = reinterpret_cast<CompletionUpdate*>(lParam);
+        update->cancelled = update->cancelled || context->cancelRequested.load();
+        if (update->cancelled) update->success = false;
         const Task completedTask = update->task;
         const bool authentication = completedTask == Task::AuthenticateOneDrive ||
             completedTask == Task::AuthenticateGoogle;
@@ -1602,7 +1671,8 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
             SetDlgItemTextW(dialog, IDC_MIGRATION_SUMMARY, context->report.Summary().c_str());
             SetDlgItemTextW(dialog, IDC_MIGRATION_PLAN, CurrentPlanDetails(*context).c_str());
         }
-        SetMigrationProgress(*context, 0);
+        if (authentication) SetMigrationProgress(*context, 0);
+        else if (!update->success) SetMigrationProgress(*context, (std::max)(0, context->operationPercent));
         if (update->success) {
             if (update->task == Task::AuthenticateOneDrive || update->task == Task::AuthenticateGoogle) {
                 SetDlgItemTextW(dialog, IDC_MIGRATION_PHASE, L"1 / 2 — Analyze before copying");
@@ -1677,6 +1747,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
             WriteMilestone(*context, L"copied.json", LOWORD(SendMessageW(dialog, DM_GETDEFID, 0, 0)) == IDC_MIGRATION_CUTOVER);
         if (context->cancelRequested) {
             context->cancellationConsistent &= !context->copied &&
+                context->operationPercent < 100 && (!IsSyncTask(completedTask) || !context->indeterminate) &&
                 !IsWindowEnabled(GetDlgItem(dialog, IDC_MIGRATION_CUTOVER)) &&
                 ui::ControlText(dialog, IDC_MIGRATION_STATS) == L"Operation stopped — no transfer running";
             WriteMilestone(*context, L"cancelled.json", context->cancellationConsistent);

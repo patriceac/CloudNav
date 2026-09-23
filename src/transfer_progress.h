@@ -119,9 +119,11 @@ public:
     Display Format(double now) {
         Sample(now);
         Display display;
-        display.percent = (std::min)(99, MigrationPercent(completedBytes_, totalBytes_, completedFiles_, totalFiles_));
+        auto currentBytes = completedBytes_;
+        for (const auto& active : active_) currentBytes += active.second;
+        display.percent = (std::min)(99, MigrationPercent(currentBytes, totalBytes_, completedFiles_, totalFiles_));
         display.text = std::to_wstring(display.percent) + L" % — " + std::to_wstring(completedFiles_) + L" / " +
-            std::to_wstring(totalFiles_) + L" files processed — " + FormatBytes(completedBytes_) + L" / " + FormatBytes(totalBytes_);
+            std::to_wstring(totalFiles_) + L" files processed — " + FormatBytes(currentBytes) + L" / " + FormatBytes(totalBytes_);
         const bool retrying = engineErrors_ || !failed_.empty();
         const bool stalled = now - lastAdvance_ >= 15;
         if (retrying) display.details = googleQuota_ ? L"Retrying after a Google Drive quota limit — ETA unavailable." :

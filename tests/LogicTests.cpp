@@ -163,6 +163,28 @@ int wmain() {
     assert(cloudnav::AnalysisProgressPercent((1u << 1) | (1u << 3)) == 40);
     assert(cloudnav::AnalysisProgressPercent(0x1f) == 100);
     assert(cloudnav::AnalysisProgressPercent(0x3f) == 100);
+    for (const auto task : {cloudnav::MigrationTask::Copy, cloudnav::MigrationTask::QuickSync}) {
+        using Stage = cloudnav::MigrationStage;
+        int position = 0;
+        const auto advance = [&](Stage stage, int percent, bool milestone = false) {
+            position = cloudnav::OperationProgressPercent(task, stage, percent, milestone, position);
+            return position;
+        };
+        const bool full = task == cloudnav::MigrationTask::QuickSync;
+        assert(advance(Stage::History, -1) == 0);
+        if (full) assert(advance(Stage::Analyzing, 100) == 40);
+        assert(advance(Stage::History, 20, true) == (full ? 52 : 20));
+        assert(advance(Stage::Copying, 50) == (full ? 67 : 45));
+        assert(advance(Stage::Copying, 10) == (full ? 67 : 45)); // retry cannot move the bar backwards
+        assert(advance(Stage::Copying, 100) == (full ? 82 : 70));
+        assert(advance(Stage::Verifying, -1) == (full ? 82 : 70));
+        assert(advance(Stage::Verifying, 80, true) == (full ? 88 : 80));
+        assert(advance(Stage::Verifying, 75, true) == (full ? 88 : 80)); // parallel completion order
+        assert(advance(Stage::History, 95, true) == (full ? 97 : 95));
+        assert(advance(Stage::History, -1) == (full ? 97 : 95));
+        assert(advance(Stage::History, 100, true) == 99); // lock release/failure still pending
+        assert(cloudnav::OperationProgressPercent(task, Stage::History, 99, true, 0) == 99); // no changes
+    }
 
     double value = 0;
     assert(cloudnav::JsonNumber("{\"bytes\":524288,\"totalBytes\":1048576}", "bytes", value));
