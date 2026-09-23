@@ -27,6 +27,7 @@ inline std::string SharedSyncState(const SyncJson& baseline, const std::string& 
 inline bool LoadSharedSyncState(const std::string& oneDrive, const std::string& google,
     const std::string& binding, SyncAnalysis& analysis) {
     analysis.hasBaseline = false;
+    analysis.hasSharedBaseline = false;
     analysis.recovery = true;
     try {
         if (oneDrive.empty() || oneDrive != google) return false;
@@ -35,6 +36,7 @@ inline bool LoadSharedSyncState(const std::string& oneDrive, const std::string& 
         if (document.at("version") != 1 || document.at("sha256") != SyncDigest(data.dump()) ||
             data.at("pending").get<bool>() || data.at("generation").get<std::string>().empty()) return false;
         if (!LoadSyncBaseline(data.at("baseline").dump(), binding, analysis)) return false;
+        analysis.hasSharedBaseline = true;
         analysis.recovery = false;
         return true;
     } catch (...) { return false; }

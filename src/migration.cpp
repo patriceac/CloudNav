@@ -750,6 +750,7 @@ bool ReadSharedHistoryAccount(DialogContext& context, int i, const std::wstring&
 }
 
 void ApplySharedHistory(DialogContext& context, SyncAnalysis& analysis, const SharedHistoryRead& history) {
+    analysis.hasSharedBaseline = false;
     analysis.historyBinding = context.historyBinding;
     analysis.sharedDocument = SyncJson::array({history.documents[0], history.documents[1]}).dump();
     LoadCurrentBaseline(context, analysis);
@@ -870,7 +871,9 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         error = L"Accounts or sync history changed since analysis. No transfer started: analyze again to review the plan.";
         return false;
     }
-    if (context.mode != SyncMode::Bidirectional && std::all_of(rows.begin(), rows.end(),
+    // A verified, unchanged pair needs no recovery journal or post-transfer scan.
+    // Matching files with changed inventories still need a new shared baseline.
+    if ((context.mode != SyncMode::Bidirectional || SyncBaselineUnchanged(context.sync)) && std::all_of(rows.begin(), rows.end(),
         [](const auto& row) { return row.action == SyncAction::None || row.action == SyncAction::Ignored; })) return true;
     GUID runId = {};
     wchar_t runText[40] = {};
@@ -1986,6 +1989,29 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 const auto reads = context.inventoryReads.load();
                 passed = passed && ExecuteSyncPlan(context, error) && context.inventoryReads == reads + 2 &&
                     read(context.googlePath + L"one.txt") == "one only" && analyzeSync() && context.sync.hasBaseline;
+            }
+            if (passed) {
+                step = "unchangedBidirectionalSync";
+                const auto reads = context.inventoryReads.load(), starts = context.processStarts.load();
+                const auto local = ReadSyncFile(SyncStatePath(context));
+                const auto one = ReadSyncFile(SharedHistoryPath(context, true));
+                const auto google = ReadSyncFile(SharedHistoryPath(context, false));
+                passed = SyncBaselineUnchanged(context.sync) && ExecuteSyncPlan(context, error) &&
+                    context.inventoryReads == reads && context.processStarts == starts + 2 &&
+                    ReadSyncFile(SyncStatePath(context)) == local &&
+                    ReadSyncFile(SharedHistoryPath(context, true)) == one &&
+                    ReadSyncFile(SharedHistoryPath(context, false)) == google &&
+                    !std::filesystem::exists(SyncStatePath(context) + L".pending");
+            }
+            if (passed) {
+                step = "equalAdditionsUpdateHistory";
+                passed = WriteEvidence(context.oneDrivePath + L"added-on-both.txt", "same content") &&
+                    WriteEvidence(context.googlePath + L"added-on-both.txt", "same content") && analyzeSync();
+                const auto reads = context.inventoryReads.load();
+                passed = passed && std::all_of(context.plan.begin(), context.plan.end(),
+                    [](const auto& row) { return row.action == SyncAction::None; }) &&
+                    !SyncBaselineUnchanged(context.sync) && ExecuteSyncPlan(context, error) &&
+                    context.inventoryReads == reads + 2 && analyzeSync() && SyncBaselineUnchanged(context.sync);
             }
             if (passed) {
                 step = "changedLocalHistoryRejected";

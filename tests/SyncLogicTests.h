@@ -170,6 +170,34 @@ inline void RunSyncLogicTests() {
     corruptShared["data"]["generation"] = "tampered";
     assert(!LoadSharedSyncState(corruptShared.dump(), corruptShared.dump(), "account-pair", loaded));
     assert(!LoadSharedSyncState(shared, shared, "another-root", loaded));
+    SyncAnalysis unchanged;
+    unchanged.complete = true;
+    unchanged.oneDrive = unchanged.google = {{"a.txt", original}};
+    const SyncJson unchangedState = {{"version", 1}, {"binding", "pair"},
+        {"oneDrive", SaveSyncInventory(unchanged.oneDrive)}, {"google", SaveSyncInventory(unchanged.google)}};
+    const auto unchangedShared = SharedSyncState(unchangedState, "verified", false);
+    assert(LoadSharedSyncState(unchangedShared, unchangedShared, "pair", unchanged) && SyncBaselineUnchanged(unchanged));
+    for (auto required : {&SyncAnalysis::complete, &SyncAnalysis::hasBaseline, &SyncAnalysis::hasSharedBaseline}) {
+        auto incomplete = unchanged;
+        incomplete.*required = false;
+        assert(!SyncBaselineUnchanged(incomplete));
+    }
+    auto different = unchanged;
+    different.recovery = true;
+    assert(!SyncBaselineUnchanged(different));
+    different = unchanged;
+    different.oneDrive["new.txt"] = different.google["new.txt"] = original;
+    assert(!SyncBaselineUnchanged(different)); // Equal additions still need a new baseline.
+    different.oneDrive.clear(); different.google.clear();
+    assert(!SyncBaselineUnchanged(different)); // Deletion on both sides must retire the old baseline entry.
+    different = unchanged;
+    different.oneDrive["a.txt"].time = changed.time;
+    assert(!SyncBaselineUnchanged(different));
+    assert(LoadSyncBaseline(unchangedState.dump(), "pair", unchanged) && !SyncBaselineUnchanged(unchanged));
+    assert(LoadSharedSyncState(unchangedShared, unchangedShared, "pair", unchanged));
+    unchanged.oneDrive["duplicate.jpg"] = original;
+    unchanged.ignoredGooglePaths["duplicate.jpg"] = {2, "ambiguous"};
+    assert(SyncBaselineUnchanged(unchanged));
     SyncAnalysis scheduled;
     scheduled.complete = scheduled.hasBaseline = true;
     for (int i = 0; i < 10; ++i) scheduled.oneDrive[std::to_string(i)] = original;

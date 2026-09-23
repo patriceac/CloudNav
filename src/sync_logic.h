@@ -318,6 +318,7 @@ struct SyncAnalysis {
     SyncIgnoredPaths ignoredGooglePaths;
     bool complete = false;
     bool hasBaseline = false;
+    bool hasSharedBaseline = false;
     bool recovery = false;
     std::string binding;
     std::string error;
@@ -412,6 +413,12 @@ inline SyncInventory SyncBaselineInventory(const SyncInventory& inventory, const
     return result;
 }
 
+inline bool SyncBaselineUnchanged(const SyncAnalysis& analysis) {
+    return analysis.complete && analysis.hasBaseline && analysis.hasSharedBaseline && !analysis.recovery &&
+        SyncBaselineInventory(analysis.oneDrive, analysis.ignoredGooglePaths) == analysis.previousOneDrive &&
+        analysis.google == analysis.previousGoogle;
+}
+
 inline std::vector<std::wstring> SyncInventoryArguments(const std::wstring& config, const std::wstring& remote,
     const std::wstring& log, const std::wstring& cache = {}, bool full = false) {
     std::vector<std::wstring> args = {L"lsjson", remote, L"--config", config, L"--recursive", L"--hash", L"--fast-list",
@@ -455,6 +462,7 @@ inline std::uint64_t SyncPlannedBytes(const SyncAnalysis& analysis, const std::v
 }
 
 inline bool LoadSyncBaseline(const std::string& document, const std::string& binding, SyncAnalysis& analysis) {
+    analysis.hasSharedBaseline = false;
     try {
         const auto json = SyncJson::parse(document);
         std::string error;
