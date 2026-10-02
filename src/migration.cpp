@@ -985,6 +985,8 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         const auto path = context.logPath + L".sync-list-" + stamp;
         if (!WriteEvidence(path, list)) { error = L"Unable to prepare the file list."; return false; }
         auto args = baseArgs(remove ? L"move" : L"copy", source, remove ? backup(source) : destination);
+        // Shared OneDrive files need a streamed copy when moving into this account's archive.
+        if (remove && source == od) args.insert(args.end(), {L"--disable", L"Copy"});
         args.insert(args.end(), {L"--files-from-raw", path});
         const auto selected = static_cast<size_t>(std::count(list.begin(), list.end(), '\n'));
         if (remove || !SyncUseTraversal(selected, context.sync.oneDrive.size(), context.sync.google.size()))
