@@ -19,6 +19,10 @@ inline SyncMode SyncModeFromSetting(std::uint32_t value) {
     return value <= 2 ? static_cast<SyncMode>(value) : SyncMode::ToGoogle;
 }
 enum class SyncAction { None, ToGoogle, ToOneDrive, DeleteGoogle, DeleteOneDrive, KeepBoth, Ignored, Blocked };
+inline bool SyncChangesFiles(SyncAction action) {
+    return action == SyncAction::ToGoogle || action == SyncAction::ToOneDrive ||
+        action == SyncAction::DeleteGoogle || action == SyncAction::DeleteOneDrive || action == SyncAction::KeepBoth;
+}
 
 inline std::pair<size_t, size_t> SyncConfigSection(const std::string& text, const std::string& remote) {
     size_t start = std::string::npos;
@@ -153,8 +157,19 @@ using SyncInventory = std::map<std::string, SyncFile>;
 struct SyncIgnoredPath {
     size_t objectCount = 0;
     std::string reason;
+    bool tree = false;
 };
 using SyncIgnoredPaths = std::map<std::string, SyncIgnoredPath>;
+
+inline const SyncIgnoredPath* FindIgnoredGooglePath(const SyncIgnoredPaths& ignored, const std::string& path) {
+    const auto exact = ignored.find(path);
+    if (exact != ignored.end()) return &exact->second;
+    for (size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/', slash + 1)) {
+        const auto parent = ignored.find(path.substr(0, slash));
+        if (parent != ignored.end() && parent->second.tree) return &parent->second;
+    }
+    return nullptr;
+}
 
 inline std::string CanonicalSyncTime(const std::string& value) {
     static const std::regex pattern(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$)");
@@ -259,14 +274,40 @@ inline bool ReadGoogleSyncInventory(const std::string& text, SyncInventory& inve
         if (!json.is_array()) throw std::runtime_error("Invalid inventory");
 
         std::map<std::string, size_t> directories;
+        std::map<std::string, std::string> directoryIds;
         struct FileGroup { size_t count = 0; const SyncJson* row = nullptr; };
         std::map<std::string, FileGroup> files;
         for (const auto& row : json) {
             const auto path = row.at("Path").get<std::string>();
             if (!SafeSyncPath(path) || SyncPathKey(path).empty())
                 throw std::runtime_error("Unsupported path: " + path);
-            if (row.at("IsDir").get<bool>()) ++directories[path];
+            if (row.at("IsDir").get<bool>()) {
+                ++directories[path];
+                directoryIds[path] = row.value("ID", std::string());
+            }
             else { auto& group = files[path]; ++group.count; group.row = &row; }
+        }
+
+        // rclone identifies shortcuts as TARGET\tSHORTCUT. Only a target with
+        // a real path outside every shortcut tree is already in this account's
+        // inventory; shared targets reached solely through shortcuts stay valid.
+        std::map<std::string, std::string> realFolders;
+        for (const auto& directory : directoryIds) {
+            if (directory.second.empty() || directory.second.find('\t') != std::string::npos) continue;
+            bool viaShortcut = false;
+            for (size_t slash = directory.first.find('/'); slash != std::string::npos; slash = directory.first.find('/', slash + 1)) {
+                const auto parent = directoryIds.find(directory.first.substr(0, slash));
+                if (parent != directoryIds.end() && parent->second.find('\t') != std::string::npos) viaShortcut = true;
+            }
+            if (!viaShortcut) realFolders.emplace(directory.second, directory.first);
+        }
+        for (const auto& directory : directoryIds) {
+            const auto tab = directory.second.find('\t');
+            if (tab == std::string::npos) continue;
+            const auto target = realFolders.find(directory.second.substr(0, tab));
+            if (target != realFolders.end()) ignoredPaths[directory.first] = {0,
+                "This Google Drive folder shortcut points to " + target->second +
+                ", which is already included. CloudNav ignored the shortcut tree to avoid syncing the same files twice.", true};
         }
 
         std::set<std::string> ambiguousDirectories;
@@ -282,6 +323,10 @@ inline bool ReadGoogleSyncInventory(const std::string& text, SyncInventory& inve
         for (const auto& group : files) {
             const auto& path = group.first;
             const auto count = group.second.count;
+            if (const auto* ignored = FindIgnoredGooglePath(ignoredPaths, path)) {
+                ignoredPaths[path] = {count, ignored->reason, ignored->tree};
+                continue;
+            }
             if (count > 1) {
                 ignoredPaths[path] = {count, "Google Drive contains " + std::to_string(count) +
                     " files with this same path. CloudNav ignored all of them; rename them to unique names to sync them with OneDrive."};
@@ -363,7 +408,7 @@ struct SyncAnalysis {
         }
         std::vector<SyncRow> rows;
         for (const auto& path : paths) {
-            if (ignoredGooglePaths.count(path)) {
+            if (FindIgnoredGooglePath(ignoredGooglePaths, path)) {
                 rows.push_back({path, '~', SyncAction::Ignored, 0});
                 continue;
             }
@@ -385,8 +430,8 @@ struct SyncAnalysis {
                 const bool hadB = hasBaseline && oldB != previousGoogle.end();
                 const bool changedA = a && (!hadA || !(od->second == oldA->second));
                 const bool changedB = b && (!hadB || !(gd->second == oldB->second));
-                if (a && b) row.action = changedA && !changedB ? SyncAction::ToGoogle :
-                    changedB && !changedA ? SyncAction::ToOneDrive : SyncAction::KeepBoth;
+                if (a && b) row.action = od->second.time.substr(0, 19) > gd->second.time.substr(0, 19) ? SyncAction::ToGoogle :
+                    gd->second.time.substr(0, 19) > od->second.time.substr(0, 19) ? SyncAction::ToOneDrive : SyncAction::KeepBoth;
                 else if (a) row.action = hadB && !changedA ? SyncAction::DeleteOneDrive : SyncAction::ToGoogle;
                 else row.action = hadA && !changedB ? SyncAction::DeleteGoogle : SyncAction::ToOneDrive;
                 // Edit-versus-delete preserves the edited file on both sides.
@@ -409,7 +454,10 @@ struct SyncAnalysis {
 
 inline SyncInventory SyncBaselineInventory(const SyncInventory& inventory, const SyncIgnoredPaths& ignoredPaths) {
     auto result = inventory;
-    for (const auto& item : ignoredPaths) result.erase(item.first);
+    for (auto item = result.begin(); item != result.end();) {
+        if (FindIgnoredGooglePath(ignoredPaths, item->first)) item = result.erase(item);
+        else ++item;
+    }
     return result;
 }
 

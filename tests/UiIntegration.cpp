@@ -537,19 +537,30 @@ void RunMigrationReport(const std::wstring& executable) {
     Require(Wait([&] { return Text(migration, IDC_MIGRATION_SUMMARY).find(L"Conflicts: 1") != std::wstring::npos; }), "bidirectional conflict preview missing");
     Require(Text(migration, IDC_MIGRATION_COPY) == L"Sync", "bidirectional action mislabeled");
     Capture(migration, L"report-bidirectional.png");
+    Click(migration, IDC_MIGRATION_REPORT);
+    const HWND plannedReport = Window(app.process.dwProcessId, L"CloudNav — analysis results");
+    Require(SendMessageW(GetDlgItem(plannedReport, IDC_REPORT_FILTER), CB_GETCURSEL, 0, 0) == 0 &&
+        ListView_GetItemCount(GetDlgItem(plannedReport, IDC_REPORT_LIST)) == 3, "default report omits two-way planned changes");
+    Capture(plannedReport, L"report-planned-bidirectional.png");
+    Click(plannedReport, IDCANCEL);
+    Require(Wait([&] { return !IsWindow(plannedReport); }), "planned report did not close");
     Select(migration, IDC_MIGRATION_MODE, 0);
     Require(Wait([&] { return Text(migration, IDC_MIGRATION_SUMMARY) == summary; }), "forward plan did not restore");
     Click(migration, IDC_MIGRATION_REPORT);
     const HWND report = Window(app.process.dwProcessId, L"CloudNav — analysis results");
     const HWND list = GetDlgItem(report, IDC_REPORT_LIST);
-    Require(ListView_GetItemCount(list) == 5, "report omits files");
+    Require(SendMessageW(GetDlgItem(report, IDC_REPORT_FILTER), CB_GETCURSEL, 0, 0) == 0 && ListView_GetItemCount(list) == 1,
+        "default report includes unchanged or ignored files in one-way mode");
+    Capture(report, L"report-planned.png");
+    Select(report, IDC_REPORT_FILTER, 1);
+    Require(Wait([&] { return ListView_GetItemCount(list) == 5; }), "report omits files");
     CheckBounds(report);
     Capture(report, L"report-all.png");
-    for (int selection = 1; selection <= 6; ++selection) {
+    for (int selection = 2; selection <= 7; ++selection) {
         Select(report, IDC_REPORT_FILTER, selection);
-        Require(Wait([&] { return ListView_GetItemCount(list) == (selection == 6 ? 0 : 1); }), "category filter is incorrect");
-        if (selection == 1) Capture(report, L"report-new.png");
-        if (selection == 5) {
+        Require(Wait([&] { return ListView_GetItemCount(list) == (selection == 7 ? 0 : 1); }), "category filter is incorrect");
+        if (selection == 2) Capture(report, L"report-new.png");
+        if (selection == 6) {
             Require(Wait([&] { return Text(report, IDC_REPORT_SELECTED).find(L"contains 2 files") != std::wstring::npos; }),
                 "the single ignored row was not selected with its object count visible");
             Capture(report, L"report-ignored.png");
@@ -560,7 +571,7 @@ void RunMigrationReport(const std::wstring& executable) {
     Click(migration, IDC_MIGRATION_COPY);
     Require(Wait([&] {
         return !IsWindowEnabled(GetDlgItem(migration, IDC_MIGRATION_COPY)) &&
-            Text(migration, IDC_MIGRATION_PHASE) == L"2 / 2 — Applying the selected plan";
+            Text(migration, IDC_MIGRATION_PHASE).find(L"Applying sync plan — ") == 0;
     }), "Copy did not start immediately");
     Require(Wait([&] { return Text(migration, IDC_MIGRATION_PHASE) == L"2 / 2 — Copy complete"; }),
         "copy did not complete after starting");

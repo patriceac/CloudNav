@@ -48,7 +48,9 @@ inline void RunSyncLogicTests() {
     assert(analysis.oneDrive == before); // changing modes cannot mutate inventories
     analysis.google = {{"a.txt", changed}};
     assert(analysis.Plan(SyncMode::ToGoogle)[0].action == SyncAction::None);
+    assert(!SyncChangesFiles(analysis.Plan(SyncMode::ToGoogle)[0].action)); // different but destination is newer
     assert(analysis.Plan(SyncMode::ToOneDrive)[0].action == SyncAction::ToOneDrive);
+    assert(SyncChangesFiles(analysis.Plan(SyncMode::ToOneDrive)[0].action));
     analysis.oneDrive["a.txt"] = changed;
     analysis.google["a.txt"] = original;
     assert(analysis.Plan(SyncMode::ToGoogle)[0].action == SyncAction::ToGoogle);
@@ -59,13 +61,25 @@ inline void RunSyncLogicTests() {
     analysis.google["a.txt"] = equalDate;
     assert(analysis.Plan(SyncMode::ToGoogle)[0].action == SyncAction::None);
     assert(analysis.Plan(SyncMode::ToOneDrive)[0].action == SyncAction::None);
-    analysis.google["a.txt"] = changed;
     assert(analysis.Plan(SyncMode::Bidirectional)[0].action == SyncAction::KeepBoth);
+    assert(SyncChangesFiles(SyncAction::KeepBoth) && SyncChangesFiles(SyncAction::DeleteGoogle) &&
+        SyncChangesFiles(SyncAction::DeleteOneDrive) && !SyncChangesFiles(SyncAction::Ignored) && !SyncChangesFiles(SyncAction::Blocked));
+    analysis.google["a.txt"] = changed;
+    assert(analysis.Plan(SyncMode::Bidirectional)[0].action == SyncAction::ToOneDrive);
     analysis.previousOneDrive = analysis.previousGoogle = {{"a.txt", original}};
     analysis.hasBaseline = true;
     assert(analysis.Plan(SyncMode::Bidirectional)[0].action == SyncAction::ToOneDrive);
     analysis.oneDrive["a.txt"] = other;
+    assert(analysis.Plan(SyncMode::Bidirectional)[0].action == SyncAction::ToGoogle);
+    analysis.previousOneDrive = analysis.previousGoogle = {{"a.txt", other}};
+    assert(analysis.Plan(SyncMode::Bidirectional)[0].action == SyncAction::ToGoogle); // newer unchanged side beats older edit
+    analysis.previousOneDrive = analysis.previousGoogle = {{"a.txt", original}};
+    auto sameSecond = other;
+    sameSecond.time = changed.time;
+    sameSecond.time.replace(20, 9, "900000000");
+    analysis.oneDrive["a.txt"] = sameSecond;
     assert(analysis.Plan(SyncMode::Bidirectional)[0].action == SyncAction::KeepBoth);
+    analysis.oneDrive["a.txt"] = other;
     analysis.google["a.txt"] = original;
     assert(analysis.Plan(SyncMode::Bidirectional)[0].action == SyncAction::ToGoogle);
     analysis.google.clear();
@@ -145,6 +159,45 @@ inline void RunSyncLogicTests() {
     assert(ReadGoogleSyncInventory(duplicateFolders.dump(), inventory, ignored, error));
     assert(inventory.size() == 3 && inventory.count("outside.jpg") && inventory.count("photos2/one.jpg") && inventory.count("photos-old/one.jpg"));
     assert(ignored.size() == 1 && ignored.count("photos/one.jpg") == 1);
+
+    const SyncJson shortcutRows = SyncJson::array({
+        {{"Path", "administratif France"}, {"IsDir", true}, {"ID", "france-id\tinternal-shortcut"}},
+        {{"Path", "Documents/France"}, {"IsDir", true}, {"ID", "france-id"}},
+        {{"Path", "administratif France/document.pdf"}, {"IsDir", false}, {"Size", 10}, {"ModTime", original.time}},
+        {{"Path", "Documents/France/document.pdf"}, {"IsDir", false}, {"Size", 10}, {"ModTime", original.time}},
+        {{"Path", "administratif France-old/document.pdf"}, {"IsDir", false}, {"Size", 10}, {"ModTime", original.time}},
+        {{"Path", "Shared"}, {"IsDir", true}, {"ID", "external-id\tshared-shortcut"}},
+        {{"Path", "Shared/nested"}, {"IsDir", true}, {"ID", "external-nested-id"}},
+        {{"Path", "Shared/nested/file.txt"}, {"IsDir", false}, {"Size", 10}, {"ModTime", original.time}},
+        {{"Path", "Other shared shortcut"}, {"IsDir", true}, {"ID", "external-nested-id\tother-shortcut"}},
+        {{"Path", "Other shared shortcut/file.txt"}, {"IsDir", false}, {"Size", 10}, {"ModTime", original.time}}
+    });
+    assert(ReadGoogleSyncInventory(shortcutRows.dump(), inventory, ignored, error));
+    assert(inventory.size() == 4 && inventory.count("Documents/France/document.pdf") &&
+        inventory.count("Shared/nested/file.txt") && inventory.count("Other shared shortcut/file.txt"));
+    assert(ignored.size() == 2 && ignored.at("administratif France").tree);
+    SyncAnalysis shortcuts;
+    shortcuts.complete = shortcuts.hasBaseline = true;
+    shortcuts.google = inventory;
+    shortcuts.ignoredGooglePaths = ignored;
+    shortcuts.oneDrive = {{"administratif France/document.pdf", original},
+        {"administratif France/only-on-onedrive.txt", changed}};
+    shortcuts.previousOneDrive = shortcuts.previousGoogle = shortcuts.oneDrive;
+    for (const auto mode : {SyncMode::ToGoogle, SyncMode::ToOneDrive, SyncMode::Bidirectional}) {
+        for (const auto& row : shortcuts.Plan(mode)) {
+            if (row.path == "administratif France" || row.path.find("administratif France/") == 0)
+                assert(row.action == SyncAction::Ignored); // never upload through the alias or propagate a false deletion
+            if (row.path == "Shared/nested/file.txt" || row.path == "Other shared shortcut/file.txt")
+                assert(row.action == (mode == SyncMode::ToGoogle ? SyncAction::None : SyncAction::ToOneDrive));
+        }
+    }
+    assert(SyncBaselineInventory(shortcuts.oneDrive, shortcuts.ignoredGooglePaths).empty());
+    assert(!FindIgnoredGooglePath(ignored, "administratif France-old/document.pdf"));
+    auto shortcutCollision = shortcutRows;
+    shortcutCollision.push_back({{"Path", "administratif France"}, {"IsDir", false}, {"Size", 10}, {"ModTime", original.time}});
+    assert(ReadGoogleSyncInventory(shortcutCollision.dump(), inventory, ignored, error));
+    assert(ignored.at("administratif France").tree && FindIgnoredGooglePath(ignored, "administratif France/only-on-onedrive.txt"));
+
     duplicate = SaveSyncInventory(analysis.oneDrive);
     duplicate[0]["Size"] = -1;
     assert(!ReadSyncInventory(duplicate.dump(), inventory, error));

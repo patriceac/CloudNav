@@ -915,7 +915,7 @@ AnalysisReport SyncReport(const SyncAnalysis& analysis, const std::vector<SyncRo
         file.category = row.category;
         file.bytes = row.bytes;
         file.sizeKnown = row.action != SyncAction::Ignored;
-        if (row.action == SyncAction::Ignored) file.error = analysis.ignoredGooglePaths.at(row.path).reason;
+        if (row.action == SyncAction::Ignored) file.error = FindIgnoredGooglePath(analysis.ignoredGooglePaths, row.path)->reason;
         if (row.action == SyncAction::Blocked) file.error = "Ambiguous name, path collision, or incomplete analysis.";
     }
     if (!analysis.error.empty()) {
@@ -1286,7 +1286,7 @@ std::wstring CurrentPlanDetails(const DialogContext& context) {
         (context.mode != SyncMode::Bidirectional ? L"Copy missing/newer source files directly; no archiving. Extra destination files are kept." :
         context.sync.recovery ? L"Recovery: merge without removals. New history will be created after success." :
         context.sync.hasBaseline ? L"History available: deletions are propagated with archiving." :
-        L"First merge: no removals. Both versions of conflicts will be kept.");
+        L"First merge: no removals. Newer files win; equal-date conflicts keep both.");
 }
 
 void RefreshPlan(DialogContext& context) {
@@ -1410,6 +1410,7 @@ void WriteMilestone(const DialogContext& context, const wchar_t* name, bool pass
 struct ReportRow {
     char category;
     std::wstring status, path, size, error, action;
+    bool changes;
 };
 
 struct ReportDialog {
@@ -1421,10 +1422,10 @@ struct ReportDialog {
 
 void FilterReport(HWND dialog, ReportDialog& context) {
     const int selection = ComboBox_GetCurSel(GetDlgItem(dialog, IDC_REPORT_FILTER));
-    const char category = selection > 0 && selection <= 6 ? "+*=-~!"[selection - 1] : 0;
+    const char category = selection > 1 && selection <= 7 ? "+*=-~!"[selection - 2] : 0;
     context.visible.clear();
     for (size_t i = 0; i < context.rows.size(); ++i)
-        if (!category || context.rows[i].category == category) context.visible.push_back(i);
+        if (selection == 0 ? context.rows[i].changes : !category || context.rows[i].category == category) context.visible.push_back(i);
     const HWND list = GetDlgItem(dialog, IDC_REPORT_LIST);
     ListView_SetItemCountEx(list, static_cast<int>(context.visible.size()), 0);
     InvalidateRect(list, nullptr, TRUE);
@@ -1435,7 +1436,7 @@ void FilterReport(HWND dialog, ReportDialog& context) {
         SetDlgItemTextW(dialog, IDC_REPORT_SELECTED, (row.path + L"\r\n" + row.action +
             (row.error.empty() ? L"" : L" — " + row.error)).c_str());
     }
-    if (selection == 1) WriteMilestone(*context.owner, L"report-filtered.json",
+    if (selection == 2) WriteMilestone(*context.owner, L"report-filtered.json",
         context.visible.size() == context.owner->report.Count('+'));
 }
 
@@ -1447,14 +1448,17 @@ INT_PTR CALLBACK ReportDialogProc(HWND dialog, UINT message, WPARAM wParam, LPAR
         context->theme.Initialize(dialog, IDC_DIALOG_HEADING);
         SetDlgItemTextW(dialog, IDC_MIGRATION_SUMMARY, context->owner->report.Summary().c_str());
         std::map<std::string, std::wstring> actions;
-        for (const auto& row : context->owner->plan) actions[row.path] = std::wstring(SyncActionLabel(row.action)) +
-            (row.editDeleteConflict ? L" — restore the edited version" : L"");
+        std::set<std::string> plannedPaths;
+        for (const auto& row : context->owner->plan) {
+            actions[row.path] = std::wstring(SyncActionLabel(row.action)) + (row.editDeleteConflict ? L" — restore the edited version" : L"");
+            if (SyncChangesFiles(row.action)) plannedPaths.insert(row.path);
+        }
         for (const auto& item : context->owner->report.files) {
             const auto& file = item.second;
             context->rows.push_back({file.category, AnalysisCategory(file.category), Utf8ToWide(item.first),
-                file.sizeKnown ? FormatBytes(file.bytes) : L"—", Utf8ToWide(file.error), actions[item.first]});
+                file.sizeKnown ? FormatBytes(file.bytes) : L"—", Utf8ToWide(file.error), actions[item.first], plannedPaths.count(item.first) != 0});
         }
-        for (const wchar_t* label : {L"All files", L"OneDrive only", L"Different", L"Identical", L"Google Drive only", L"Ignored", L"Errors"})
+        for (const wchar_t* label : {L"Planned changes", L"All files", L"OneDrive only", L"Different", L"Identical", L"Google Drive only", L"Ignored", L"Errors"})
             ComboBox_AddString(GetDlgItem(dialog, IDC_REPORT_FILTER), label);
         ComboBox_SetCurSel(GetDlgItem(dialog, IDC_REPORT_FILTER), 0);
         const HWND list = GetDlgItem(dialog, IDC_REPORT_LIST);
@@ -1698,7 +1702,7 @@ INT_PTR CALLBACK MigrationDialogProc(HWND dialog, UINT message, WPARAM wParam, L
                         (ignored == 1 ? L" duplicate Google Drive path ignored" : L" duplicate Google Drive paths ignored")).c_str() :
                     L"Analysis complete — no files transferred");
                 SetDlgItemTextW(dialog, IDC_MIGRATION_DETAILS, ignored ?
-                    L"CloudNav will skip every file at duplicate Google Drive paths. Open View details to see which files need unique names." :
+                    L"CloudNav will skip every file at duplicate Google Drive paths and internal folder shortcuts. Open View details to see why each path was ignored." :
                     L"Analysis complete. Choose a transfer direction and review the actions in View details.");
             } else if (update->task == Task::Copy) {
                 context->copied = true;
@@ -2197,6 +2201,27 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                     context.inventoryReads == reads + 2 && analyzeSync() && SyncBaselineUnchanged(context.sync);
             }
             if (passed) {
+                step = "bidirectionalNewerWins";
+                const auto now = std::filesystem::file_time_type::clock::now();
+                passed = WriteEvidence(context.oneDrivePath + L"latest-one.txt", "new OneDrive version") &&
+                    WriteEvidence(context.googlePath + L"latest-one.txt", "old Google version") &&
+                    WriteEvidence(context.oneDrivePath + L"latest-google.txt", "old OneDrive version") &&
+                    WriteEvidence(context.googlePath + L"latest-google.txt", "new Google version");
+                std::filesystem::last_write_time(context.oneDrivePath + L"latest-one.txt", now);
+                std::filesystem::last_write_time(context.googlePath + L"latest-one.txt", now - std::chrono::hours(1));
+                std::filesystem::last_write_time(context.oneDrivePath + L"latest-google.txt", now - std::chrono::hours(1));
+                std::filesystem::last_write_time(context.googlePath + L"latest-google.txt", now);
+                passed = passed && analyzeSync() && UnattendedSyncBlocker(context.sync, context.plan, 10).empty() &&
+                    ExecuteSyncPlan(context, error) && read(context.googlePath + L"latest-one.txt") == "new OneDrive version" &&
+                    read(context.oneDrivePath + L"latest-google.txt") == "new Google version";
+                bool archivedGoogle = false, archivedOneDrive = false;
+                for (const auto& entry : std::filesystem::recursive_directory_iterator(context.googlePath + L".CloudNav-history"))
+                    if (entry.is_regular_file() && entry.path().filename() == L"latest-one.txt") archivedGoogle |= read(entry.path()) == "old Google version";
+                for (const auto& entry : std::filesystem::recursive_directory_iterator(context.oneDrivePath + L".CloudNav-history"))
+                    if (entry.is_regular_file() && entry.path().filename() == L"latest-google.txt") archivedOneDrive |= read(entry.path()) == "old OneDrive version";
+                passed = passed && archivedGoogle && archivedOneDrive && analyzeSync();
+            }
+            if (passed) {
                 step = "changedLocalHistoryRejected";
                 const auto state = context.sync.baselineDocument;
                 const auto reads = context.inventoryReads.load();
@@ -2205,9 +2230,13 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
             }
             if (passed) {
                 step = "bidirectionalConflicts";
-                for (const auto* path : {L"one.txt", L"nested\\one.txt", L"nested\\été.txt"})
+                const auto now = std::filesystem::file_time_type::clock::now();
+                for (const auto* path : {L"one.txt", L"nested\\one.txt", L"nested\\été.txt"}) {
                     passed = passed && WriteEvidence(context.oneDrivePath + path, "updated during preview") &&
                         WriteEvidence(context.googlePath + path, "also edited on Google");
+                    std::filesystem::last_write_time(context.oneDrivePath + path, now);
+                    std::filesystem::last_write_time(context.googlePath + path, now);
+                }
                 passed = passed && analyzeSync();
                 const auto starts = context.processStarts.load();
                 passed = passed && ExecuteSyncPlan(context, error) && context.processStarts == starts + 15 &&
