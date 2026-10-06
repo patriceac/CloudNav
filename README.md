@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.18
+# CloudNav 1.4.19
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -70,7 +70,7 @@ One-way modes copy missing files and directly overwrite older destination files 
 
 The completed analysis is the transfer plan. Copy and Sync start from that plan without listing either account again; View details remains available before starting. CloudNav checks the account identity and local and cloud history before transfer; changes invalidate the plan. Files added after analysis are outside the plan; run Analyze again to include them. Bidirectional sync still compares both accounts after transfer before saving its baseline. This is not an atomic cloud snapshot: files should remain idle during transfer. Copies use literal file lists with targeted lookups or directory listings selected from the batch size. In bidirectional mode, overwritten files and propagated deletions are retained under `.CloudNav-history/<run>/` on the affected account, outside the compared set. These archives consume cloud storage and are not automatically purged; restore files from them using the provider's ordinary file tools.
 
-Bidirectional completion requires another comparison and saves the new baseline only when both inventories match under the comparison rules. The same checksummed history is saved in both accounts under `.CloudNav-history/.sync/`, identified by stable provider root IDs rather than login tokens. A pending generation is saved before mutations. Missing, mismatched, incomplete or corrupt cloud history never authorizes deletions. A valid existing local baseline can be upgraded when neither cloud has history yet. Failed/interrupted transfers and one-way changes require a reviewed, non-deleting recovery merge. Reanalyze after any real transfer attempt.
+Bidirectional completion requires another comparison and saves the new baseline only when both inventories match under the comparison rules. The same checksummed history is saved in both accounts under `.CloudNav-history/.sync/`, identified by stable provider root IDs rather than login tokens. A pending generation is saved before mutations. Missing, mismatched, incomplete or corrupt cloud history never authorizes deletions. A valid existing local baseline can be upgraded when neither cloud has history yet. Matching pending recovery flags expire after 30 minutes, allowing the next scheduled run to retry a non-deleting merge; conflicts still require review. Older flags use the originating PC's local flag timestamp. Before expiry, interrupted and one-way changes require a reviewed recovery merge. Reanalyze after any real transfer attempt.
 
 An exclusive OneDrive metadata-folder lock prevents overlapping CloudNav operations across PCs. Locks do not expire while a writer may still be active. The originating PC can recover its own interrupted run using its local lock journal; an unknown lock on another PC requires recovery there. Child transfer processes stop if CloudNav exits. External sync tools do not participate in this lock.
 

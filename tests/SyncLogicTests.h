@@ -223,6 +223,27 @@ inline void RunSyncLogicTests() {
     corruptShared["data"]["generation"] = "tampered";
     assert(!LoadSharedSyncState(corruptShared.dump(), corruptShared.dump(), "account-pair", loaded));
     assert(!LoadSharedSyncState(shared, shared, "another-root", loaded));
+    const auto pending = SharedSyncState(state, "interrupted", true, 1000);
+    assert(!LoadSharedSyncState(pending, pending, "account-pair", loaded, 2799) && !loaded.recoveryExpired);
+    assert(!LoadSharedSyncState(pending, pending, "account-pair", loaded, 999) && !loaded.recoveryExpired);
+    assert(!LoadSharedSyncState(pending, pending, "account-pair", loaded, 2800) && loaded.recoveryExpired && !loaded.hasBaseline);
+    loaded.complete = true; loaded.oneDrive = loaded.previousOneDrive; loaded.google.clear();
+    const auto recoveryPlan = loaded.Plan(SyncMode::Bidirectional);
+    assert(UnattendedSyncBlocker(loaded, recoveryPlan, 10).empty());
+    for (auto remove : {SyncAction::DeleteGoogle, SyncAction::DeleteOneDrive})
+        assert(!UnattendedSyncBlocker(loaded, {{"file", '+', remove}}, 10).empty());
+    assert(!UnattendedSyncBlocker(loaded, {{"file", '*', SyncAction::KeepBoth}}, 10).empty());
+    assert(!LoadSharedSyncState(pending, pending, "account-pair", loaded, 2800, 2000) && !loaded.recoveryExpired);
+    auto legacyPending = SyncJson::parse(pending);
+    legacyPending["data"].erase("pendingSince");
+    legacyPending["sha256"] = SyncDigest(legacyPending["data"].dump());
+    assert(!LoadSharedSyncState(legacyPending.dump(), legacyPending.dump(), "account-pair", loaded, 2800) && !loaded.recoveryExpired);
+    assert(!LoadSharedSyncState(legacyPending.dump(), legacyPending.dump(), "account-pair", loaded, 2800, 1000) && loaded.recoveryExpired);
+    assert(!LoadSharedSyncState(pending, shared, "account-pair", loaded, 2800) && !loaded.recoveryExpired);
+    assert(!LoadSharedSyncState(pending, pending, "another-root", loaded, 2800) && !loaded.recoveryExpired);
+    auto tamperedPending = SyncJson::parse(pending);
+    tamperedPending["data"]["pendingSince"] = 1;
+    assert(!LoadSharedSyncState(tamperedPending.dump(), tamperedPending.dump(), "account-pair", loaded, 2800) && !loaded.recoveryExpired);
     SyncAnalysis unchanged;
     unchanged.complete = true;
     unchanged.oneDrive = unchanged.google = {{"a.txt", original}};

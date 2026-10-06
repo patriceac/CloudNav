@@ -365,6 +365,7 @@ struct SyncAnalysis {
     bool hasBaseline = false;
     bool hasSharedBaseline = false;
     bool recovery = false;
+    bool recoveryExpired = false;
     std::string binding;
     std::string error;
     std::string baselineDocument;

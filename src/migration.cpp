@@ -817,14 +817,27 @@ bool ReadSharedHistoryAccount(DialogContext& context, int i, const std::wstring&
     return true;
 }
 
+std::uint64_t SyncPendingSince(const std::wstring& state) {
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!GetFileAttributesExW((state + L".pending").c_str(), GetFileExInfoStandard, &attributes)) return 0;
+    ULARGE_INTEGER time{};
+    time.LowPart = attributes.ftLastWriteTime.dwLowDateTime;
+    time.HighPart = attributes.ftLastWriteTime.dwHighDateTime;
+    const auto seconds = time.QuadPart / 10000000ULL;
+    return seconds > 11644473600ULL ? seconds - 11644473600ULL : 0;
+}
+
 void ApplySharedHistory(DialogContext& context, SyncAnalysis& analysis, const SharedHistoryRead& history) {
     analysis.hasSharedBaseline = false;
+    analysis.recoveryExpired = false;
     analysis.historyBinding = context.historyBinding;
     analysis.sharedDocument = SyncJson::array({history.documents[0], history.documents[1]}).dump();
     LoadCurrentBaseline(context, analysis);
     if (history.missing[0] && history.missing[1]) return; // Upgrade an existing, locally validated baseline.
-    LoadSharedSyncState(history.documents[0], history.documents[1], context.historyBinding, analysis);
+    const auto pendingSince = SyncPendingSince(SyncStatePath(context));
+    LoadSharedSyncState(history.documents[0], history.documents[1], context.historyBinding, analysis, SyncClockSeconds(), pendingSince);
     if (GetFileAttributesW((SyncStatePath(context) + L".pending").c_str()) != INVALID_FILE_ATTRIBUTES) {
+        if (analysis.hasSharedBaseline) analysis.recoveryExpired = SyncRecoveryExpired(pendingSince);
         analysis.hasBaseline = false; analysis.recovery = true;
     }
 }
@@ -937,7 +950,8 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     currentState.binding = SyncBinding(context);
     if (!RefreshSharedHistory(context, currentState, error)) return false;
     if (currentState.binding != context.sync.binding || currentState.baselineDocument != context.sync.baselineDocument ||
-        currentState.recovery != context.sync.recovery || currentState.sharedDocument != context.sync.sharedDocument) {
+        currentState.recovery != context.sync.recovery || currentState.recoveryExpired != context.sync.recoveryExpired ||
+        currentState.sharedDocument != context.sync.sharedDocument) {
         error = L"Accounts or sync history changed since analysis. No transfer started: analyze again to review the plan.";
         return false;
     }
