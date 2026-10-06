@@ -34,6 +34,32 @@ inline void RunSyncLogicTests() {
     const SyncFile other{30, "2026-09-09T12:00:00.000000000Z", {{"md5", "other"}}};
     assert(CanonicalSyncTime("2026-09-09T12:00:00+02:00") == original.time);
     assert(CanonicalSyncTime("2026-09-09T05:00:00-05:00") == original.time);
+    SyncAnalysis planned;
+    planned.complete = true;
+    planned.oneDrive = {{"a.txt", original}};
+    planned.google = {{"a.txt", original}, {"queued.txt", changed}};
+    auto verified = planned;
+    verified.oneDrive["queued.txt"] = changed;
+    verified.google["late.txt"] = other;
+    auto next = verified;
+    const auto plannedRows = planned.Plan(SyncMode::Bidirectional);
+    LimitSyncVerification(planned, verified, plannedRows, ".conflict-test");
+    assert(!verified.google.count("late.txt"));
+    for (const auto& row : verified.Plan(SyncMode::Bidirectional)) assert(row.action == SyncAction::None);
+    const SyncJson verifiedState = {{"version", 1}, {"binding", "pair"},
+        {"oneDrive", SaveSyncInventory(verified.oneDrive)}, {"google", SaveSyncInventory(verified.google)}};
+    assert(LoadSyncBaseline(verifiedState.dump(), "pair", next));
+    assert(next.Plan(SyncMode::Bidirectional)[1].path == "late.txt" &&
+        next.Plan(SyncMode::Bidirectional)[1].action == SyncAction::ToOneDrive);
+    auto failed = verified;
+    failed.oneDrive.erase("queued.txt");
+    failed.google["a.txt"] = changed;
+    LimitSyncVerification(planned, failed, plannedRows, ".conflict-test");
+    assert(failed.Plan(SyncMode::Bidirectional)[0].action == SyncAction::ToOneDrive &&
+        failed.Plan(SyncMode::Bidirectional)[1].action == SyncAction::ToOneDrive);
+    verified.oneDrive["a.txt.conflict-test"] = verified.google["a.txt.conflict-test"] = other;
+    LimitSyncVerification(planned, verified, {{"a.txt", '*', SyncAction::KeepBoth}}, ".conflict-test");
+    assert(verified.oneDrive.count("a.txt.conflict-test") && verified.google.count("a.txt.conflict-test"));
     SyncAnalysis analysis;
     analysis.complete = true;
     analysis.oneDrive = {{"a.txt", original}};

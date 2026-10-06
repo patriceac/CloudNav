@@ -1040,6 +1040,7 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
         SyncAnalysis after;
         if (!ReadCurrentSync(context, after, error, MigrationStage::Verifying)) return false;
         if (after.binding != context.sync.binding) { error = L"The accounts changed. History was not committed."; return false; }
+        LimitSyncVerification(context.sync, after, rows, WideToUtf8(suffix));
         const auto remaining = after.Plan(SyncMode::Bidirectional);
         if (std::any_of(remaining.begin(), remaining.end(), [](const auto& row) {
             return row.action != SyncAction::None && row.action != SyncAction::Ignored;
@@ -2192,6 +2193,17 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 const auto reads = context.inventoryReads.load();
                 passed = passed && ExecuteSyncPlan(context, error) && context.inventoryReads == reads + 2 &&
                     read(context.googlePath + L"one.txt") == "one only" && analyzeSync() && context.sync.hasBaseline;
+            }
+            if (passed) {
+                step = "lateArrivalWaitsForNextSync";
+                passed = WriteEvidence(context.googlePath + L"planned-addition.txt", "planned") && analyzeSync() &&
+                    WriteEvidence(context.googlePath + L"late-addition.txt", "arrived after analysis") &&
+                    ExecuteSyncPlan(context, error) && !std::filesystem::exists(context.oneDrivePath + L"late-addition.txt") &&
+                    analyzeSync() && context.sync.hasBaseline && !context.sync.previousGoogle.count("late-addition.txt") &&
+                    std::any_of(context.plan.begin(), context.plan.end(), [](const auto& row) {
+                        return row.path == "late-addition.txt" && row.action == SyncAction::ToOneDrive;
+                    }) && ExecuteSyncPlan(context, error) &&
+                    read(context.oneDrivePath + L"late-addition.txt") == "arrived after analysis" && analyzeSync();
             }
             if (passed) {
                 step = "unchangedBidirectionalSync";

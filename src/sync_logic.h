@@ -453,6 +453,19 @@ struct SyncAnalysis {
     }
 };
 
+inline void LimitSyncVerification(const SyncAnalysis& planned, SyncAnalysis& after,
+    const std::vector<SyncRow>& rows, const std::string& conflictSuffix) {
+    std::set<std::string> paths;
+    for (const auto* inventory : {&planned.oneDrive, &planned.google})
+        for (const auto& item : *inventory) paths.insert(item.first);
+    for (const auto& row : rows) if (row.action == SyncAction::KeepBoth) paths.insert(row.path + conflictSuffix);
+    // New arrivals belong to the next run and must not enter this run's baseline.
+    for (auto* inventory : {&after.oneDrive, &after.google})
+        for (auto item = inventory->begin(); item != inventory->end();)
+            if (!paths.count(item->first)) item = inventory->erase(item);
+            else ++item;
+}
+
 inline SyncInventory SyncBaselineInventory(const SyncInventory& inventory, const SyncIgnoredPaths& ignoredPaths) {
     auto result = inventory;
     for (auto item = result.begin(); item != result.end();) {
