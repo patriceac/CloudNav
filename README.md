@@ -2,7 +2,7 @@
   <img src="assets/CloudNav-icon.png" width="132" alt="CloudNav icon">
 </p>
 
-# CloudNav 1.4.20
+# CloudNav 1.4.21
 
 CloudNav is a native, portable Windows 11 utility that brings together two settings that are usually scattered across the system: cloud entries in the File Explorer navigation pane and the locations of Windows personal folders.
 
@@ -10,7 +10,7 @@ CloudNav is a native, portable Windows 11 utility that brings together two setti
 
 One standalone `.exe`, with no installer or additional application runtime.
 
-Version 1.4.18 skips Google Drive folder shortcuts whose targets are already included at their real paths, while keeping shortcuts to external shared folders. Two-way sync keeps the newer file when modification dates differ; equal-date conflicts preserve both versions. Analysis results open on **Planned changes** by default, showing only file actions for the selected direction. Version 1.4.17 keeps one progress total through analysis, transfers, verification, and saved history in **Full sync now**. Version 1.4.15 added **Full sync now** with the scheduled task's guarded two-way settings; **Detailed sync…** opens the analysis and direction choices. Unchanged runs skip history uploads and full verification listings after live delta and history checks.
+Version 1.4.21 fixes archiving shared OneDrive files before overwriting them during two-way sync. Version 1.4.18 skips Google Drive folder shortcuts whose targets are already included at their real paths, while keeping shortcuts to external shared folders. Two-way sync keeps the newer file when modification dates differ; equal-date conflicts preserve both versions. Analysis results open on **Planned changes** by default, showing only file actions for the selected direction. Version 1.4.17 keeps one progress total through analysis, transfers, verification, and saved history in **Full sync now**. Version 1.4.15 added **Full sync now** with the scheduled task's guarded two-way settings; **Detailed sync…** opens the analysis and direction choices. Unchanged runs skip history uploads and full verification listings after live delta and history checks.
 
 Version 1.4.6 opens the matching OneDrive backup dialog when a personal-folder change needs it. The user stops the selected backups, then clicks Continue setup in CloudNav to apply the saved locations. Redirect only never reads, compares, copies, or downloads personal file contents. The title bar displays the running version.
 

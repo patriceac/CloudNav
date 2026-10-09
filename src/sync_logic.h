@@ -24,6 +24,12 @@ inline bool SyncChangesFiles(SyncAction action) {
         action == SyncAction::DeleteGoogle || action == SyncAction::DeleteOneDrive || action == SyncAction::KeepBoth;
 }
 
+inline std::vector<std::wstring> SyncArchiveArguments(SyncMode mode, SyncAction action) {
+    // Shared OneDrive archives need streamed copies for both deletions and overwrites.
+    return action == SyncAction::DeleteOneDrive || (mode == SyncMode::Bidirectional && action == SyncAction::ToOneDrive)
+        ? std::vector<std::wstring>{L"--disable", L"Copy"} : std::vector<std::wstring>{};
+}
+
 inline std::pair<size_t, size_t> SyncConfigSection(const std::string& text, const std::string& remote) {
     size_t start = std::string::npos;
     for (size_t pos = 0; pos < text.size();) {

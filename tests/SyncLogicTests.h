@@ -21,6 +21,12 @@ inline void RunSyncLogicTests() {
     assert(SyncModeFromSetting(2) == SyncMode::Bidirectional);
     assert(SyncModeFromSetting(3) == SyncMode::ToGoogle);
     assert(SyncModeFromSetting(0xffffffffU) == SyncMode::ToGoogle);
+    const std::vector<std::wstring> streamedArchive{L"--disable", L"Copy"};
+    assert(SyncArchiveArguments(SyncMode::Bidirectional, SyncAction::ToOneDrive) == streamedArchive);
+    assert(SyncArchiveArguments(SyncMode::Bidirectional, SyncAction::DeleteOneDrive) == streamedArchive);
+    assert(SyncArchiveArguments(SyncMode::ToOneDrive, SyncAction::ToOneDrive).empty());
+    assert(SyncArchiveArguments(SyncMode::Bidirectional, SyncAction::ToGoogle).empty());
+    assert(SyncArchiveArguments(SyncMode::Bidirectional, SyncAction::DeleteGoogle).empty());
     const std::string config = "[cloudnav-onedrive]\ntype = onedrive\ndrive_id = sample-drive\ntoken = {\"refresh_token\":\"one\"}\n"
         "[cloudnav-gdrive]\ntype = drive\ntoken = {\"refresh_token\":\"google\",\"access_token\":\"old\"}\n";
     auto rotated = config;
