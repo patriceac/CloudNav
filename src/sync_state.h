@@ -65,6 +65,13 @@ inline std::string UnattendedSyncBlocker(const SyncAnalysis& analysis, const std
     for (const auto& row : rows) {
         if (analysis.recoveryExpired && (row.action == SyncAction::DeleteOneDrive || row.action == SyncAction::DeleteGoogle))
             return "Recovery must finish before files can be removed.";
+        // A pending baseline cannot distinguish an interrupted overwrite from
+        // a user's move or deletion. Expiry must not silently restore an old
+        // destination path alongside its renamed/moved replacement.
+        if (analysis.recoveryExpired &&
+            ((row.action == SyncAction::ToGoogle && analysis.previousGoogle.count(row.path) && !analysis.google.count(row.path)) ||
+             (row.action == SyncAction::ToOneDrive && analysis.previousOneDrive.count(row.path) && !analysis.oneDrive.count(row.path))))
+            return "Recovery could restore a moved or deleted file. Open Detailed sync to review the plan.";
         if (row.action == SyncAction::Blocked || row.action == SyncAction::KeepBoth || row.editDeleteConflict)
             return "Conflicts need review in CloudNav. No files were changed.";
         od += row.action == SyncAction::DeleteOneDrive;
