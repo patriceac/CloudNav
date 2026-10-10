@@ -1,0 +1,47 @@
+name: Recovery fix native Windows validation
+
+on:
+  push:
+    branches:
+      - validation/recovery-windows
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-logic-tests:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Check out the recovery fix
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Compile and run native Windows logic tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputRoot = Join-Path $env:GITHUB_WORKSPACE 'build\NativeValidation'
+          New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $visualStudio = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $visualStudio) { throw 'The Visual Studio x64 C++ compiler was not found.' }
+          $developerShell = Join-Path $visualStudio 'Common7\Tools\VsDevCmd.bat'
+          $testSource = Join-Path $env:GITHUB_WORKSPACE 'tests\LogicTests.cpp'
+          $testOutput = Join-Path $outputRoot 'CloudNavTests.exe'
+          # Match the Release compiler flags, with assertions kept enabled.
+          $compileOptions = '/nologo /std:c++17 /utf-8 /EHsc /W4 /WX /O2 /GL /MT /DUNICODE /D_UNICODE'
+          $command = '"{0}" -no_logo -arch=x64 -host_arch=x64 && cl.exe {1} /Fe:"{2}" "{3}" /link /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:CONSOLE' -f $developerShell, $compileOptions, $testOutput, $testSource
+          & $env:ComSpec /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw "Native test compilation failed: $LASTEXITCODE" }
+          & $testOutput
+          if ($LASTEXITCODE -ne 0) { throw "Native logic tests failed: $LASTEXITCODE" }
+          @(
+            '## Native Windows logic validation',
+            "Commit: $env:GITHUB_SHA",
+            'Compiler: MSVC x64, Release optimization, assertions enabled',
+            'Result: all existing logic tests and recovery regression tests passed',
+            'No CloudNav application binary was built or released by this workflow.',
+            'The isolated Windows release scenarios and desktop installation remain separate.'
+          ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
