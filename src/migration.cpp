@@ -2303,6 +2303,40 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 }
             }
             if (passed) {
+                step = "expiredRecoveryMoveRenameGuard";
+                const auto original = L"recovery-guard.txt";
+                passed = WriteEvidence(context.oneDrivePath + original, "keep organized") &&
+                    WriteEvidence(context.googlePath + original, "keep organized") &&
+                    analyzeSync() && ExecuteSyncPlan(context, error) && analyzeSync();
+                const auto completed = ReadSyncFile(SharedHistoryPath(context, true));
+                const auto baseline = SyncJson{{"version", 1}, {"binding", context.historyBinding},
+                    {"oneDrive", SaveSyncInventory(context.sync.oneDrive)}, {"google", SaveSyncInventory(context.sync.google)}};
+                const auto pending = SharedSyncState(baseline, "expired-recovery-guard", true, SyncClockSeconds() - 31 * 60);
+                for (const bool movedOnGoogle : {true, false}) {
+                    for (const auto* replacement : {L"renamed-recovery.txt", L"filed\\recovery-guard.txt"}) {
+                        if (!passed) break;
+                        const auto& movedRoot = movedOnGoogle ? context.googlePath : context.oneDrivePath;
+                        const auto& otherRoot = movedOnGoogle ? context.oneDrivePath : context.googlePath;
+                        passed = EnsureParentDirectory(movedRoot + replacement) &&
+                            MoveFileW((movedRoot + original).c_str(), (movedRoot + replacement).c_str()) &&
+                            WriteEvidence(SharedHistoryPath(context, true), pending) &&
+                            WriteEvidence(SharedHistoryPath(context, false), pending);
+                        const auto copied = context.transferProgress.CopiedFiles();
+                        passed = passed && RunUnattendedSync(context, false, false, L"", 100, error) == 3 &&
+                            error == L"Recovery could restore a moved or deleted file. Open Detailed sync to review the plan." &&
+                            context.sync.recoveryExpired && context.transferProgress.CopiedFiles() == copied &&
+                            !std::filesystem::exists(movedRoot + original) &&
+                            !std::filesystem::exists(otherRoot + replacement) &&
+                            read(movedRoot + replacement) == "keep organized" && read(otherRoot + original) == "keep organized";
+                        passed = MoveFileW((movedRoot + replacement).c_str(), (movedRoot + original).c_str()) &&
+                            WriteEvidence(SharedHistoryPath(context, true), completed) &&
+                            WriteEvidence(SharedHistoryPath(context, false), completed) && passed;
+                    }
+                }
+                error.clear();
+                passed = passed && analyzeSync() && context.sync.hasBaseline;
+            }
+            if (passed) {
                 step = "portableCloudHistory";
                 const auto oldConfig = context.configPath;
                 context.configPath = root + L"\\another-profile.conf";
@@ -2349,7 +2383,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.8\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"portableCloudHistory\":true,\"parallelHistoryReads\":true,\"overlappingAnalysisReads\":true,\"cancelAllAnalysisReads\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.8\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"expiredRecoveryMoveRenameGuard\":true,\"portableCloudHistory\":true,\"parallelHistoryReads\":true,\"overlappingAnalysisReads\":true,\"cancelAllAnalysisReads\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();
