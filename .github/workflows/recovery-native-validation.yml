@@ -42,6 +42,34 @@ jobs:
             "Commit: $env:GITHUB_SHA",
             'Compiler: MSVC x64, Release optimization, assertions enabled',
             'Result: all existing logic tests and recovery regression tests passed',
-            'No CloudNav application binary was built or released by this workflow.',
+            'These logic tests do not build or release the CloudNav application.',
             'The isolated Windows release scenarios and desktop installation remain separate.'
+          ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+  debug-build:
+    needs: native-logic-tests
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Check out the recovery fix
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build the application with its pinned engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Debug permits an empty OAuth client. This is compilation validation,
+          # not a distributable Release or an isolated application runtime check.
+          & .\build.ps1 -Configuration Debug
+          $executable = Get-Item -LiteralPath '.\build\Debug\CloudNav.exe'
+          $hash = (Get-FileHash -LiteralPath $executable.FullName -Algorithm SHA256).Hash
+          @(
+            '## Native Windows application compilation',
+            "Commit: $env:GITHUB_SHA",
+            'Configuration: Debug, no OAuth account configuration',
+            "Application size: $($executable.Length) bytes",
+            "Application SHA-256: $hash",
+            'The pinned embedded engine and all test drivers were compiled.',
+            'Release build, isolated release scenarios, publication and desktop installation remain pending.'
           ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
