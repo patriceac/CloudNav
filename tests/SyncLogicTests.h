@@ -261,7 +261,7 @@ inline void RunSyncLogicTests() {
     assert(!LoadSharedSyncState(pending, pending, "account-pair", loaded, 2800) && loaded.recoveryExpired && !loaded.hasBaseline);
     loaded.complete = true; loaded.oneDrive = loaded.previousOneDrive; loaded.google.clear();
     const auto recoveryPlan = loaded.Plan(SyncMode::Bidirectional);
-    assert(UnattendedSyncBlocker(loaded, recoveryPlan, 10).empty());
+    assert(!UnattendedSyncBlocker(loaded, recoveryPlan, 10).empty()); // do not restore historical paths unattended
     for (auto remove : {SyncAction::DeleteGoogle, SyncAction::DeleteOneDrive})
         assert(!UnattendedSyncBlocker(loaded, {{"file", '+', remove}}, 10).empty());
     assert(!UnattendedSyncBlocker(loaded, {{"file", '*', SyncAction::KeepBoth}}, 10).empty());
@@ -276,6 +276,65 @@ inline void RunSyncLogicTests() {
     auto tamperedPending = SyncJson::parse(pending);
     tamperedPending["data"]["pendingSince"] = 1;
     assert(!LoadSharedSyncState(tamperedPending.dump(), tamperedPending.dump(), "account-pair", loaded, 2800) && !loaded.recoveryExpired);
+
+    // Moving/renaming on either account during recovery must not resurrect
+    // the old path, even when the move preserves every byte and timestamp.
+    const SyncInventory beforeMove{{"scan.pdf", original}};
+    const SyncJson moveState = {{"version", 1}, {"binding", "move-pair"},
+        {"oneDrive", SaveSyncInventory(beforeMove)}, {"google", SaveSyncInventory(beforeMove)}};
+    const auto movePending = SharedSyncState(moveState, "interrupted-move", true, 1000);
+    const auto moveComplete = SharedSyncState(moveState, "verified-move", false);
+    const auto rowAction = [](const std::vector<SyncRow>& rows, const std::string& path) {
+        const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& item) { return item.path == path; });
+        assert(row != rows.end());
+        return row->action;
+    };
+    for (const bool movedOnGoogle : {true, false}) {
+        for (const auto* newPath : {"renamed.pdf", "Health/scan.pdf", "Health/renamed.pdf"}) {
+            SyncAnalysis moved;
+            moved.complete = true;
+            moved.oneDrive = moved.google = beforeMove;
+            auto& movedSide = movedOnGoogle ? moved.google : moved.oneDrive;
+            movedSide.erase("scan.pdf"); movedSide.emplace(newPath, original);
+            assert(!LoadSharedSyncState(movePending, movePending, "move-pair", moved, 2800) && moved.recoveryExpired);
+            const auto merge = moved.Plan(SyncMode::Bidirectional);
+            assert(rowAction(merge, "scan.pdf") == (movedOnGoogle ? SyncAction::ToGoogle : SyncAction::ToOneDrive));
+            assert(rowAction(merge, newPath) == (movedOnGoogle ? SyncAction::ToOneDrive : SyncAction::ToGoogle));
+            assert(UnattendedSyncBlocker(moved, merge, 100) ==
+                "Recovery could restore a moved or deleted file. Open Detailed sync to review the plan.");
+
+            // Completed history still propagates the move through an archived
+            // removal plus a copy at the new path; it must not be blocked.
+            assert(LoadSharedSyncState(moveComplete, moveComplete, "move-pair", moved));
+            const auto normal = moved.Plan(SyncMode::Bidirectional);
+            assert(rowAction(normal, "scan.pdf") == (movedOnGoogle ? SyncAction::DeleteOneDrive : SyncAction::DeleteGoogle));
+            assert(UnattendedSyncBlocker(moved, normal, 100).empty());
+
+            // A local pending marker over completed shared history has the same
+            // risk and uses the same guard as a matching cloud pending journal.
+            moved.hasBaseline = false; moved.recovery = moved.recoveryExpired = true;
+            assert(!UnattendedSyncBlocker(moved, moved.Plan(SyncMode::Bidirectional), 100).empty());
+        }
+    }
+    SyncAnalysis retry;
+    retry.complete = true; retry.oneDrive = retry.google = beforeMove;
+    assert(!LoadSharedSyncState(movePending, movePending, "move-pair", retry, 2800) && retry.recoveryExpired);
+    retry.oneDrive.emplace("new-one.txt", changed);
+    retry.google.emplace("new-google.txt", changed);
+    assert(UnattendedSyncBlocker(retry, retry.Plan(SyncMode::Bidirectional), 10).empty());
+    // Existing destination edits and first-merge additions remain retryable.
+    retry.oneDrive["scan.pdf"] = changed;
+    assert(UnattendedSyncBlocker(retry, retry.Plan(SyncMode::Bidirectional), 10).empty());
+    const SyncJson firstState = {{"version", 1}, {"binding", "first-pair"},
+        {"oneDrive", SyncJson::array()}, {"google", SyncJson::array()}};
+    const auto firstPending = SharedSyncState(firstState, "first-merge", true, 1000);
+    assert(!LoadSharedSyncState(firstPending, firstPending, "first-pair", retry, 2800) && retry.recoveryExpired);
+    retry.google.erase("scan.pdf");
+    assert(UnattendedSyncBlocker(retry, retry.Plan(SyncMode::Bidirectional), 10).empty());
+    // Ambiguous Google objects are ignored, never restored through a path copy.
+    assert(!LoadSharedSyncState(movePending, movePending, "move-pair", retry, 2800));
+    retry.ignoredGooglePaths["scan.pdf"] = {2, "ambiguous"};
+    assert(UnattendedSyncBlocker(retry, retry.Plan(SyncMode::Bidirectional), 10).empty());
     SyncAnalysis unchanged;
     unchanged.complete = true;
     unchanged.oneDrive = unchanged.google = {{"a.txt", original}};
