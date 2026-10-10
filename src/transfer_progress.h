@@ -219,9 +219,11 @@ inline TransferBatches PrepareTransferProgress(const SyncAnalysis& analysis, con
         batches.conflicts[1] = progress.AddBatch(googleConflicts, true);
         batches.conflicts[2] = progress.AddBatch(oneDriveConflicts);
     }
-    for (const auto action : {SyncAction::ToGoogle, SyncAction::ToOneDrive, SyncAction::DeleteGoogle, SyncAction::DeleteOneDrive}) {
+    for (const auto action : {SyncAction::ToGoogle, SyncAction::ToOneDrive, SyncAction::DeleteGoogle, SyncAction::DeleteOneDrive,
+        SyncAction::MoveGoogle, SyncAction::MoveOneDrive}) {
         std::vector<TransferProgress::File> files;
-        const bool move = action == SyncAction::DeleteGoogle || action == SyncAction::DeleteOneDrive;
+        const bool move = action == SyncAction::DeleteGoogle || action == SyncAction::DeleteOneDrive ||
+            action == SyncAction::MoveGoogle || action == SyncAction::MoveOneDrive;
         for (const auto& row : rows) if (row.action == action) files.push_back({row.path, row.bytes});
         if (!files.empty()) batches.actions[action] = progress.AddBatch(files, move);
     }

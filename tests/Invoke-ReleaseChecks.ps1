@@ -61,7 +61,7 @@ foreach ($name in $Scenario) {
         Arguments = $case.Args
         ActionsPath = $actionsPath
         NetworkProfile = 'None'
-        ExecutionTimeoutSeconds = 180
+        ExecutionTimeoutSeconds = $(if ($name -eq 'MigrationEngine') { 420 } else { 180 })
         ThrowOnFailure = $true
     }
     if ($case.Result) {

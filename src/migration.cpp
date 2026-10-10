@@ -148,6 +148,7 @@ struct DialogContext {
     std::wstring cloudRootIds[2];
     std::wstring cloudLockId;
     std::wstring cloudLockParentId;
+    std::string syncTestStopAfter; // Set only by isolated synthetic self-tests.
     HANDLE job = nullptr;
     DialogContext() {
         job = CreateJobObjectW(nullptr, nullptr);
@@ -852,8 +853,8 @@ bool RefreshSharedHistory(DialogContext& context, SyncAnalysis& analysis, std::w
 }
 
 bool SaveSharedHistory(DialogContext& context, const SyncJson& baseline, const std::string& generation,
-    bool pending, std::wstring& error) {
-    const auto document = SharedSyncState(baseline, generation, pending);
+    bool pending, std::wstring& error, const std::vector<SyncMove>& moves = {}, const std::string& movePhase = "copy") {
+    const auto document = SharedSyncState(baseline, generation, pending, SyncClockSeconds(), moves, movePhase);
     const auto path = SyncStatePath(context) + L".upload";
     if (!WriteEvidence(path, document)) { error = L"Unable to prepare cloud sync history."; return false; }
     for (bool oneDrive : {true, false}) {
@@ -941,6 +942,12 @@ AnalysisReport SyncReport(const SyncAnalysis& analysis, const std::vector<SyncRo
 bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     if (context.cloudLockId.empty()) { error = L"The cloud sync lock is missing."; return false; }
     const auto& rows = context.plan;
+    const auto moves = context.mode == SyncMode::Bidirectional ? context.sync.Moves() : std::vector<SyncMove>{};
+    const auto checkpoint = [&](const char* phase) {
+        if (context.syncTestStopAfter != phase) return true;
+        error = L"Synthetic interruption at " + Utf8ToWide(phase);
+        return false;
+    };
     if (!context.sync.complete || std::any_of(rows.begin(), rows.end(), [](const auto& row) { return row.action == SyncAction::Blocked; })) {
         error = L"The plan contains blocked items. Fix them, then analyze again."; return false;
     }
@@ -973,16 +980,15 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     const auto& gd = context.googlePath;
     const auto backup = [&](const std::wstring& remote) { return remote + L".CloudNav-history/" + stamp; };
     const auto state = SyncStatePath(context);
-    // A pending marker makes interruption recovery a reviewed, non-deleting
-    // merge. Never interpret a destination missing after a failed overwrite as
-    // a user's deletion on the next run.
+    // Persist move intent before copying, then a verification receipt before
+    // deleting old paths. Other interrupted operations remain non-deleting.
     if (!WriteEvidence(state + L".pending", "{\"pending\":true}")) {
         error = L"Unable to save the recovery journal."; return false;
     }
-    const auto generation = std::filesystem::path(stamp).generic_u8string();
+    const auto generation = context.sync.moveGeneration.empty() ? std::filesystem::path(stamp).generic_u8string() : context.sync.moveGeneration;
     const SyncJson pendingBaseline = {{"version", 1}, {"binding", context.historyBinding},
         {"oneDrive", SaveSyncInventory(context.sync.previousOneDrive)}, {"google", SaveSyncInventory(context.sync.previousGoogle)}};
-    if (!SaveSharedHistory(context, pendingBaseline, generation, true, error)) return false;
+    if (!SaveSharedHistory(context, pendingBaseline, generation, true, error, moves) || !checkpoint("journal")) return false;
     const auto baseArgs = [&](const wchar_t* command, const std::wstring& source, const std::wstring& destination) {
         return std::vector<std::wstring>{command, source, destination, L"--config", context.configPath,
             L"--use-json-log", L"--stats", L"1s", L"--stats-log-level", L"NOTICE", L"--drive-skip-gdocs"};
@@ -1034,12 +1040,59 @@ bool ExecuteSyncPlan(DialogContext& context, std::wstring& error) {
     }
     if (!transfer(SyncAction::ToGoogle, od, gd, false) || !transfer(SyncAction::ToOneDrive, gd, od, false) ||
         !transfer(SyncAction::DeleteGoogle, gd, gd, true) || !transfer(SyncAction::DeleteOneDrive, od, od, true)) return false;
+    if (!checkpoint("copy")) return false;
     if (context.mode == SyncMode::Bidirectional) {
         context.verificationMilestones = 0;
         PostSyncMilestone(context, 70, MigrationStage::Verifying, L"Checking cloud files");
         SyncAnalysis after;
         if (!ReadCurrentSync(context, after, error, MigrationStage::Verifying)) return false;
         if (after.binding != context.sync.binding) { error = L"The accounts changed. History was not committed."; return false; }
+        if (!moves.empty()) {
+            for (const auto& move : moves) if (!after.MoveMatches(move, true)) {
+                error = L"A moved file changed during sync. The old path was kept; the move journal is available for retry.";
+                return false;
+            }
+            // Verify actual bytes at every destination before authorizing old-
+            // path removal. OneDrive and Google may not share a hash algorithm.
+            std::string paths;
+            for (const auto& move : moves) paths += move.to + "\n";
+            const auto listPath = context.logPath + L".move-verify";
+            if (!WriteEvidence(listPath, paths)) { error = L"Unable to prepare move verification."; return false; }
+            auto args = baseArgs(L"check", od, gd);
+            args.insert(args.end(), {L"--download", L"--files-from-raw", listPath, L"--one-way"});
+            const bool verified = RunProcess(context, args, MigrationStage::Verifying, error);
+            DeleteFileW(listPath.c_str());
+            if (!verified || !SaveSharedHistory(context, pendingBaseline, generation, true, error, moves, "remove") ||
+                !checkpoint("verified")) return false;
+            for (const auto& move : moves) {
+                const auto& account = move.onGoogle ? od : gd;
+                if (!(move.onGoogle ? after.oneDrive : after.google).count(move.from)) continue;
+                // Recheck the exact surviving object after verification and the
+                // journal upload, immediately before deleting its old path.
+                std::string current;
+                if (!RunProcess(context, {L"lsjson", account + Utf8ToWide(move.from), L"--stat", L"--hash", L"--config", context.configPath},
+                    MigrationStage::Verifying, error, nullptr, nullptr, &current)) return false;
+                const auto row = SyncJson::parse(current);
+                if (row.at("IsDir").get<bool>() || !SyncSnapshotMatches(move.original, ReadSyncFileRow(row, move.from))) {
+                    error = L"The old path changed before move completion. It was kept."; return false;
+                }
+            }
+            for (const auto action : {SyncAction::MoveGoogle, SyncAction::MoveOneDrive}) {
+                const auto list = SyncFileList(rows, action);
+                if (list.empty()) continue;
+                const auto path = context.logPath + L".move-delete";
+                if (!WriteEvidence(path, list)) { error = L"Unable to prepare move completion."; return false; }
+                auto remove = std::vector<std::wstring>{L"delete", action == SyncAction::MoveGoogle ? gd : od,
+                    L"--files-from-raw", path, L"--config", context.configPath, L"--use-json-log"};
+                const bool removed = runTransfer(remove, batches.actions.at(action));
+                DeleteFileW(path.c_str());
+                if (!removed) return false;
+            }
+            if (!checkpoint("removed") || !ReadCurrentSync(context, after, error, MigrationStage::Verifying)) return false;
+            for (const auto& move : moves) if (after.oneDrive.count(move.from) || after.google.count(move.from) || !after.MoveMatches(move, true)) {
+                error = L"Move completion could not be verified. Its journal has been kept."; return false;
+            }
+        }
         LimitSyncVerification(context.sync, after, rows, WideToUtf8(suffix));
         const auto remaining = after.Plan(SyncMode::Bidirectional);
         if (std::any_of(remaining.begin(), remaining.end(), [](const auto& row) {
@@ -2303,34 +2356,57 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                 }
             }
             if (passed) {
-                step = "expiredRecoveryMoveRenameGuard";
-                const auto original = L"recovery-guard.txt";
-                passed = WriteEvidence(context.oneDrivePath + original, "keep organized") &&
-                    WriteEvidence(context.googlePath + original, "keep organized") &&
-                    analyzeSync() && ExecuteSyncPlan(context, error) && analyzeSync();
-                const auto completed = ReadSyncFile(SharedHistoryPath(context, true));
-                const auto baseline = SyncJson{{"version", 1}, {"binding", context.historyBinding},
-                    {"oneDrive", SaveSyncInventory(context.sync.oneDrive)}, {"google", SaveSyncInventory(context.sync.google)}};
-                const auto pending = SharedSyncState(baseline, "expired-recovery-guard", true, SyncClockSeconds() - 31 * 60);
+                step = "journaledMoveRecovery";
+                unsigned moveCase = 0;
                 for (const bool movedOnGoogle : {true, false}) {
-                    for (const auto* replacement : {L"renamed-recovery.txt", L"filed\\recovery-guard.txt"}) {
+                    for (const auto* phase : {"", "legacy", "journal", "copy", "verified", "removed"}) {
                         if (!passed) break;
+                        step = "journaledMoveRecovery-" + std::to_string(moveCase) + "-" + phase;
+                        const auto original = L"move-" + std::to_wstring(moveCase) + L".txt";
+                        const auto replacement = (moveCase++ % 2 ? L"filed\\" : L"renamed-") + original;
+                        const auto contents = "keep organized " + std::to_string(moveCase);
+                        passed = WriteEvidence(context.oneDrivePath + original, contents) &&
+                            WriteEvidence(context.googlePath + original, contents) &&
+                            analyzeSync() && ExecuteSyncPlan(context, error) && analyzeSync();
+                        const auto completed = ReadSyncFile(SharedHistoryPath(context, true));
                         const auto& movedRoot = movedOnGoogle ? context.googlePath : context.oneDrivePath;
                         const auto& otherRoot = movedOnGoogle ? context.oneDrivePath : context.googlePath;
-                        passed = EnsureParentDirectory(movedRoot + replacement) &&
-                            MoveFileW((movedRoot + original).c_str(), (movedRoot + replacement).c_str()) &&
-                            WriteEvidence(SharedHistoryPath(context, true), pending) &&
-                            WriteEvidence(SharedHistoryPath(context, false), pending);
-                        const auto copied = context.transferProgress.CopiedFiles();
-                        passed = passed && RunUnattendedSync(context, false, false, L"", 100, error) == 3 &&
-                            error == L"Recovery could restore a moved or deleted file. Open Detailed sync to review the plan." &&
-                            context.sync.recoveryExpired && context.transferProgress.CopiedFiles() == copied &&
-                            !std::filesystem::exists(movedRoot + original) &&
-                            !std::filesystem::exists(otherRoot + replacement) &&
-                            read(movedRoot + replacement) == "keep organized" && read(otherRoot + original) == "keep organized";
-                        passed = MoveFileW((movedRoot + replacement).c_str(), (movedRoot + original).c_str()) &&
-                            WriteEvidence(SharedHistoryPath(context, true), completed) &&
-                            WriteEvidence(SharedHistoryPath(context, false), completed) && passed;
+                        passed = passed && EnsureParentDirectory(movedRoot + replacement) &&
+                            MoveFileW((movedRoot + original).c_str(), (movedRoot + replacement).c_str());
+                        if (std::string(phase) == "legacy") {
+                            const auto baseline = SyncJson::parse(completed).at("data").at("baseline");
+                            const auto pending = SharedSyncState(baseline, "legacy-move", true, SyncClockSeconds() - 31 * 60);
+                            passed = passed && WriteEvidence(SharedHistoryPath(context, true), pending) &&
+                                WriteEvidence(SharedHistoryPath(context, false), pending);
+                        } else if (*phase) {
+                            context.syncTestStopAfter = phase;
+                            passed = passed && RunUnattendedSync(context, false, false, L"", 10, error) == 1 &&
+                                error == L"Synthetic interruption at " + Utf8ToWide(phase);
+                            context.syncTestStopAfter.clear();
+                            if (passed && std::string(phase) == "copy")
+                                passed = WriteEvidence(SharedHistoryPath(context, true), completed); // interrupted mirror upload
+                            if (passed && std::string(phase) == "verified") {
+                                const auto changedPath = otherRoot + (movedOnGoogle ? original : replacement);
+                                const auto stamp = std::filesystem::last_write_time(changedPath);
+                                passed = WriteEvidence(changedPath, "edited while interrupted");
+                                error.clear();
+                                passed = passed && RunUnattendedSync(context, false, false, L"", 10, error) == 3 &&
+                                    read(changedPath) == "edited while interrupted" && std::filesystem::exists(otherRoot + original);
+                                passed = WriteEvidence(changedPath, contents) && passed;
+                                std::filesystem::last_write_time(changedPath, stamp);
+                            }
+                        }
+                        error.clear();
+                        context.sync = {}; // discard the previous process's in-memory plan
+                        passed = passed && RunUnattendedSync(context, false, false, L"", 10, error) == 0 &&
+                            !std::filesystem::exists(movedRoot + original) && !std::filesystem::exists(otherRoot + original) &&
+                            read(movedRoot + replacement) == contents && read(otherRoot + replacement) == contents &&
+                            !std::filesystem::exists(SyncStatePath(context) + L".pending");
+                        for (const auto& account : {context.oneDrivePath, context.googlePath})
+                            for (const auto& entry : std::filesystem::recursive_directory_iterator(account + L".CloudNav-history"))
+                                if (entry.is_regular_file() && entry.path().filename() == original) passed = false;
+                        passed = passed && RunUnattendedSync(context, false, false, L"", 10, error) == 0 &&
+                            !std::filesystem::exists(movedRoot + original) && !std::filesystem::exists(otherRoot + original);
                     }
                 }
                 error.clear();
@@ -2383,7 +2459,7 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
     HANDLE file = CreateFileW(resultPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 4;
     const std::string json = passed
-        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.8\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"expiredRecoveryMoveRenameGuard\":true,\"portableCloudHistory\":true,\"parallelHistoryReads\":true,\"overlappingAnalysisReads\":true,\"cancelAllAnalysisReads\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
+        ? "{\"passed\":true,\"embeddedVersion\":\"1.75.0-cloudnav.8\",\"readOnlyAnalysis\":true,\"copyAnalyzedListOnly\":true,\"sharedSyncAnalysis\":true,\"reverseCopy\":true,\"bidirectionalConflicts\":true,\"archivedDeletion\":true,\"parallelListings\":true,\"cancelBothListings\":true,\"silentListingProgress\":true,\"reviewedPlanReused\":true,\"changedLocalHistoryRejected\":true,\"interruptedRecovery\":true,\"journaledMoveRecovery\":true,\"moveRecoveryCases\":12,\"verifiedMovesWithoutArchive\":true,\"portableCloudHistory\":true,\"parallelHistoryReads\":true,\"overlappingAnalysisReads\":true,\"cancelAllAnalysisReads\":true,\"partialCloudHistory\":true,\"unattendedPreview\":true}\n"
         : SyncJson({{"passed", false}, {"failedStep", step}, {"error", WideToUtf8(error)}}).dump();
     DWORD written = 0;
     const bool wrote = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size();

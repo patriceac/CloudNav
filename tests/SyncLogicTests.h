@@ -298,22 +298,52 @@ inline void RunSyncLogicTests() {
             movedSide.erase("scan.pdf"); movedSide.emplace(newPath, original);
             assert(!LoadSharedSyncState(movePending, movePending, "move-pair", moved, 2800) && moved.recoveryExpired);
             const auto merge = moved.Plan(SyncMode::Bidirectional);
-            assert(rowAction(merge, "scan.pdf") == (movedOnGoogle ? SyncAction::ToGoogle : SyncAction::ToOneDrive));
+            const auto finishMove = movedOnGoogle ? SyncAction::MoveOneDrive : SyncAction::MoveGoogle;
+            assert(rowAction(merge, "scan.pdf") == finishMove);
             assert(rowAction(merge, newPath) == (movedOnGoogle ? SyncAction::ToOneDrive : SyncAction::ToGoogle));
-            assert(UnattendedSyncBlocker(moved, merge, 100) ==
-                "Recovery could restore a moved or deleted file. Open Detailed sync to review the plan.");
+            assert(UnattendedSyncBlocker(moved, merge, 10).empty());
 
-            // Completed history still propagates the move through an archived
-            // removal plus a copy at the new path; it must not be blocked.
+            const auto moves = moved.Moves();
+            const auto journal = SharedSyncState(moveState, "moving", true, 1000, moves);
+            const auto verifiedJournal = SharedSyncState(moveState, "moving", true, 1001, moves, "remove");
+            assert(SyncJson::parse(journal).at("version") == 2); // older readers cannot replay it as a merge
+            for (const auto& peer : {journal, verifiedJournal, moveComplete, std::string()}) {
+                auto resumed = moved;
+                assert(!LoadSharedSyncState(journal, peer, "move-pair", resumed, 1002) && resumed.pendingMoves.size() == 1);
+                assert(UnattendedSyncBlocker(resumed, resumed.Plan(SyncMode::Bidirectional), 10).empty());
+                assert(!LoadSharedSyncState(peer, journal, "move-pair", resumed, 1002) && resumed.pendingMoves.size() == 1);
+                auto& target = movedOnGoogle ? resumed.oneDrive : resumed.google;
+                target[newPath] = original; // copy finished, old path still present
+                assert(rowAction(resumed.Plan(SyncMode::Bidirectional), "scan.pdf") == finishMove);
+                target["scan.pdf"] = changed;
+                assert(rowAction(resumed.Plan(SyncMode::Bidirectional), "scan.pdf") == SyncAction::Blocked);
+                target.erase("scan.pdf"); // deletion finished, final commit interrupted
+                assert(UnattendedSyncBlocker(resumed, resumed.Plan(SyncMode::Bidirectional), 10).empty());
+                (movedOnGoogle ? resumed.google : resumed.oneDrive)[newPath] = changed;
+                assert(!UnattendedSyncBlocker(resumed, resumed.Plan(SyncMode::Bidirectional), 10).empty());
+            }
+
+            auto ambiguous = moved;
+            (movedOnGoogle ? ambiguous.google : ambiguous.oneDrive)["unrelated-copy.pdf"] = original;
+            assert(!UnattendedSyncBlocker(ambiguous, ambiguous.Plan(SyncMode::Bidirectional), 100).empty());
+            // Stable provider identity distinguishes an actual move from existing identical copies.
+            (movedOnGoogle ? ambiguous.previousGoogle : ambiguous.previousOneDrive)["scan.pdf"].id = "moved-object";
+            (movedOnGoogle ? ambiguous.google : ambiguous.oneDrive)[newPath].id = "moved-object";
+            assert(ambiguous.Moves().size() == 1);
+            assert(rowAction(ambiguous.Plan(SyncMode::Bidirectional), "scan.pdf") == finishMove);
+            ambiguous.ignoredGooglePaths["scan.pdf"] = {2, "duplicate Google path"};
+            assert(rowAction(ambiguous.Plan(SyncMode::Bidirectional), "scan.pdf") == SyncAction::Ignored);
+
+            // Normal moves use the same verified cleanup, without archiving.
             assert(LoadSharedSyncState(moveComplete, moveComplete, "move-pair", moved));
             const auto normal = moved.Plan(SyncMode::Bidirectional);
-            assert(rowAction(normal, "scan.pdf") == (movedOnGoogle ? SyncAction::DeleteOneDrive : SyncAction::DeleteGoogle));
+            assert(rowAction(normal, "scan.pdf") == finishMove);
             assert(UnattendedSyncBlocker(moved, normal, 100).empty());
 
             // A local pending marker over completed shared history has the same
             // risk and uses the same guard as a matching cloud pending journal.
             moved.hasBaseline = false; moved.recovery = moved.recoveryExpired = true;
-            assert(!UnattendedSyncBlocker(moved, moved.Plan(SyncMode::Bidirectional), 100).empty());
+            assert(UnattendedSyncBlocker(moved, moved.Plan(SyncMode::Bidirectional), 10).empty());
         }
     }
     SyncAnalysis retry;

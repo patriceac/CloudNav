@@ -18,10 +18,11 @@ enum class SyncMode { ToGoogle = 0, ToOneDrive = 1, Bidirectional = 2 };
 inline SyncMode SyncModeFromSetting(std::uint32_t value) {
     return value <= 2 ? static_cast<SyncMode>(value) : SyncMode::ToGoogle;
 }
-enum class SyncAction { None, ToGoogle, ToOneDrive, DeleteGoogle, DeleteOneDrive, KeepBoth, Ignored, Blocked };
+enum class SyncAction { None, ToGoogle, ToOneDrive, DeleteGoogle, DeleteOneDrive, KeepBoth, Ignored, Blocked, MoveGoogle, MoveOneDrive };
 inline bool SyncChangesFiles(SyncAction action) {
     return action == SyncAction::ToGoogle || action == SyncAction::ToOneDrive ||
-        action == SyncAction::DeleteGoogle || action == SyncAction::DeleteOneDrive || action == SyncAction::KeepBoth;
+        action == SyncAction::DeleteGoogle || action == SyncAction::DeleteOneDrive || action == SyncAction::KeepBoth ||
+        action == SyncAction::MoveGoogle || action == SyncAction::MoveOneDrive;
 }
 
 inline std::vector<std::wstring> SyncArchiveArguments(SyncMode mode, SyncAction action) {
@@ -116,6 +117,8 @@ inline const wchar_t* SyncActionLabel(SyncAction action) {
     case SyncAction::ToOneDrive: return L"Copy → OneDrive";
     case SyncAction::DeleteGoogle: return L"Remove from Google Drive (archived)";
     case SyncAction::DeleteOneDrive: return L"Remove from OneDrive (archived)";
+    case SyncAction::MoveGoogle: return L"Finish move on Google Drive";
+    case SyncAction::MoveOneDrive: return L"Finish move on OneDrive";
     case SyncAction::KeepBoth: return L"Conflict — keep both";
     case SyncAction::Ignored: return L"Ignored — duplicate Google Drive path";
     case SyncAction::Blocked: return L"Blocked";
@@ -156,9 +159,26 @@ struct SyncFile {
     std::uint64_t size = 0;
     std::string time;
     std::map<std::string, std::string> hashes;
+    std::string id;
     bool operator==(const SyncFile& other) const { return size == other.size && time == other.time && hashes == other.hashes; }
 };
 using SyncInventory = std::map<std::string, SyncFile>;
+
+inline bool SyncSnapshotMatches(const SyncFile& expected, const SyncFile& actual) {
+    return expected == actual && (expected.id.empty() || expected.id == actual.id);
+}
+
+inline std::string SyncContentKey(const SyncFile& file) {
+    for (const auto& hash : file.hashes) if (!hash.second.empty())
+        return std::to_string(file.size) + ":" + hash.first + ":" + hash.second;
+    return {}; // Size and date alone cannot establish a move.
+}
+
+struct SyncMove {
+    std::string from, to;
+    bool onGoogle = false;
+    SyncFile original, replacement;
+};
 
 struct SyncIgnoredPath {
     size_t objectCount = 0;
@@ -237,6 +257,7 @@ inline SyncFile ReadSyncFileRow(const SyncJson& row, const std::string& path) {
     file.time = CanonicalSyncTime(row.at("ModTime").get<std::string>());
     if (size < 0) throw std::runtime_error("Unsupported path, size, or date: " + path);
     file.size = static_cast<std::uint64_t>(size);
+    file.id = row.value("ID", std::string());
     if (row.contains("Hashes") && !row["Hashes"].is_null())
         file.hashes = row["Hashes"].get<std::map<std::string, std::string>>();
     return file;
@@ -353,7 +374,7 @@ inline bool ReadGoogleSyncInventory(const std::string& text, SyncInventory& inve
 inline SyncJson SaveSyncInventory(const SyncInventory& inventory) {
     auto rows = SyncJson::array();
     for (const auto& item : inventory) rows.push_back({{"Path", item.first}, {"Size", item.second.size},
-        {"ModTime", item.second.time}, {"Hashes", item.second.hashes}, {"IsDir", false}});
+        {"ModTime", item.second.time}, {"Hashes", item.second.hashes}, {"ID", item.second.id}, {"IsDir", false}});
     return rows;
 }
 
@@ -367,6 +388,8 @@ struct SyncRow {
 struct SyncAnalysis {
     SyncInventory oneDrive, google, previousOneDrive, previousGoogle;
     SyncIgnoredPaths ignoredGooglePaths;
+    std::vector<SyncMove> pendingMoves;
+    std::string moveGeneration;
     bool complete = false;
     bool hasBaseline = false;
     bool hasSharedBaseline = false;
@@ -377,6 +400,49 @@ struct SyncAnalysis {
     std::string baselineDocument;
     std::string sharedDocument;
     std::string historyBinding;
+
+    std::vector<SyncMove> Moves() const {
+        if (!pendingMoves.empty()) return pendingMoves;
+        std::vector<SyncMove> moves;
+        if (!hasBaseline && !recoveryExpired) return moves;
+        for (bool onGoogle : {true, false}) {
+            const auto& moved = onGoogle ? google : oneDrive;
+            const auto& other = onGoogle ? oneDrive : google;
+            const auto& before = onGoogle ? previousGoogle : previousOneDrive;
+            const auto& otherBefore = onGoogle ? previousOneDrive : previousGoogle;
+            std::map<std::string, std::vector<std::string>> ids, contents;
+            for (const auto& item : moved) {
+                if (!item.second.id.empty()) ids[item.second.id].push_back(item.first);
+                const auto key = SyncContentKey(item.second);
+                if (!key.empty()) contents[key].push_back(item.first);
+            }
+            for (const auto& old : before) {
+                if (moved.count(old.first) || FindIgnoredGooglePath(ignoredGooglePaths, old.first)) continue;
+                const auto survivor = other.find(old.first), previous = otherBefore.find(old.first);
+                if (survivor == other.end() || previous == otherBefore.end() || !SyncSnapshotMatches(previous->second, survivor->second)) continue;
+                const auto& index = old.second.id.empty() ? contents : ids;
+                const auto found = index.find(old.second.id.empty() ? SyncContentKey(old.second) : old.second.id);
+                if (found == index.end() || found->second.size() != 1) continue;
+                const auto& path = found->second.front();
+                if (before.count(path) || FindIgnoredGooglePath(ignoredGooglePaths, path) ||
+                    path.find(".conflict-Google-") != std::string::npos) continue;
+                const auto destination = other.find(path);
+                if (destination != other.end() && !SyncEquivalent(moved.at(path), destination->second)) continue;
+                moves.push_back({old.first, path, onGoogle, survivor->second, moved.at(path)});
+            }
+        }
+        return moves;
+    }
+
+    bool MoveMatches(const SyncMove& move, bool requireDestination = false) const {
+        const auto& moved = move.onGoogle ? google : oneDrive;
+        const auto& other = move.onGoogle ? oneDrive : google;
+        const auto source = moved.find(move.to), old = other.find(move.from), destination = other.find(move.to);
+        return !moved.count(move.from) && source != moved.end() && SyncSnapshotMatches(move.replacement, source->second) &&
+            (old == other.end() || SyncSnapshotMatches(move.original, old->second)) &&
+            (destination == other.end() ? !requireDestination : SyncEquivalent(source->second, destination->second)) &&
+            !FindIgnoredGooglePath(ignoredGooglePaths, move.from) && !FindIgnoredGooglePath(ignoredGooglePaths, move.to);
+    }
 
     std::vector<SyncRow> Plan(SyncMode mode) const {
         std::set<std::string> paths;
@@ -449,6 +515,18 @@ struct SyncAnalysis {
             if (row.action == SyncAction::KeepBoth) row.bytes = od->second.size + gd->second.size;
             rows.push_back(std::move(row));
         }
+        if (mode == SyncMode::Bidirectional) for (const auto& move : Moves()) {
+            auto old = std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.path == move.from; });
+            const auto destination = std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.path == move.to; });
+            if (!MoveMatches(move) || (destination != rows.end() && destination->action == SyncAction::Blocked)) {
+                if (old == rows.end()) rows.push_back({move.from, '!', SyncAction::Blocked});
+                else { old->action = SyncAction::Blocked; old->category = '!'; }
+            } else if (old != rows.end() && old->action != SyncAction::Blocked && old->action != SyncAction::Ignored) {
+                old->action = move.onGoogle ? SyncAction::MoveOneDrive : SyncAction::MoveGoogle;
+                old->bytes = 0;
+                old->editDeleteConflict = false;
+            }
+        }
         return rows;
     }
 
@@ -482,6 +560,13 @@ inline SyncInventory SyncBaselineInventory(const SyncInventory& inventory, const
 }
 
 inline bool SyncBaselineUnchanged(const SyncAnalysis& analysis) {
+    // Upgrade legacy history with provider identities even when contents match.
+    for (const auto& inventories : {std::make_pair(&analysis.oneDrive, &analysis.previousOneDrive),
+        std::make_pair(&analysis.google, &analysis.previousGoogle)})
+        for (const auto& item : *inventories.first) {
+            const auto previous = inventories.second->find(item.first);
+            if (previous != inventories.second->end() && item.second.id != previous->second.id) return false;
+        }
     return analysis.complete && analysis.hasBaseline && analysis.hasSharedBaseline && !analysis.recovery &&
         SyncBaselineInventory(analysis.oneDrive, analysis.ignoredGooglePaths) == analysis.previousOneDrive &&
         analysis.google == analysis.previousGoogle;
@@ -552,7 +637,8 @@ inline std::wstring SyncPlanSummary(const std::vector<SyncRow>& rows, bool compl
     for (const auto& row : rows) {
         a += row.category == '+'; b += row.category == '-'; changes += row.category == '*';
         same += row.category == '=';
-        deletions += row.action == SyncAction::DeleteGoogle || row.action == SyncAction::DeleteOneDrive;
+        deletions += row.action == SyncAction::DeleteGoogle || row.action == SyncAction::DeleteOneDrive ||
+            row.action == SyncAction::MoveGoogle || row.action == SyncAction::MoveOneDrive;
         conflicts += row.action == SyncAction::KeepBoth || row.editDeleteConflict;
         ignored += row.action == SyncAction::Ignored; blocked += row.action == SyncAction::Blocked;
     }
