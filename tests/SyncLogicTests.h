@@ -323,6 +323,16 @@ inline void RunSyncLogicTests() {
                 assert(!UnattendedSyncBlocker(resumed, resumed.Plan(SyncMode::Bidirectional), 10).empty());
             }
 
+            // Two missing identical files cannot both be inferred to be the same move.
+            auto twoOldPaths = moved;
+            twoOldPaths.previousGoogle["also-old.pdf"] = twoOldPaths.previousOneDrive["also-old.pdf"] = original;
+            (movedOnGoogle ? twoOldPaths.oneDrive : twoOldPaths.google)["also-old.pdf"] = original;
+            assert(twoOldPaths.Moves().empty());
+            const auto ambiguousPlan = twoOldPaths.Plan(SyncMode::Bidirectional);
+            assert(rowAction(ambiguousPlan, "scan.pdf") != finishMove);
+            assert(rowAction(ambiguousPlan, "also-old.pdf") != finishMove);
+            assert(!UnattendedSyncBlocker(twoOldPaths, ambiguousPlan, 100).empty());
+
             auto ambiguous = moved;
             (movedOnGoogle ? ambiguous.google : ambiguous.oneDrive)["unrelated-copy.pdf"] = original;
             assert(!UnattendedSyncBlocker(ambiguous, ambiguous.Plan(SyncMode::Bidirectional), 100).empty());

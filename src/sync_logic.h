@@ -411,6 +411,13 @@ struct SyncAnalysis {
             const auto& before = onGoogle ? previousGoogle : previousOneDrive;
             const auto& otherBefore = onGoogle ? previousOneDrive : previousGoogle;
             std::map<std::string, std::vector<std::string>> ids, contents;
+            std::map<std::string, size_t> missingIds, missingContents;
+            for (const auto& old : before) {
+                if (moved.count(old.first)) continue;
+                if (!old.second.id.empty()) ++missingIds[old.second.id];
+                const auto key = SyncContentKey(old.second);
+                if (!key.empty()) ++missingContents[key];
+            }
             for (const auto& item : moved) {
                 if (!item.second.id.empty()) ids[item.second.id].push_back(item.first);
                 const auto key = SyncContentKey(item.second);
@@ -421,7 +428,11 @@ struct SyncAnalysis {
                 const auto survivor = other.find(old.first), previous = otherBefore.find(old.first);
                 if (survivor == other.end() || previous == otherBefore.end() || !SyncSnapshotMatches(previous->second, survivor->second)) continue;
                 const auto& index = old.second.id.empty() ? contents : ids;
-                const auto found = index.find(old.second.id.empty() ? SyncContentKey(old.second) : old.second.id);
+                const auto& missing = old.second.id.empty() ? missingContents : missingIds;
+                const auto key = old.second.id.empty() ? SyncContentKey(old.second) : old.second.id;
+                const auto count = missing.find(key);
+                if (count == missing.end() || count->second != 1) continue;
+                const auto found = index.find(key);
                 if (found == index.end() || found->second.size() != 1) continue;
                 const auto& path = found->second.front();
                 if (before.count(path) || FindIgnoredGooglePath(ignoredGooglePaths, path) ||

@@ -2386,14 +2386,16 @@ int RunEmbeddedRcloneSelfTest(HINSTANCE instance, const std::wstring& resultPath
                             if (passed && std::string(phase) == "copy")
                                 passed = WriteEvidence(SharedHistoryPath(context, true), completed); // interrupted mirror upload
                             if (passed && std::string(phase) == "verified") {
-                                const auto changedPath = otherRoot + (movedOnGoogle ? original : replacement);
-                                const auto stamp = std::filesystem::last_write_time(changedPath);
-                                passed = WriteEvidence(changedPath, "edited while interrupted");
-                                error.clear();
-                                passed = passed && RunUnattendedSync(context, false, false, L"", 10, error) == 3 &&
-                                    read(changedPath) == "edited while interrupted" && std::filesystem::exists(otherRoot + original);
-                                passed = WriteEvidence(changedPath, contents) && passed;
-                                std::filesystem::last_write_time(changedPath, stamp);
+                                for (const auto& changedPath : {otherRoot + original, movedRoot + replacement, otherRoot + replacement}) {
+                                    if (!passed) break;
+                                    const auto stamp = std::filesystem::last_write_time(changedPath);
+                                    passed = WriteEvidence(changedPath, "edited while interrupted");
+                                    error.clear();
+                                    passed = passed && RunUnattendedSync(context, false, false, L"", 10, error) == 3 &&
+                                        read(changedPath) == "edited while interrupted" && std::filesystem::exists(otherRoot + original);
+                                    passed = WriteEvidence(changedPath, contents) && passed;
+                                    std::filesystem::last_write_time(changedPath, stamp);
+                                }
                             }
                         }
                         error.clear();
