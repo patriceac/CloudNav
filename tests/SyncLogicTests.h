@@ -332,6 +332,15 @@ inline void RunSyncLogicTests() {
             assert(rowAction(ambiguousPlan, "scan.pdf") != finishMove);
             assert(rowAction(ambiguousPlan, "also-old.pdf") != finishMove);
             assert(!UnattendedSyncBlocker(twoOldPaths, ambiguousPlan, 100).empty());
+            (movedOnGoogle ? twoOldPaths.previousGoogle : twoOldPaths.previousOneDrive)["scan.pdf"].id = "moved-object";
+            (movedOnGoogle ? twoOldPaths.google : twoOldPaths.oneDrive)[newPath].id = "moved-object";
+            assert(twoOldPaths.Moves().size() == 1 && twoOldPaths.Moves().front().from == "scan.pdf");
+            // An edited identity-matched move must not also claim an ID-less file with its new hash.
+            twoOldPaths.previousGoogle["scan.pdf"] = twoOldPaths.previousOneDrive["scan.pdf"] = changed;
+            (movedOnGoogle ? twoOldPaths.previousGoogle : twoOldPaths.previousOneDrive)["scan.pdf"].id = "moved-object";
+            (movedOnGoogle ? twoOldPaths.oneDrive : twoOldPaths.google)["scan.pdf"] = changed;
+            assert(twoOldPaths.Moves().empty());
+            assert(!UnattendedSyncBlocker(twoOldPaths, twoOldPaths.Plan(SyncMode::Bidirectional), 100).empty());
 
             auto ambiguous = moved;
             (movedOnGoogle ? ambiguous.google : ambiguous.oneDrive)["unrelated-copy.pdf"] = original;

@@ -442,6 +442,11 @@ struct SyncAnalysis {
                 moves.push_back({old.first, path, onGoogle, survivor->second, moved.at(path)});
             }
         }
+        std::map<std::pair<bool, std::string>, size_t> destinations;
+        for (const auto& move : moves) ++destinations[{move.onGoogle, move.to}];
+        moves.erase(std::remove_if(moves.begin(), moves.end(), [&](const auto& move) {
+            return destinations.at({move.onGoogle, move.to}) != 1;
+        }), moves.end());
         return moves;
     }
 
